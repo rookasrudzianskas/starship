@@ -3,6 +3,7 @@ import { EARTH_RADIUS } from '@/lib/sim/types';
 import { PADS } from '@/lib/flights/catalog';
 import type { Earth, EarthFrame, EarthOptions, Quality } from '@/lib/three/contracts';
 import { ATMOSPHERE_HEIGHT, AtmosphereModel, type AtmosphereParams, DEFAULT_ATMOSPHERE, miePhase, rayleighPhase } from './atmosphere';
+import { greenwichSiderealTime } from './ephemeris';
 import { latLonToEcef, enuToEcefRotation } from './geo';
 import { buildPatchGeometry, createGlobeMesh, createPatchMaterial, createStars, GLOBE_RENDER_ORDER, PATCH_LAYOUT } from './layers';
 import { EnvironmentProbe, ViewLut } from './passes';
@@ -318,13 +319,19 @@ export function createEarth(options: EarthOptions): EarthHandle {
       globe.uniforms.uPatchBiasRadius.value = fade > 0 ? PATCH_LAYOUT.biasRadius : -1;
     }
 
-    // Stars: the celestial sphere turns with the sidereal angle, estimated from the Sun (its right ascension
-    // from its declination on the ecliptic, northern-spring branch) — exact rotation rate, arbitrary epoch.
-    const eps = (23.439 * Math.PI) / 180;
-    const dec = Math.asin(Math.min(Math.max(sunVec.z, -1), 1));
-    const lam = Math.asin(Math.min(Math.max(Math.sin(dec) / Math.sin(eps), -1), 1));
-    const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam));
-    const theta = ra - Math.atan2(sunVec.y, sunVec.x);
+    // Stars: the celestial sphere turns with the sidereal angle. Exact from the UTC time when the stage
+    // passes it; otherwise estimated from the Sun (its right ascension from its declination on the ecliptic,
+    // northern-spring branch): exact rotation rate, arbitrary epoch.
+    let theta: number;
+    if (frame.utcMs !== undefined) {
+      theta = greenwichSiderealTime(frame.utcMs);
+    } else {
+      const eps = (23.439 * Math.PI) / 180;
+      const dec = Math.asin(Math.min(Math.max(sunVec.z, -1), 1));
+      const lam = Math.asin(Math.min(Math.max(Math.sin(dec) / Math.sin(eps), -1), 1));
+      const ra = Math.atan2(Math.cos(eps) * Math.sin(lam), Math.cos(lam));
+      theta = ra - Math.atan2(sunVec.y, sunVec.x);
+    }
     const ct = Math.cos(theta);
     const st = Math.sin(theta);
     starRot.set(ct, st, 0, -st, ct, 0, 0, 0, 1);

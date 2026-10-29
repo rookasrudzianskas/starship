@@ -574,7 +574,7 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
     cam.updateMatrixWorld(true);
 
     placeAll(p.pos, t);
-    earth?.update({ cameraEcef: p.pos, camera: cam, sunDir, time: t });
+    earth?.update({ cameraEcef: p.pos, camera: cam, sunDir, time: t, utcMs: current ? current.launchUtc + t * 1000 : undefined });
     lines?.update(t, p.pos, show, vp.w, vp.h);
     booster.model?.update(booster.visual, cam, dt);
     ship.model?.update(ship.visual, cam, dt);

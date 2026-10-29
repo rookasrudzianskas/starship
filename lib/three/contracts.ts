@@ -27,6 +27,8 @@ export interface EarthFrame {
   sunDir: THREE.Vector3;
   /** Seconds since T+0. */
   time: number;
+  /** UTC epoch milliseconds of this frame, for the star field's sidereal orientation. */
+  utcMs?: number;
 }
 
 export interface Earth {
