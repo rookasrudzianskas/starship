@@ -72,6 +72,8 @@ export function ReplayApp() {
 
   // Initial state from the URL and saved settings.
   useEffect(() => {
+    // Development handle for driving the replay from the console or automated checks.
+    if (process.env.NODE_ENV !== 'production') (window as unknown as { __replay?: typeof useReplay }).__replay = useReplay;
     const view = new URLSearchParams(window.location.search).get('view');
     if (view === 'compare' || view === 'flights' || view === 'about') {
       router.replace(`/${view}`);
