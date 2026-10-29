@@ -14,6 +14,10 @@ import * as THREE from 'three';
  *   (Gaussian radial profile, widening and lengthening as the pressure falls, emission ∝ 1/area).
  *   Also used for the plasma wake behind an entering vehicle.
  * - PlumeGlow: a soft camera-facing sprite at the engine plane standing in for bloom.
+ *
+ * Close cameras (onboard views, a chase camera behind the engines) would otherwise look straight down a
+ * long column of glowing gas or through a quad a metre away: the cores and the glow fade out near the
+ * camera, and the volume drops samples next to the camera and dims while the camera is inside it.
  */
 
 /** 0 at sea level → 1 in vacuum (log of the pressure ratio). */
@@ -22,12 +26,13 @@ export function altitudeFactor(pressure: number): number {
   return a < 0 ? 0 : a > 1 ? 1 : a;
 }
 
+// Raptor Vacuum's exhaust is nearly invisible in vacuum: a short bright core that spreads into a faint fan.
 const COMMON_GLSL = /* glsl */ `
 float plumeLenR(float kind, float alt) {
-  return kind < 0.5 ? mix(16.0, 36.0, alt) : (kind < 1.5 ? mix(26.0, 70.0, alt) : 16.0);
+  return kind < 0.5 ? mix(16.0, 36.0, alt) : (kind < 1.5 ? mix(26.0, 44.0, alt) : 16.0);
 }
 float plumeSpread(float kind, float alt) {
-  return kind < 0.5 ? mix(0.035, 0.6, alt * alt * (3.0 - 2.0 * alt)) : (kind < 1.5 ? mix(0.08, 0.45, alt) : 0.3);
+  return kind < 0.5 ? mix(0.035, 0.6, alt * alt * (3.0 - 2.0 * alt)) : (kind < 1.5 ? mix(0.08, 0.3, alt) : 0.3);
 }
 `;
 
@@ -79,6 +84,7 @@ const CORE_FRAG = /* glsl */ `
 uniform vec4 uShape;
 uniform float uTime;
 uniform float uBright;
+uniform vec2 uNear;
 uniform sampler2D uNoise;
 varying vec3 vWorld;
 varying vec3 vC;
@@ -89,7 +95,9 @@ varying float vLenR;
 ${COMMON_GLSL}
 void main() {
   #include <logdepthbuf_fragment>
-  if (vP.x < 0.002) discard;
+  // A camera beside the nozzles (onboard views) sees the quad from a metre away: let it fade out there.
+  float near = smoothstep(uNear.x, uNear.y, length(vWorld - cameraPosition));
+  if (vP.x * near < 0.002) discard;
   vec3 d = vWorld - vC;
   float R = vP.w;
   float zr = dot(d, vAxis) / R;
@@ -107,7 +115,7 @@ void main() {
   float rc = 0.88 + zr * spread;
   rc *= 1.0 - 0.22 * train * sin(cell * 3.14159);
   float radial = exp(-2.3 * xr * xr / (rc * rc));
-  float decayR = kind < 0.5 ? mix(5.0, 17.0, alt) : (kind < 1.5 ? mix(12.0, 32.0, alt) : 5.5);
+  float decayR = kind < 0.5 ? mix(5.0, 8.0, alt) : (kind < 1.5 ? mix(12.0, 9.0, alt) : 5.5);
   float envelope = smoothstep(-0.3, 0.4, zr) * (1.0 - smoothstep(vLenR * 0.35, vLenR, zr));
   float axial = exp(-zr / decayR) * envelope;
   // Mach disks: thin bright discs across the core at the end of each cell.
@@ -116,7 +124,7 @@ void main() {
   float n2 = texture2D(uNoise, vec2(zr * 0.017 - uTime * 1.3 + vP.z * 1.7, 0.37 + vP.z)).g;
   // In thick air the jet between the disks is translucent; the disks carry the brightness.
   float body = radial * axial * (0.62 + 0.5 * n + 0.3 * n2) / sqrt(max(rc, 1.0)) * mix(1.0, 0.42, sea);
-  float I = vP.x * (body + disk * 3.6);
+  float I = vP.x * near * (body + disk * 3.6);
   vec3 hot = mix(vec3(0.9, 0.94, 1.0), vec3(0.86, 0.8, 1.0), sea);
   vec3 mid = mix(vec3(1.0, 0.56, 0.24), vec3(0.52, 0.38, 1.0), smoothstep(0.03, 0.28, alt));
   if (kind > 1.5) {
@@ -147,6 +155,8 @@ export class PlumeCores {
     uShape: { value: THREE.Vector4 };
     uTime: { value: number };
     uBright: { value: number };
+    /** Distance from the camera (m) inside which the cores are invisible, and beyond which they are whole. */
+    uNear: { value: THREE.Vector2 };
     uNoise: { value: THREE.Texture };
   };
   private readonly attr: THREE.InstancedBufferAttribute;
@@ -170,6 +180,7 @@ export class PlumeCores {
       uShape: { value: new THREE.Vector4(0, 1, 1, 0) },
       uTime: { value: 0 },
       uBright: { value: 2.2 },
+      uNear: { value: new THREE.Vector2(1.5, 6) },
       uNoise: { value: noise },
     };
     this.mat = new THREE.ShaderMaterial({
@@ -180,6 +191,9 @@ export class PlumeCores {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
+      // Additive and order-independent: one pass is enough (three would otherwise draw back then front
+      // faces and re-select the program before each of them).
+      forceSinglePass: true,
     });
     this.mesh = new THREE.InstancedMesh(this.geo, this.mat, slots.length);
     this.mesh.frustumCulled = false;
@@ -245,6 +259,9 @@ uniform float uTime;
 uniform float uSat;
 uniform vec2 uSpread;
 uniform int uSteps;
+uniform float uGain;  // < 1 while the camera is inside the plume
+uniform vec2 uNear;   // samples closer to the camera than x (m) are dropped, beyond y they count in full
+uniform float uInside; // 1: the camera is inside the proxy, march from its back faces
 uniform sampler2D uNoise;
 varying vec3 vLocal;
 
@@ -290,17 +307,26 @@ vec2 coneInterval(vec3 o, vec3 d, float y0, float a, float b, float lmax) {
 }
 
 void main() {
+  // The proxy is drawn double-sided in one pass: front faces from outside, back faces from inside, so
+  // every covered pixel marches its ray exactly once (the interval comes from the analytic cone).
+  if (gl_FrontFacing == (uInside > 0.5)) discard;
   #include <logdepthbuf_fragment>
   vec3 ro = uCam;
   vec3 rd = normalize(vLocal - uCam);
   vec2 iv = coneInterval(ro, rd, uCone.x, uCone.y, uCone.z, uCone.w);
-  float t0 = max(iv.x, 0.0);
+  float t0 = max(iv.x, uNear.x);
   float t1 = iv.y;
   if (t1 <= t0) discard;
-  // Interleaved gradient noise per pixel offsets the samples, trading step banding for fine grain.
-  float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-  int steps = clamp(uSteps, 2, 32);
-  float dt = (t1 - t0) / float(steps);
+  // Long oblique chords (a plume seen at a slant, or from inside) get up to twice the base sample count.
+  float len = t1 - t0;
+  vec3 pm = ro + rd * (t0 + 0.5 * len);
+  float Rm = uPlume.x + uPlume.y * max(uCone.x - pm.y, 0.0);
+  int base = clamp(uSteps, 2, 32);
+  int steps = min(clamp(int(ceil(len / (0.35 * Rm))), base, 2 * base), 32);
+  // Interleaved gradient noise per pixel offsets the samples, trading step banding for fine grain; half
+  // a step of jitter is enough to hide the banding and keeps the edges from speckling.
+  float jitter = 0.25 + 0.5 * fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float dt = len / float(steps);
   vec3 acc = vec3(0.0);
   for (int i = 0; i < 32; i++) {
     if (i >= steps) break;
@@ -312,14 +338,14 @@ void main() {
     // Emission per volume falls as the exhaust spreads; uSpread.x < 2 keeps the far plume visible
     // as a large faint glow in near-vacuum.
     float dens = exp(-s / uPlume.z) * pow(uPlume.x / R, uSpread.x) * exp(-uMisc.w * rr * rr);
-    dens *= smoothstep(0.0, uMisc.x, s);
+    dens *= smoothstep(0.0, uMisc.x, s) * smoothstep(uNear.x, uNear.y, t);
     float n = texture2D(uNoise, vec2(s * 0.019 - uTime * uMisc.z, atan(p.z, p.x) * 0.3183 + s * 0.004)).r;
     dens *= 1.0 - uMisc.y + uMisc.y * 2.0 * n;
     vec3 c = mix(uCol0, uCol1, smoothstep(0.1, 0.9, rr));
     c = mix(c, uCol2, smoothstep(0.15, 1.0, s / (uPlume.z * 1.6)));
     acc += c * dens;
   }
-  vec3 col = acc * (dt / uPlume.x) * uPlume.w;
+  vec3 col = acc * (dt / uPlume.x) * uPlume.w * uGain;
   // Hue-preserving soft saturation: long sight lines through the core approach uSat instead of
   // blowing out to flat white.
   float L = dot(col, vec3(0.3, 0.5, 0.2));
@@ -344,6 +370,8 @@ export interface VolumeShape {
   noise: number;
   flicker: number;
   sharp: number;
+  /** Distance from the camera (m) over which samples fade in, so a close camera is not inside a glare. */
+  near: number;
   col0: THREE.Color;
   col1: THREE.Color;
   col2: THREE.Color;
@@ -363,13 +391,26 @@ export class PlumeVolume {
     uSat: { value: number };
     uSpread: { value: THREE.Vector2 };
     uSteps: { value: number };
+    uGain: { value: number };
+    uNear: { value: THREE.Vector2 };
+    uInside: { value: number };
     uNoise: { value: THREE.Texture };
   };
   private readonly geo: THREE.CylinderGeometry;
   private readonly mat: THREE.ShaderMaterial;
   private readonly tmp = new THREE.Vector3();
+  private baseSteps: number;
 
-  constructor(noise: THREE.Texture, steps: number) {
+  /**
+   * `insideGain`: brightness of the whole volume while the camera is deep inside the plume. Looking down
+   * the axis sums the entire column, so an engine plume would turn a camera behind the engines into a
+   * full-frame glare; 1 keeps the volume as it is (the entry plasma wake seen from the nose camera).
+   */
+  constructor(
+    noise: THREE.Texture,
+    steps: number,
+    private readonly insideGain = 1,
+  ) {
     this.baseSteps = steps;
     this.geo = new THREE.CylinderGeometry(1, 1, 1, 40, 1, false);
     this.geo.translate(0, -0.5, 0);
@@ -385,6 +426,9 @@ export class PlumeVolume {
       uSat: { value: 2.4 },
       uSpread: { value: new THREE.Vector2(2, 0) },
       uSteps: { value: steps },
+      uGain: { value: 1 },
+      uNear: { value: new THREE.Vector2(0, 1e-3) },
+      uInside: { value: 0 },
       uNoise: { value: noise },
     };
     this.mat = new THREE.ShaderMaterial({
@@ -394,16 +438,17 @@ export class PlumeVolume {
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
-      side: THREE.FrontSide,
+      // Both faces in one pass; the shader keeps the front or the back ones (uInside), so moving the
+      // camera into the plume never changes render state or the program.
+      side: THREE.DoubleSide,
+      forceSinglePass: true,
     });
     this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 9;
   }
 
-  private baseSteps: number;
-
-  /** Base ray-march sample count (wide, faint plumes get up to twice as many). */
+  /** Base ray-march sample count (wide, faint plumes and long oblique sight lines get more). */
   setSteps(steps: number): void {
     this.baseSteps = steps;
   }
@@ -419,23 +464,32 @@ export class PlumeVolume {
     this.uniforms.uCol2.value.copy(s.col2);
     this.uniforms.uSpread.value.set(s.falloff, 0);
     this.uniforms.uSat.value = s.saturation;
+    this.uniforms.uNear.value.set(0.2 * s.near, Math.max(s.near, 1e-3));
     // Long sight lines through a wide fan need more samples to stay smooth.
     const wide = Math.min(1, Math.max(0, (s.tanA - 0.2) / 0.8));
     this.uniforms.uSteps.value = Math.round(this.baseSteps * (1 + wide));
     this.mesh.visible = s.intensity > 0.001;
   }
 
-  /** Camera position in the mesh's local frame; switches to back faces when the camera is inside. */
+  /**
+   * Camera-dependent state, for each view: the camera in the mesh's frame, which faces to march from,
+   * and the dimming while the camera is inside the plume (call after setShape).
+   */
   updateCamera(camera: THREE.Camera): void {
     this.mesh.updateWorldMatrix(true, false);
     camera.getWorldPosition(this.tmp);
     this.mesh.worldToLocal(this.tmp);
     this.uniforms.uCam.value.copy(this.tmp);
     const c = this.uniforms.uCone.value;
+    const p = this.uniforms.uPlume.value;
     const s = c.x - this.tmp.y;
-    const inside = s > -0.5 && s < c.w + 0.5 && Math.hypot(this.tmp.x, this.tmp.z) < c.y + c.z * Math.max(s, 0) + 0.5;
-    const side = inside ? THREE.BackSide : THREE.FrontSide;
-    if (this.mat.side !== side) this.mat.side = side;
+    const r = Math.hypot(this.tmp.x, this.tmp.z);
+    const inside = s > -0.5 && s < c.w + 0.5 && r < c.y + c.z * Math.max(s, 0) + 0.5;
+    this.uniforms.uInside.value = inside ? 1 : 0;
+    // How deep the camera is in the glowing gas: 1 on the axis along the bright length, 0 from the edge out.
+    const R = p.x + p.y * Math.max(s, 0);
+    const depth = smooth(-0.5 * p.x, 0.5 * p.x, s) * (1 - smooth(2 * p.z, 3.2 * p.z, s)) * (1 - smooth(0.6, 1.4, r / R));
+    this.uniforms.uGain.value = 1 - (1 - this.insideGain) * depth;
   }
 
   dispose(): void {
@@ -454,8 +508,11 @@ const GLOW_VERT = /* glsl */ `
 uniform vec3 uPos;
 uniform float uSize;
 varying vec2 vQ;
+varying float vFade;
 void main() {
   vec4 mv = modelViewMatrix * vec4(uPos, 1.0);
+  // Bloom belongs to a view of the engines from outside: a camera at the nozzles would sit inside the sprite.
+  vFade = smoothstep(0.6 * uSize, 2.2 * uSize, length(mv.xyz));
   // Pull the sprite slightly towards the camera so it is not swallowed by the nozzle geometry.
   mv.xyz += normalize(-mv.xyz) * uSize * 0.15;
   mv.xy += position.xy * uSize;
@@ -470,13 +527,15 @@ const GLOW_FRAG = /* glsl */ `
 uniform vec3 uColor;
 uniform float uIntensity;
 varying vec2 vQ;
+varying float vFade;
 void main() {
   #include <logdepthbuf_fragment>
+  if (vFade < 0.001) discard;
   float r2 = dot(vQ, vQ);
   // Window so the quad's edges never show.
   float win = max(0.0, 1.0 - r2);
   float I = (exp(-r2 * 10.0) + 0.25 * exp(-r2 * 3.5)) * win * win;
-  gl_FragColor = vec4(uColor * I * uIntensity, 1.0);
+  gl_FragColor = vec4(uColor * I * uIntensity * vFade, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -552,10 +611,13 @@ export function clusterShape(out: VolumeShape, alt: number, r0: number, y0: numb
   out.intensity = power * (1.5 - 0.4 * alt) * (1 - 0.35 * smooth(0.15, 0.45, alt)) * (1 - 0.72 * smooth(0.45, 1.0, alt));
   // In thick air the merged plume starts a few metres down, so the shock diamonds stay visible.
   out.fadeIn = 6.5 - 5.5 * smooth(0.0, 0.4, alt);
-  out.saturation = 1.7 + 0.9 * smooth(0.05, 0.4, alt);
+  // Low in thick air so the afterburning orange survives the tone mapping, highest for the bright expanded
+  // plume at staging altitudes, low again for the faint vacuum exhaust.
+  out.saturation = 1.3 + 0.5 * smooth(0.05, 0.4, alt) - 0.7 * smooth(0.55, 1.0, alt);
   out.noise = 0.32 - 0.18 * alt;
   out.flicker = 1.6 - 1.0 * alt;
   out.sharp = 1.35 + 0.85 * alt;
+  out.near = 1.5 * r0;
   const a = smooth(0.02, 0.3, alt);
   out.col0.copy(C_SL_CORE).lerp(C_ALT_CORE, a);
   out.col1.copy(C_SL_OUTER).lerp(C_ALT_OUTER, smooth(0.04, 0.38, alt));
@@ -576,6 +638,7 @@ export function newVolumeShape(): VolumeShape {
     noise: 0.3,
     flicker: 1,
     sharp: 2.2,
+    near: 0,
     col0: new THREE.Color(),
     col1: new THREE.Color(),
     col2: new THREE.Color(),

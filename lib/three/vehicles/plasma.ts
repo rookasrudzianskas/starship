@@ -126,6 +126,11 @@ export class Plasma {
     this.wake.setSteps(steps);
   }
 
+  /** Re-aims the camera-dependent part (the wake's ray march) at another view of the same frame. */
+  setCamera(camera: THREE.Camera): void {
+    if (this.group.visible) this.wake.updateCamera(camera);
+  }
+
   update(heating: number, airflowBody: THREE.Vector3, t: number, camera: THREE.Camera): void {
     const h = Math.max(0, Math.min(1, heating));
     this.group.visible = h > 0.002;

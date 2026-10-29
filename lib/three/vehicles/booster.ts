@@ -24,6 +24,8 @@ import { EngineSmoother, applyEnvFallback, flicker } from './runtime';
 
 const R = 4.5;
 const DEG = Math.PI / 180;
+/** Brightness of the merged plume while the camera is deep inside it (see PlumeVolume). */
+const PLUME_INSIDE_GAIN = 0.15;
 
 interface BoosterSpec {
   bodyTop: number;
@@ -277,10 +279,13 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
     slots.map((s) => ({ x: s.x, y: 0, z: s.z, exitR: s.ring === 'outer' ? 0.62 : 0.65, kind: 0 })),
     noise,
   );
+  cores.mesh.name = 'plume-cores';
   object.add(cores.mesh);
-  const volume = new PlumeVolume(noise, quality === 'high' ? 12 : 6);
+  const volume = new PlumeVolume(noise, quality === 'high' ? 12 : 6, PLUME_INSIDE_GAIN);
+  volume.mesh.name = 'plume-volume';
   object.add(volume.mesh);
   const glow = new PlumeGlow();
+  glow.mesh.name = 'plume-glow';
   glow.uniforms.uPos.value.set(0, -1.6, 0);
   object.add(glow.mesh);
   const shape = newVolumeShape();
@@ -295,7 +300,9 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
     }),
     noise,
   );
-  jets.uniforms.uBright.value = 3.2;
+  // Bright but not blinding: a camera on the interstage looks along them from a few metres away.
+  jets.uniforms.uBright.value = 1.8;
+  jets.mesh.name = 'vent-jets';
   object.add(jets.mesh);
 
   // ---------------------------------------------------------------- plasma
@@ -363,6 +370,10 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
 
       setFins(state.aero);
       plasma.update(state.heating * 0.6, state.airflowBody, t, camera);
+    },
+    setCamera(camera: THREE.Camera) {
+      volume.updateCamera(camera);
+      plasma.setCamera(camera);
     },
     setQuality(q: Quality) {
       volume.setSteps(q === 'high' ? 12 : 6);

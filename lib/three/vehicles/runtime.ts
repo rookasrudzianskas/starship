@@ -1,14 +1,23 @@
 import * as THREE from 'three';
-import { ENGINE_LIT } from '@/lib/sim/types';
+// Relative so the smoother can be unit tested (vitest has no @/ alias).
+import { ENGINE_LIT } from '../../sim/types';
+
+/** Heat assumed for a lit engine whose burn history is unknown (first frame, or after a backwards seek). */
+const HEAT_UNKNOWN_LIT = 0.7;
 
 /**
- * Per-engine smoothing shared by both vehicles: plume intensity eases in over ~0.4 s at startup and out
- * over ~0.15 s at shutdown; `heat` integrates burn time (RVac extension glow). Large or negative time
- * steps (scrubbing) snap to the target so replays stay consistent.
+ * Per-engine smoothing shared by both vehicles, in simulation time: plume intensity eases in over ~0.4 s
+ * at startup and out over ~0.15 s at shutdown; `heat` follows the burn with a 14 s rise and a 30 s cool-down
+ * (RVac extension glow), so the bells stop glowing half a minute after shutdown however the replay got there.
+ * Steps that are not ordinary playback (dt <= 0: paused or a backwards seek; dt > 0.5 s: a forward seek or
+ * fast playback) snap the intensity to its target. Heat integrates any forward step exactly (the engine
+ * state is taken as constant over the step), holds while paused and restarts from a typical value when the
+ * history is unknown.
  */
 export class EngineSmoother {
   readonly intensity: Float32Array;
   readonly heat: Float32Array;
+  private primed = false;
 
   constructor(n: number) {
     this.intensity = new Float32Array(n);
@@ -30,26 +39,23 @@ export class EngineSmoother {
     return w > 1e-4 ? Math.sqrt(r2 / w) : fallback;
   }
 
-  /** Returns the mean intensity (0..1) over all slots. */
+  /** `dt` = simulation seconds since the previous update. Returns the mean intensity (0..1) over all slots. */
   update(engines: ArrayLike<number>, throttle: number, dt: number): number {
     const n = this.intensity.length;
-    const snap = !(dt > 0) || dt > 0.5;
+    const step = Number.isFinite(dt) ? dt : 0;
+    const snap = !(step > 0) || step > 0.5;
+    const unknown = !this.primed || step < 0;
+    this.primed = true;
     const thr = 0.38 + 0.62 * Math.max(0, Math.min(1, throttle));
     let sum = 0;
     for (let i = 0; i < n; i++) {
       const lit = (engines[i] ?? 0) === ENGINE_LIT;
       const target = lit ? thr : 0;
       const cur = this.intensity[i];
-      if (snap) {
-        this.intensity[i] = target;
-        this.heat[i] = lit ? 0.7 : 0;
-      } else {
-        const tau = target > cur ? 0.4 : 0.15;
-        this.intensity[i] = cur + (target - cur) * (1 - Math.exp(-dt / tau));
-        const ht = lit ? 1 : 0;
-        const htau = lit ? 14 : 30;
-        this.heat[i] += (ht - this.heat[i]) * (1 - Math.exp(-dt / htau));
-      }
+      if (snap) this.intensity[i] = target;
+      else this.intensity[i] = cur + (target - cur) * (1 - Math.exp(-step / (target > cur ? 0.4 : 0.15)));
+      if (unknown) this.heat[i] = lit ? HEAT_UNKNOWN_LIT : 0;
+      else if (step > 0) this.heat[i] += ((lit ? 1 : 0) - this.heat[i]) * (1 - Math.exp(-step / (lit ? 14 : 30)));
       sum += this.intensity[i];
     }
     return n > 0 ? sum / n : 0;

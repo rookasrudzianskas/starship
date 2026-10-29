@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Quality, ShipModel, VehicleVisualState } from '@/lib/three/contracts';
 import type { Generation } from '@/lib/sim/types';
-import { NOISE_KEY, SharedScope, disposeObjectTree, makeNoiseTexture } from './procedural';
+import { NOISE_KEY, SharedScope, disposeObjectTree, makeNoiseTexture, smoothstep } from './procedural';
 import { FALLBACK_ENV_KEY, makeFallbackEnv, makeSteelMaps, steelMapsKey } from './textures';
 import { createDarkMaterial, createSkinMaterial } from './skin';
 import { cylinderPatch, ensureSkinAttributes, hullStrip, lathe, merge, onlyAttributes, skinBox, type ProfilePoint } from './geometry';
@@ -29,6 +29,8 @@ import { EngineSmoother, applyEnvFallback } from './runtime';
 
 const R = 4.5;
 const DEG = Math.PI / 180;
+/** Brightness of the merged plume while the camera is deep inside it (see PlumeVolume). */
+const PLUME_INSIDE_GAIN = 0.15;
 
 interface FlapSpec {
   az: number;
@@ -273,10 +275,13 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
     slots.map((s, i) => ({ x: s.x, y: i < 3 ? SL_Y : 0, z: s.z, exitR: s.exitRadius, kind: s.vacuum ? 1 : 0 })),
     noise,
   );
+  cores.mesh.name = 'plume-cores';
   object.add(cores.mesh);
-  const volume = new PlumeVolume(noise, quality === 'high' ? 12 : 6);
+  const volume = new PlumeVolume(noise, quality === 'high' ? 12 : 6, PLUME_INSIDE_GAIN);
+  volume.mesh.name = 'plume-volume';
   object.add(volume.mesh);
   const glow = new PlumeGlow();
+  glow.mesh.name = 'plume-glow';
   object.add(glow.mesh);
   const shape = newVolumeShape();
 
@@ -326,7 +331,8 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
       // While hot staging the exhaust splashes on the booster's dome a few metres below.
       cores.uniforms.uShape.value.set(alt, 1 - 0.86 * hs, 1, 0);
       cores.uniforms.uTime.value = t;
-      cores.uniforms.uBright.value = 2.2 * plumeBrightness * (1 + 0.6 * hs);
+      // In vacuum the exhaust is faint next to the glowing nozzles.
+      cores.uniforms.uBright.value = (2.2 - 1.6 * smoothstep(0.35, 0.9, alt)) * plumeBrightness * (1 + 0.6 * hs);
 
       const r0 = Math.min(3.9, smoother.litRadius(slotRadii, 3) + 1.0);
       clusterShape(shape, alt, r0, -0.05, power * (1 - hs), 0.85);
@@ -336,7 +342,7 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
       volume.updateCamera(camera);
 
       glow.uniforms.uPos.value.set(0, -1.0 - 0.8 * (1 - hs), 0);
-      glow.uniforms.uIntensity.value = power * (0.8 + 0.7 * alt + 0.5 * hs) * plumeBrightness;
+      glow.uniforms.uIntensity.value = power * (0.8 - 0.3 * alt + 0.5 * hs) * plumeBrightness;
       glow.uniforms.uSize.value = R * (1.5 + 0.7 * alt) * Math.sqrt(Math.max(power, 0.05));
       glow.uniforms.uColor.value.setRGB(1.0, 0.9 - 0.12 * alt - 0.1 * hs, 0.78 + 0.22 * alt - 0.3 * hs);
       glow.mesh.visible = power > 0.002;
@@ -356,6 +362,10 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
       skin.uniforms.uAirflow.value.copy(state.airflowBody);
       flapSkin.uniforms.uAirflow.value.copy(state.airflowBody);
       plasma.update(state.heating, state.airflowBody, t, camera);
+    },
+    setCamera(camera: THREE.Camera) {
+      volume.updateCamera(camera);
+      plasma.setCamera(camera);
     },
     setQuality(q: Quality) {
       volume.setSteps(q === 'high' ? 12 : 6);
