@@ -18,7 +18,9 @@
   text-transform: uppercase;
 }
 
-.lead {
+/* Also inside .prose, whose paragraph rule would otherwise win. */
+.lead,
+.prose .lead {
   max-width: 600px;
   margin: 16px 0 0;
   font-size: 15px;
@@ -60,14 +62,15 @@
   font-weight: 700;
 }
 
-.prose a {
+/* Text links only: button-styled links keep their own colours. */
+.prose a:not(.btn) {
   color: var(--text);
   text-decoration: underline;
   text-underline-offset: 3px;
   text-decoration-color: rgba(255, 255, 255, 0.35);
 }
 
-.prose a:hover {
+.prose a:not(.btn):hover {
   text-decoration-color: #fff;
 }
 

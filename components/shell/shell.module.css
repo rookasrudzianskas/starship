@@ -169,8 +169,18 @@
     display: block;
   }
 
-  .pickerSlot {
+  /* With the nav hidden, whichever control comes first after the brand takes the free space, so the
+     controls sit at the right on every page. */
+  .pickerSlot,
+  .actions,
+  .menuWrap {
     margin-left: auto;
+  }
+
+  .pickerSlot ~ .actions,
+  .pickerSlot ~ .menuWrap,
+  .actions ~ .menuWrap {
+    margin-left: 0;
   }
 
   .header {

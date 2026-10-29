@@ -17,7 +17,8 @@ const NAV: { id: SiteSection; label: string; href: string }[] = [
 export const REPO_URL = 'https://github.com/rookasrudzianskas/starship';
 
 interface Props {
-  active: SiteSection;
+  /** The section this page belongs to; none on pages outside the main views (the 404). */
+  active?: SiteSection;
   /** Replay-only controls (flight picker), placed after the brand. */
   picker?: ReactNode;
   /** Replay-only actions (share), placed at the far right. */
