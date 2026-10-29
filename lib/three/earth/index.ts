@@ -40,6 +40,8 @@ const QUALITY = {
 } as const;
 
 const VIEW_LUT_SIZE: [number, number] = [48, 160];
+/** Weight of direct sunlight in the exposure meter: a 5.7° sun at sea level meters about 1.3×, not 3.8×. */
+const SUN_METER_WEIGHT = 0.03;
 
 export interface EarthDebug {
   readonly params: AtmosphereParams;
@@ -132,8 +134,9 @@ export function createEarth(options: EarthOptions): EarthHandle {
   };
 
   // State ---------------------------------------------------------------------------------------------------
-  const tmp: { sunT: RGB; up: RGB; down: RGB; dens: RGB; ext: RGB; ms: RGB } = {
+  const tmp: { sunT: RGB; meterT: RGB; up: RGB; down: RGB; dens: RGB; ext: RGB; ms: RGB } = {
     sunT: [1, 1, 1],
+    meterT: [1, 1, 1],
     ms: [0, 0, 0],
     up: [0, 0, 0],
     down: [0, 0, 0],
@@ -252,7 +255,11 @@ export function createEarth(options: EarthOptions): EarthHandle {
     // Mean radiance of the surroundings, (E↑ + E↓) / 2π; daylight ≈ 0.2 scene units.
     const lum = (c: RGB) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
     const mean = (lum(hemi.up) + lum(hemi.down)) / (2 * Math.PI);
-    exposureHint = Math.min(Math.max(0.2 / Math.max(mean, 1e-6), 1), 16);
+    // Plus the direct sunlight at the camera: anything in the frame that faces the Sun is lit by it, so a low
+    // Sun or the black sky of space must not brighten the view. Only twilight and night do.
+    model.sunTransmittanceAt(h, mus, tmp.meterT);
+    const direct = SUN_METER_WEIGHT * params.sunIlluminance * lum(tmp.meterT);
+    exposureHint = Math.min(Math.max(0.2 / Math.max(mean + direct, 1e-6), 1), 16);
   };
 
   const updateFog = (h: number, nu: number, mus: number) => {
