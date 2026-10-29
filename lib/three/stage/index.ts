@@ -169,20 +169,24 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
   const sunDir = new THREE.Vector3(1, 0, 0);
 
   function ensureEarth(p: PadId) {
-    if (earth && earthPad === p) return;
+    // One Earth for the whole session: switching pads only moves the ground imagery.
     if (earth) {
-      scene.remove(earth.object, earth.sunLight);
-      earth.dispose();
+      if (earthPad !== p) earth.setPad(p);
+      earthPad = p;
+      return;
     }
-    earth = createEarth({ renderer, scene, quality, pad: p });
+    const e = createEarth({ renderer, scene, quality, pad: p });
+    earth = e;
     earthPad = p;
     earthReady = false;
     // The sun light carries its own target as a child. Sky light comes from scene.environment (set by the
     // Earth), so the hemisphere light is left out to avoid lighting PBR materials twice.
-    scene.add(earth.object, earth.sunLight);
-    earth.ready.then(() => {
-      earthReady = true;
-    }, options.onError);
+    scene.add(e.object, e.sunLight);
+    // If the imagery fails the Earth logs it and shows a plain globe, which still beats no 3D view at all.
+    const settle = () => {
+      if (earth === e && !disposed) earthReady = true;
+    };
+    e.ready.then(settle, settle);
   }
 
   function ensureVehicles(gen: Generation) {

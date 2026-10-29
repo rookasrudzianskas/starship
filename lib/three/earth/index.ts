@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EARTH_RADIUS } from '@/lib/sim/types';
+import { EARTH_RADIUS, type PadId } from '@/lib/sim/types';
 import { PADS } from '@/lib/flights/catalog';
 import type { Earth, EarthFrame, EarthOptions, Quality } from '@/lib/three/contracts';
 import { ATMOSPHERE_HEIGHT, AtmosphereModel, type AtmosphereParams, DEFAULT_ATMOSPHERE, miePhase, rayleighPhase } from './atmosphere';
@@ -90,7 +90,7 @@ const smoothstep = (a: number, b: number, x: number) => {
 export function createEarth(options: EarthOptions): EarthHandle {
   const { renderer, scene } = options;
   let quality: Quality = options.quality;
-  const pad = PADS[options.pad];
+  let pad = PADS[options.pad];
   const params: AtmosphereParams = { ...DEFAULT_ATMOSPHERE };
   // Tables on the GPU (read back for the CPU-side lighting), or on the CPU without float render targets.
   let model = new AtmosphereModel(params, computeTablesGpu(renderer, params) ?? undefined);
@@ -110,7 +110,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
   object.add(stars.points);
   const patch = createPatchMaterial(shared, placeholder);
   let patchMesh: THREE.Mesh | null = null;
-  const padEcef = latLonToEcef(pad.lat, pad.lon, 0);
+  let padEcef = latLonToEcef(pad.lat, pad.lon, 0);
   const padRotation = new THREE.Quaternion().setFromRotationMatrix(enuToEcefRotation(pad.lat, pad.lon));
 
   // Lights ----------------------------------------------------------------------------------------------
@@ -399,6 +399,21 @@ export function createEarth(options: EarthOptions): EarthHandle {
     envState.force = true;
   };
 
+  // Both pads share the imagery; only the patch mesh is centred on the pad.
+  const setPad = (id: PadId) => {
+    const next = PADS[id];
+    if (next === pad) return;
+    pad = next;
+    padEcef = latLonToEcef(pad.lat, pad.lon, 0);
+    padRotation.setFromRotationMatrix(enuToEcefRotation(pad.lat, pad.lon));
+    if (patchMesh && manifest) {
+      patchMesh.geometry.dispose();
+      patchMesh.geometry = buildPatchGeometry(pad.lat, pad.lon, pad.groundAlt, manifest.patches, PATCH_LAYOUT);
+      patchMesh.quaternion.copy(padRotation);
+    }
+    envState.force = true;
+  };
+
   const dispose = () => {
     if (disposed) return;
     disposed = true;
@@ -434,6 +449,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     ready,
     update,
     setQuality,
+    setPad,
     dispose,
     get exposureHint() {
       return exposureHint;

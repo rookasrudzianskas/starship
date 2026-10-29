@@ -45,6 +45,8 @@ export interface Earth {
    */
   update(frame: EarthFrame): void;
   setQuality(q: Quality): void;
+  /** Re-centre the high resolution ground imagery on another launch pad, keeping everything already loaded. */
+  setPad(pad: PadId): void;
   dispose(): void;
 }
 
