@@ -91,7 +91,17 @@ export interface VehicleModel {
   /** Overall length and radius, m. */
   length: number;
   radius: number;
+  /**
+   * Advance the model to `state`. The stage calls this once per frame, for the main view, with `dt` = simulation
+   * seconds since the previous call. dt <= 0 (paused, or a backwards seek) or dt > 0.5 (a forward seek, or fast
+   * playback) means: snap smoothed values to their targets instead of easing.
+   */
   update(state: VehicleVisualState, camera: THREE.Camera, dt: number): void;
+  /**
+   * Re-evaluate only the camera-dependent parts (sprite facing, near-camera fades) for an extra view of the same
+   * frame, such as picture-in-picture or split screen. Never advances or resets smoothing.
+   */
+  setCamera?(camera: THREE.Camera): void;
   setQuality(q: Quality): void;
   dispose(): void;
 }
