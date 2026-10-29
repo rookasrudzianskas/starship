@@ -141,8 +141,11 @@ export function createDeluge(pad: PadId, maxCount: number, sprite: THREE.Texture
     fragmentShader: FRAG,
     transparent: true,
     depthWrite: false,
-    // View-space billboards under the pad's mirrored (scale.z = -1) group: render both windings.
+    // View-space billboards under the pad's mirrored (scale.z = -1) group: render both windings. Each
+    // sprite faces the camera, so a single pass suffices (three would otherwise draw back then front faces
+    // and re-select the program before each).
     side: THREE.DoubleSide,
+    forceSinglePass: true,
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'deluge';

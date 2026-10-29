@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { dataTexture, hash3i, seededRandom, tileNoise } from './procedural';
+import { NoiseLattice, dataTexture, generatedOnce, hash3i, seededRandom } from './procedural';
 import type { Quality } from '@/lib/three/contracts';
 
 /**
@@ -30,7 +30,15 @@ export function steelMapsKey(q: Quality): string {
   return `veh:steel:${q}`;
 }
 
-export function makeSteelMaps(q: Quality): SteelMaps {
+interface SteelPixels {
+  w: number;
+  h: number;
+  albedo: Uint8Array;
+  orm: Uint8Array;
+  normal: Uint8Array;
+}
+
+function steelPixels(q: Quality): SteelPixels {
   const w = q === 'high' ? 1024 : 512;
   const h = q === 'high' ? 2048 : 1024;
   const du = STEEL_TEX_U / w;
@@ -53,6 +61,10 @@ export function makeSteelMaps(q: Quality): SteelMaps {
   const grainPv = 1600;
   const wavePu = 14;
   const wavePv = 18;
+  const grainN = new NoiseLattice(0, 0, grainPu, grainPv, grainPu, grainPv, 3);
+  const waveN = new NoiseLattice(0, 0, wavePu, wavePv, wavePu, wavePv, 5);
+  // The vertical seam's bead and heat tint vanish (below 1e-5) beyond this distance, m.
+  const seamReach = 0.075;
 
   for (let y = 0; y < h; y++) {
     const v = (y + 0.5) * dv;
@@ -68,25 +80,34 @@ export function makeSteelMaps(q: Quality): SteelMaps {
     const hazStraw = Math.exp(-((dWeld / 0.035) ** 2)) - bead;
     const hazBlue = Math.exp(-((dWeld / 0.016) ** 2)) - bead;
     const g = ringGrain[ring];
+    const seam = seamU[ring];
+    const gv = (v / STEEL_TEX_V) * grainPv;
+    const wv = (v / STEEL_TEX_V) * wavePv;
+    const rowH = pillow + sag + beadH;
 
     for (let x = 0; x < w; x++) {
       const u = (x + 0.5) * du;
       const i = y * w + x;
 
       // Vertical (longitudinal) seam of this ring, narrower heat-affected zone.
-      let ds = Math.abs(u - seamU[ring]);
+      let ds = Math.abs(u - seam);
       ds = Math.min(ds, STEEL_TEX_U - ds);
-      const vBead = Math.exp(-((ds / 0.006) ** 2));
-      const vHaz = Math.exp(-((ds / 0.022) ** 2)) - vBead;
-      const vBeadH = 0.0008 * Math.exp(-((ds / 0.005) ** 2));
+      let vBead = 0;
+      let vHaz = 0;
+      let vBeadH = 0;
+      if (ds < seamReach) {
+        vBead = Math.exp(-((ds / 0.006) ** 2));
+        vHaz = Math.exp(-((ds / 0.022) ** 2)) - vBead;
+        vBeadH = 0.0008 * Math.exp(-((ds / 0.005) ** 2));
+      }
 
       // Brushed grain: long along u (rolling direction), very short along v.
-      const grain = tileNoise((u / STEEL_TEX_U) * grainPu, (v / STEEL_TEX_V) * grainPv, grainPu, grainPv, 3) - 0.5;
+      const grain = grainN.sample((u / STEEL_TEX_U) * grainPu, gv) - 0.5;
       const fine = hash3i(x, y, 77) - 0.5;
       // Oil-canning: gentle 0.5-1 m undulations.
-      const wave = tileNoise((u / STEEL_TEX_U) * wavePu, (v / STEEL_TEX_V) * wavePv, wavePu, wavePv, 5) - 0.5;
+      const wave = waveN.sample((u / STEEL_TEX_U) * wavePu, wv) - 0.5;
 
-      height[i] = pillow + sag + beadH + vBeadH + wave * 0.0022 + grain * 0.00004 * g;
+      height[i] = rowH + vBeadH + wave * 0.0022 + grain * 0.00004 * g;
 
       // Albedo (sRGB bytes): neutral bright steel, faint grain, weld colours.
       let r = 201 + grain * 10 * g + fine * 4;
@@ -122,8 +143,8 @@ export function makeSteelMaps(q: Quality): SteelMaps {
     const ym = ((y - 1 + h) % h) * w;
     const yp = ((y + 1) % h) * w;
     for (let x = 0; x < w; x++) {
-      const xm = (x - 1 + w) % w;
-      const xp = (x + 1) % w;
+      const xm = x === 0 ? w - 1 : x - 1;
+      const xp = x === w - 1 ? 0 : x + 1;
       const sx = ((height[y * w + xp] - height[y * w + xm]) / (2 * du)) * NORMAL_GAIN;
       const sy = ((height[yp + x] - height[ym + x]) / (2 * dv)) * NORMAL_GAIN;
       const inv = 1 / Math.sqrt(sx * sx + sy * sy + 1);
@@ -134,11 +155,15 @@ export function makeSteelMaps(q: Quality): SteelMaps {
       normal[k + 3] = 255;
     }
   }
+  return { w, h, albedo, orm, normal };
+}
 
+export function makeSteelMaps(q: Quality): SteelMaps {
+  const px = generatedOnce(`${steelMapsKey(q)}:pixels`, () => steelPixels(q));
   const maps = {
-    albedo: dataTexture(albedo, w, h, { srgb: true, anisotropy: 8 }),
-    orm: dataTexture(orm, w, h, { srgb: false, anisotropy: 8 }),
-    normal: dataTexture(normal, w, h, { srgb: false, anisotropy: 8 }),
+    albedo: dataTexture(px.albedo, px.w, px.h, { srgb: true, anisotropy: 8 }),
+    orm: dataTexture(px.orm, px.w, px.h, { srgb: false, anisotropy: 8 }),
+    normal: dataTexture(px.normal, px.w, px.h, { srgb: false, anisotropy: 8 }),
     dispose() {
       maps.albedo.dispose();
       maps.orm.dispose();

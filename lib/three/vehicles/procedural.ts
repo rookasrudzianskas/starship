@@ -72,6 +72,81 @@ export function tileFbm(x: number, y: number, px: number, py: number, octaves: n
   return sum / norm;
 }
 
+function wrap(i: number, p: number): number {
+  const m = i % p;
+  return m < 0 ? m + p : m;
+}
+
+/**
+ * tileNoise for bulk texture generation: the lattice hashes over a window of cells are computed once, after
+ * which sample() returns exactly tileNoise(x, y, px, py, seed) for any point with x0 <= x <= x1, y0 <= y <= y1
+ * (several times faster than hashing four corners per sample).
+ */
+export class NoiseLattice {
+  private readonly v: Float64Array;
+  private readonly ox: number;
+  private readonly oy: number;
+  private readonly w: number;
+
+  constructor(x0: number, y0: number, x1: number, y1: number, px: number, py: number, seed: number) {
+    this.ox = Math.floor(x0);
+    this.oy = Math.floor(y0);
+    this.w = Math.floor(x1) - this.ox + 2;
+    const h = Math.floor(y1) - this.oy + 2;
+    this.v = new Float64Array(this.w * h);
+    for (let j = 0; j < h; j++) {
+      const yy = wrap(this.oy + j, py);
+      for (let i = 0; i < this.w; i++) this.v[j * this.w + i] = hash3i(wrap(this.ox + i, px), yy, seed);
+    }
+  }
+
+  sample(x: number, y: number): number {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const k = (yi - this.oy) * this.w + (xi - this.ox);
+    const a = this.v[k];
+    const b = this.v[k + 1];
+    const c = this.v[k + this.w];
+    const d = this.v[k + this.w + 1];
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+}
+
+/** tileFbm over a window (see NoiseLattice): sample() equals tileFbm(x, y, px, py, octaves, seed, gain). */
+export class FbmLattice {
+  private readonly octaves: NoiseLattice[] = [];
+  private readonly amps: number[] = [];
+  private readonly norm: number;
+
+  constructor(x0: number, y0: number, x1: number, y1: number, px: number, py: number, octaves: number, seed = 0, gain = 0.5) {
+    let amp = 1;
+    let norm = 0;
+    let f = 1;
+    for (let o = 0; o < octaves; o++) {
+      this.octaves.push(new NoiseLattice(x0 * f, y0 * f, x1 * f, y1 * f, px * f, py * f, seed + o * 17));
+      this.amps.push(amp);
+      norm += amp;
+      amp *= gain;
+      f *= 2;
+    }
+    this.norm = norm;
+  }
+
+  sample(x: number, y: number): number {
+    let sum = 0;
+    let f = 1;
+    for (let o = 0; o < this.octaves.length; o++) {
+      sum += this.amps[o] * this.octaves[o].sample(x * f, y * f);
+      f *= 2;
+    }
+    return sum / this.norm;
+  }
+}
+
 export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
 }
@@ -172,10 +247,27 @@ interface Disposable {
 }
 
 const shared = new Map<string, { value: Disposable; refs: number }>();
+const generated = new Map<string, unknown>();
+
+/**
+ * The pixels (or canvas) behind a generated texture, made on first use and kept for the session. Textures
+ * built from them stay reference counted and free their GPU memory with their last user, but a later
+ * rebuild (another pad, vehicle generation or quality) only uploads them again instead of spending tens to
+ * hundreds of milliseconds regenerating them.
+ */
+export function generatedOnce<T>(key: string, make: () => T): T {
+  let value = generated.get(key) as T | undefined;
+  if (value === undefined) {
+    value = make();
+    generated.set(key, value);
+  }
+  return value;
+}
 
 /**
  * Returns the shared resource for `key`, creating it with `make` on first use. Every acquire must be
- * paired with a release; the resource is disposed when the last user releases it.
+ * paired with a release; the resource is disposed when the last user releases it (expensive generated
+ * pixels survive that, see generatedOnce).
  */
 export function acquireShared<T extends Disposable>(key: string, make: () => T): T {
   const hit = shared.get(key);
@@ -223,28 +315,36 @@ export class SharedScope {
  */
 export const NOISE_KEY = 'proc:noise256';
 
-export function makeNoiseTexture(): THREE.DataTexture {
+function noisePixels(): Uint8Array {
   const n = 256;
   const data = new Uint8Array(n * n * 4);
   const cells = 8;
+  const r = new FbmLattice(0, 0, cells, cells, cells, cells, 5, 11);
+  const g = new FbmLattice(0, 0, cells, cells, cells, cells, 5, 23);
+  const b = new FbmLattice(0, 0, cells * 2, cells * 2, cells * 2, cells * 2, 4, 37);
+  const a = new NoiseLattice(0, 0, cells * 4, cells * 4, cells * 4, cells * 4, 51);
   for (let y = 0; y < n; y++) {
     for (let x = 0; x < n; x++) {
       const u = (x / n) * cells;
       const v = (y / n) * cells;
       const i = (y * n + x) * 4;
-      data[i] = Math.round(tileFbm(u, v, cells, cells, 5, 11) * 255);
-      data[i + 1] = Math.round(tileFbm(u, v, cells, cells, 5, 23) * 255);
-      data[i + 2] = Math.round(tileFbm(u * 2, v * 2, cells * 2, cells * 2, 4, 37) * 255);
-      data[i + 3] = Math.round(tileNoise(u * 4, v * 4, cells * 4, cells * 4, 51) * 255);
+      data[i] = Math.round(r.sample(u, v) * 255);
+      data[i + 1] = Math.round(g.sample(u, v) * 255);
+      data[i + 2] = Math.round(b.sample(u * 2, v * 2) * 255);
+      data[i + 3] = Math.round(a.sample(u * 4, v * 4) * 255);
     }
   }
-  return dataTexture(data, n, n, { srgb: false, repeat: true, mipmaps: true, anisotropy: 1 });
+  return data;
+}
+
+export function makeNoiseTexture(): THREE.DataTexture {
+  return dataTexture(generatedOnce(NOISE_KEY, noisePixels), 256, 256, { srgb: false, repeat: true, mipmaps: true, anisotropy: 1 });
 }
 
 /** Soft round sprite (white, alpha falloff), 128². Key SOFT_SPRITE_KEY. */
 export const SOFT_SPRITE_KEY = 'proc:softSprite';
 
-export function makeSoftSprite(): THREE.DataTexture {
+function softSpritePixels(): Uint8Array {
   const n = 128;
   const data = new Uint8Array(n * n * 4);
   for (let y = 0; y < n; y++) {
@@ -260,7 +360,11 @@ export function makeSoftSprite(): THREE.DataTexture {
       data[i + 3] = Math.round(a * 255);
     }
   }
-  return dataTexture(data, n, n, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });
+  return data;
+}
+
+export function makeSoftSprite(): THREE.DataTexture {
+  return dataTexture(generatedOnce(SOFT_SPRITE_KEY, softSpritePixels), 128, 128, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });
 }
 
 // ---------------------------------------------------------------------------

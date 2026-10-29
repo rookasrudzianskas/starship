@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { dataTexture, seededRandom, tileFbm } from '@/lib/three/vehicles/procedural';
+import { FbmLattice, dataTexture, generatedOnce, seededRandom } from '@/lib/three/vehicles/procedural';
 
 /**
  * Shared billboard particle machinery for the effects: lumpy "puff" sprites (fire, smoke, steam, spray)
@@ -20,7 +20,7 @@ import { dataTexture, seededRandom, tileFbm } from '@/lib/three/vehicles/procedu
 
 export const PUFF_ATLAS_KEY = 'fx:puffAtlas';
 
-export function makePuffAtlas(): THREE.DataTexture {
+function puffAtlasPixels(): Uint8Array {
   const cell = 256;
   const size = cell * 2;
   const data = new Uint8Array(size * size * 4);
@@ -36,18 +36,25 @@ export function makePuffAtlas(): THREE.DataTexture {
       const off = Math.sqrt(rnd()) * Math.min(0.78 - r, 0.5);
       blobs.push({ x: Math.cos(ang) * off, y: Math.sin(ang) * off, k: 1 / (r * r) });
     }
+    // Noise lattices over exactly the coordinate ranges sampled below (same values as tileFbm).
+    const warpX = new FbmLattice(-3 + v * 5.1, -3, 3 + v * 5.1, 3, 64, 64, 3, 100 + v);
+    const warpY = new FbmLattice(-3, -3 + v * 2.3, 3, 3 + v * 2.3, 64, 64, 3, 200 + v);
+    const fineN = new FbmLattice(-7 + v * 1.7, -7 - v * 2.9, 7 + v * 1.7, 7 - v * 2.9, 64, 64, 4, 500 + v);
+    const turbN = new FbmLattice(-5 + v * 4.1, -5 + v * 6.7, 5 + v * 4.1, 5 + v * 6.7, 64, 64, 5, 700 + v);
     for (let j = 0; j < cell; j++) {
       for (let i = 0; i < cell; i++) {
         const x0 = ((i + 0.5) / cell) * 2 - 1;
         const y0 = ((j + 0.5) / cell) * 2 - 1;
         // Domain warp so outlines are ragged rather than circular.
-        const x = x0 + (tileFbm(x0 * 3 + v * 5.1, y0 * 3, 64, 64, 3, 100 + v) - 0.5) * 0.16;
-        const y = y0 + (tileFbm(x0 * 3, y0 * 3 + v * 2.3, 64, 64, 3, 200 + v) - 0.5) * 0.16;
+        const x = x0 + (warpX.sample(x0 * 3 + v * 5.1, y0 * 3) - 0.5) * 0.16;
+        const y = y0 + (warpY.sample(x0 * 3, y0 * 3 + v * 2.3) - 0.5) * 0.16;
         let f = 0;
         for (const b of blobs) {
           const dx = x - b.x;
           const dy = y - b.y;
-          f += Math.exp(-(dx * dx + dy * dy) * b.k);
+          const e = (dx * dx + dy * dy) * b.k;
+          // Beyond e = 14 a blob adds less than 1e-6: skip the exp.
+          if (e < 14) f += Math.exp(-e);
         }
         field[j * cell + i] = f;
       }
@@ -75,12 +82,12 @@ export function makePuffAtlas(): THREE.DataTexture {
         const inv = 1 / Math.sqrt(gx * gx + gy * gy + 1);
         const nx = -gx * inv;
         const ny = -gy * inv;
-        const fine = tileFbm(x * 7 + v * 1.7, y * 7 - v * 2.9, 64, 64, 4, 500 + v);
+        const fine = fineN.sample(x * 7 + v * 1.7, y * 7 - v * 2.9);
         const window = 1 - Math.min(Math.max((r - 0.8) / 0.18, 0), 1);
         const t = Math.min(Math.max((f - 0.16) / 1.25, 0), 1);
         const dens = t * t * (3 - 2 * t) * (0.55 + 0.45 * fine) * window;
         // Ridged turbulence for fire tongues and wispy erosion.
-        const turb = tileFbm(x * 5 + v * 4.1, y * 5 + v * 6.7, 64, 64, 5, 700 + v);
+        const turb = turbN.sample(x * 5 + v * 4.1, y * 5 + v * 6.7);
         const ridged = 1 - Math.abs(turb * 2 - 1);
         const detail = Math.min(Math.max(0.1 + ridged * 0.85 + (fine - 0.5) * 0.5, 0), 1);
         const o = ((oy + j) * size + ox + i) * 4;
@@ -91,7 +98,11 @@ export function makePuffAtlas(): THREE.DataTexture {
       }
     }
   }
-  const tex = dataTexture(data, size, size, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });
+  return data;
+}
+
+export function makePuffAtlas(): THREE.DataTexture {
+  const tex = dataTexture(generatedOnce(PUFF_ATLAS_KEY, puffAtlasPixels), 512, 512, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });
   tex.name = 'fx-puff-atlas';
   return tex;
 }
