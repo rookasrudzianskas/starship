@@ -1,5 +1,5 @@
 import { G0, type FlightResult, type VehicleId } from '@/lib/sim/types';
-import { countLit, emptyReading, engineStates, readTrack } from '@/lib/telemetry';
+import { countLit, emptyReading, engineStates, readVehicle } from '@/lib/telemetry';
 
 export type MetricId = 'speed' | 'alt' | 'engines' | 'prop' | 'vspeed' | 'accel' | 'mach' | 'q' | 'pitch';
 
@@ -26,6 +26,13 @@ export const METRICS: Metric[] = [
   { id: 'pitch', title: 'Pitch', unit: '°', format: (v) => `${Math.round(v)}` },
 ];
 
+/** A moment marked on a line: one of the flight's major events. */
+export interface SeriesEvent {
+  t: number;
+  /** Short upper-case label, as on the replay timeline. */
+  label: string;
+}
+
 /** One vehicle's history at a fixed step, ready to plot. */
 export interface Series {
   flight: number;
@@ -37,6 +44,8 @@ export interface Series {
   values: Record<MetricId, Float32Array>;
   /** 1 when any engine is lit. */
   powered: Uint8Array;
+  /** The vehicle's major events after liftoff (stack events included), in time order. */
+  events: SeriesEvent[];
 }
 
 export function buildSeries(result: FlightResult, vehicle: VehicleId, dt = 1): Series {
@@ -50,7 +59,7 @@ export function buildSeries(result: FlightResult, vehicle: VehicleId, dt = 1): S
   const states = new Uint8Array(timeline.slots.length);
   for (let i = 0; i < n; i++) {
     const t = t0 + i * dt;
-    readTrack(track, t, r);
+    readVehicle(result, vehicle, t, r);
     engineStates(timeline, t, states);
     const lit = countLit(states);
     values.speed[i] = r.speed * 3.6;
@@ -64,5 +73,8 @@ export function buildSeries(result: FlightResult, vehicle: VehicleId, dt = 1): S
     values.pitch[i] = r.pitch;
     powered[i] = lit > 0 ? 1 : 0;
   }
-  return { flight: result.flight, vehicle, t0, dt, n, end: track.end, values, powered };
+  const events = result.events
+    .filter((e) => e.major && e.key !== 'liftoff' && (e.vehicle === 'stack' || e.vehicle === vehicle) && e.t <= track.end)
+    .map((e) => ({ t: e.t, label: e.short }));
+  return { flight: result.flight, vehicle, t0, dt, n, end: track.end, values, powered, events };
 }

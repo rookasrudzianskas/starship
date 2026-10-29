@@ -27,9 +27,10 @@ export function formatAltitude(metres: number, unit: AltUnit): Reading {
 }
 
 export function formatVerticalSpeed(metresPerSecond: number, unit: SpeedUnit): string {
-  const arrow = metresPerSecond >= 0 ? '↑' : '↓';
   const r = formatSpeed(Math.abs(metresPerSecond), unit === 'kmh' ? 'ms' : unit);
-  return `${arrow} ${r.value} ${r.unit}`;
+  // The arrow follows the rounded value, so a vehicle at rest reads "0 m/s" rather than "↓ 0 m/s".
+  if (r.value === '0') return `${r.value} ${r.unit}`;
+  return `${metresPerSecond > 0 ? '↑' : '↓'} ${r.value} ${r.unit}`;
 }
 
 function pad2(n: number): string {

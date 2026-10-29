@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { simulateFlight } from '../sim/simulate';
+import { ENGINE_FAILED, ENGINE_LIT, ENGINE_OFF, Phase, type EngineTimeline, type FlightResult, type VehicleId } from '../sim/types';
 import { formatAltitude, formatClock, formatDate, formatEventTime, formatSpeed, formatVerticalSpeed } from '../format';
+import { emptyReading, engineChangesBy, engineStates, engineStatesAfter, readVehicle } from '../telemetry';
 import { buildTimeAxis, quietGaps } from '../timeAxis';
 
 describe('quietGaps', () => {
@@ -80,10 +83,82 @@ describe('formatting', () => {
     expect(formatAltitude(1609.344, 'mi')).toEqual({ value: '1.0', unit: 'mi' });
     expect(formatAltitude(100, 'ft')).toEqual({ value: '328', unit: 'ft' });
     expect(formatVerticalSpeed(-557, 'kmh')).toBe('↓ 557 m/s');
+    expect(formatVerticalSpeed(253.4, 'mph')).toBe('↑ 567 mph');
+  });
+
+  it('drops the vertical-speed arrow when the speed rounds to zero', () => {
+    expect(formatVerticalSpeed(-0.3, 'kmh')).toBe('0 m/s');
+    expect(formatVerticalSpeed(0, 'ms')).toBe('0 m/s');
+    expect(formatVerticalSpeed(0.6, 'kmh')).toBe('↑ 1 m/s');
+    expect(formatVerticalSpeed(-0.6, 'kmh')).toBe('↓ 1 m/s');
   });
 
   it('formats dates the way the site writes them', () => {
     expect(formatDate('2026-09-28')).toBe('28 Sept 2026');
     expect(formatDate('2023-04-20')).toBe('20 Apr 2023');
+  });
+});
+
+describe('engine states', () => {
+  const tl: EngineTimeline = {
+    slots: [0, 1, 2].map((k) => ({ x: k, z: 0, exitRadius: 0.65, ring: 'center' as const, vacuum: false })),
+    changes: [
+      { t: 1, engine: 0, state: ENGINE_LIT },
+      { t: 1, engine: 1, state: ENGINE_LIT },
+      { t: 2, engine: 1, state: ENGINE_OFF },
+      { t: 3, engine: 2, state: ENGINE_FAILED },
+    ],
+  };
+
+  it('counts the changes that have happened, including those exactly at t', () => {
+    expect([0, 0.99, 1, 1.5, 2, 2.99, 3, 9].map((t) => engineChangesBy(tl, t))).toEqual([0, 0, 2, 2, 3, 3, 4, 4]);
+  });
+
+  it('gives the same states from a change count as from a time', () => {
+    const a = new Uint8Array(3);
+    const b = new Uint8Array(3);
+    for (const t of [0, 1, 1.5, 2, 2.5, 3, 4]) {
+      expect(Array.from(engineStates(tl, t, a))).toEqual(Array.from(engineStatesAfter(tl, engineChangesBy(tl, t), b)));
+    }
+    expect(Array.from(engineStates(tl, 2.5, a))).toEqual([ENGINE_LIT, ENGINE_OFF, ENGINE_OFF]);
+    expect(engineStates(tl, 9, a)).toBe(a);
+    expect(Array.from(a)).toEqual([ENGINE_LIT, ENGINE_OFF, ENGINE_FAILED]);
+  });
+});
+
+describe('HUD altitude', () => {
+  const r = emptyReading();
+  const alt = (result: FlightResult, vehicle: VehicleId, t: number) => readVehicle(result, vehicle, t, r).alt;
+  /** First time the vehicle is in the water or in the tower's arms. */
+  const touchdown = (result: FlightResult, vehicle: VehicleId) => {
+    const track = vehicle === 'booster' ? result.booster : result.ship;
+    for (let i = 0; i < track.n; i++) if (track.phase[i] === Phase.Splashed || track.phase[i] === Phase.Caught) return track.t[i];
+    throw new Error(`Flight ${result.flight} ${vehicle} never touches down`);
+  };
+  const flight5 = simulateFlight(5, { asFlown: true, interventions: [] });
+  const flight10 = simulateFlight(10, { asFlown: true, interventions: [] });
+
+  it('reads 0 on the mount, and the same for both vehicles while they are stacked', () => {
+    expect(alt(flight5, 'booster', flight5.tStart)).toBe(0);
+    expect(alt(flight5, 'ship', flight5.tStart)).toBe(0);
+    for (let t = 0; t < (flight5.separationT ?? 0); t += 7) expect(alt(flight5, 'ship', t)).toBe(alt(flight5, 'booster', t));
+    expect(alt(flight5, 'ship', 60)).toBeGreaterThan(5000);
+  });
+
+  it('stays above 0 until the vehicle touches the water', () => {
+    for (const [result, vehicle] of [
+      [flight5, 'ship'],
+      [flight10, 'booster'],
+    ] as const) {
+      const t = touchdown(result, vehicle);
+      expect(alt(result, vehicle, t - 1)).toBeGreaterThan(2);
+      expect(alt(result, vehicle, t)).toBeLessThan(0.5);
+    }
+  });
+
+  it('measures a tower catch from the mount deck', () => {
+    const t = touchdown(flight5, 'booster');
+    expect(alt(flight5, 'booster', t - 5)).toBeGreaterThan(alt(flight5, 'booster', t));
+    expect(alt(flight5, 'booster', t)).toBeLessThan(10);
   });
 });

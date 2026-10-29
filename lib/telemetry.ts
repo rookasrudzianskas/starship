@@ -1,10 +1,11 @@
-import { ENGINE_OFF, ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Track, type VehicleId } from '@/lib/sim/types';
+import { EARTH_RADIUS, ENGINE_OFF, ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Track, type VehicleId } from './sim/types';
 
 /** One vehicle's HUD values at an instant. */
 export interface Reading {
   /** The vehicle's flight has ended (t is past the end of its track). */
   ended: boolean;
   speed: number;
+  /** HUD altitude of the vehicle's base, m: above the launch mount's deck near the pad, above the sea elsewhere. */
   alt: number;
   vspeed: number;
   accel: number;
@@ -51,17 +52,21 @@ function lerpAngle(a: number, b: number, f: number): number {
   return r;
 }
 
-export function readTrack(track: Track, t: number, out: Reading): Reading {
+/** Fraction of the way from sample i to sample i + 1 at time tc, which is already clamped to the track. */
+function sampleFraction(track: Track, i: number, tc: number): number {
+  const t0 = track.t[i];
+  const t1 = track.t[i + 1] ?? t0;
+  return t1 > t0 ? Math.min(1, Math.max(0, (tc - t0) / (t1 - t0))) : 0;
+}
+
+/** Everything but the altitude, which needs the whole flight (see readVehicle). */
+function readTrack(track: Track, t: number, out: Reading): Reading {
   const n = track.n;
   const tc = Math.min(Math.max(t, track.start), track.end);
   const i = sampleIndex(track.t, n, tc);
-  const t0 = track.t[i];
-  const t1 = track.t[i + 1] ?? t0;
-  const f = t1 > t0 ? Math.min(1, Math.max(0, (tc - t0) / (t1 - t0))) : 0;
+  const f = sampleFraction(track, i, tc);
   out.ended = t > track.end;
   out.speed = lerp(track.speed[i], track.speed[i + 1] ?? track.speed[i], f);
-  // Like the webcast, altitude reads 0 on the pad: measure from where the vehicle's centre of mass started.
-  out.alt = Math.max(0, lerp(track.alt[i], track.alt[i + 1] ?? track.alt[i], f) - track.alt[0]);
   out.vspeed = lerp(track.vspeed[i], track.vspeed[i + 1] ?? track.vspeed[i], f);
   out.accel = lerp(track.accel[i], track.accel[i + 1] ?? track.accel[i], f);
   out.mach = lerp(track.mach[i], track.mach[i + 1] ?? track.mach[i], f);
@@ -75,20 +80,88 @@ export function readTrack(track: Track, t: number, out: Reading): Reading {
   return out;
 }
 
+/** Height of the vehicle's base (its engine plane) above the sea-level sphere at sample i, m. */
+function baseAltitude(track: Track, i: number): number {
+  const qx = track.quat[4 * i];
+  const qy = track.quat[4 * i + 1];
+  const qz = track.quat[4 * i + 2];
+  const qw = track.quat[4 * i + 3];
+  const px = track.pos[3 * i];
+  const py = track.pos[3 * i + 1];
+  const pz = track.pos[3 * i + 2];
+  // Body +Y (base to nose) in ECEF, dotted with the local vertical: 1 nose up, 0 level, -1 nose down.
+  const up = (2 * (qx * qy - qz * qw) * px + (1 - 2 * (qx * qx + qz * qz)) * py + 2 * (qy * qz + qx * qw) * pz) / Math.hypot(px, py, pz);
+  return track.alt[i] - track.com[i] * up;
+}
+
+/** Ground distance from sample i of a track to where the booster stood on the launch mount, m (chord; only short distances matter). */
+function distanceFromMount(track: Track, i: number, booster: Track): number {
+  const px = track.pos[3 * i];
+  const py = track.pos[3 * i + 1];
+  const pz = track.pos[3 * i + 2];
+  const r = Math.hypot(px, py, pz);
+  const mx = booster.pos[0];
+  const my = booster.pos[1];
+  const mz = booster.pos[2];
+  const rm = Math.hypot(mx, my, mz);
+  return EARTH_RADIUS * Math.hypot(px / r - mx / rm, py / r - my / rm, pz / r - mz / rm);
+}
+
+/** Near the launch mount altitude is measured from its deck; this far away (m) from sea level, blending in between. */
+const MOUNT_NEAR = 2000;
+const MOUNT_FAR = 5000;
+
+/**
+ * Altitude as the HUD shows it: the height of the vehicle's base above the water, or above the launch mount's deck
+ * while it is near the pad. Like the webcast it reads 0 on the mount at liftoff, and it reaches 0 when the vehicle
+ * touches the water rather than when its centre of mass gets as low as it was on the pad.
+ */
+function hudAltitude(track: Track, booster: Track, t: number): number {
+  const tc = Math.min(Math.max(t, track.start), track.end);
+  const i = sampleIndex(track.t, track.n, tc);
+  const j = Math.min(i + 1, track.n - 1);
+  const f = sampleFraction(track, i, tc);
+  const base = lerp(baseAltitude(track, i), baseAltitude(track, j), f);
+  const d = lerp(distanceFromMount(track, i, booster), distanceFromMount(track, j, booster), f);
+  const x = Math.min(1, Math.max(0, (d - MOUNT_NEAR) / (MOUNT_FAR - MOUNT_NEAR)));
+  const deck = baseAltitude(booster, 0) * (1 - x * x * (3 - 2 * x));
+  return Math.max(0, base - deck);
+}
+
 export function readVehicle(result: FlightResult, vehicle: VehicleId, t: number, out: Reading): Reading {
-  return readTrack(vehicle === 'booster' ? result.booster : result.ship, t, out);
+  readTrack(vehicle === 'booster' ? result.booster : result.ship, t, out);
+  // While stacked both vehicles report the stack's altitude, which is the booster's.
+  out.alt = hudAltitude(vehicle === 'ship' && !isStacked(result, t) ? result.ship : result.booster, result.booster, t);
+  return out;
+}
+
+/** How many of the timeline's engine changes have happened by time t. Equal counts mean equal engine states. */
+export function engineChangesBy(timeline: EngineTimeline, t: number): number {
+  const changes = timeline.changes;
+  let lo = 0;
+  let hi = changes.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (changes[mid].t <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Engine states once the first `count` changes have happened (no allocation when `out` is reused). */
+export function engineStatesAfter(timeline: EngineTimeline, count: number, out: Uint8Array): Uint8Array {
+  out.fill(ENGINE_OFF);
+  const changes = timeline.changes;
+  for (let k = 0; k < count; k++) {
+    const c = changes[k];
+    if (c.engine < out.length) out[c.engine] = c.state;
+  }
+  return out;
 }
 
 /** Engine states at time t (no allocation when `out` is reused). */
 export function engineStates(timeline: EngineTimeline, t: number, out: Uint8Array): Uint8Array {
-  out.fill(ENGINE_OFF);
-  const changes = timeline.changes;
-  for (let k = 0; k < changes.length; k++) {
-    const c = changes[k];
-    if (c.t > t) break;
-    if (c.engine < out.length) out[c.engine] = c.state;
-  }
-  return out;
+  return engineStatesAfter(timeline, engineChangesBy(timeline, t), out);
 }
 
 export function countLit(states: Uint8Array): number {

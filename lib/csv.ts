@@ -1,5 +1,5 @@
 import { G0, type FlightResult } from '@/lib/sim/types';
-import { countLit, emptyReading, engineStates, readTrack } from '@/lib/telemetry';
+import { countLit, emptyReading, engineStates, readVehicle } from '@/lib/telemetry';
 
 /** Build a CSV of both vehicles at 1 s resolution from a simulation result. */
 export function buildCsv(result: FlightResult): string {
@@ -37,8 +37,8 @@ export function buildCsv(result: FlightResult): string {
   for (let t = start; t <= end; t++) {
     const bAlive = t <= result.booster.end;
     const sAlive = t <= result.ship.end;
-    readTrack(result.booster, t, b);
-    readTrack(result.ship, t, s);
+    readVehicle(result, 'booster', t, b);
+    readVehicle(result, 'ship', t, s);
     engineStates(result.boosterEngines, t, be);
     engineStates(result.shipEngines, t, se);
     rows.push(
