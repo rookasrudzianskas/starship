@@ -802,12 +802,29 @@ export function getFlight(n: number): Flight {
   return FLIGHTS.find((f) => f.n === n) ?? FLIGHTS[FLIGHTS.length - 1];
 }
 
+export interface PadSite {
+  label: string;
+  /** Launch mount centre. */
+  lat: number;
+  lon: number;
+  /** Ground level above the sea, m. */
+  groundAlt: number;
+  /** Height of the booster's base above the ground while it sits on the launch mount, m. */
+  mountHeight: number;
+  /** Height of the booster's base above the ground when it hangs in the chopstick arms, m. The catch happens directly above the mount. */
+  catchBaseHeight: number;
+  /** Integration tower centre relative to the mount centre (local east/north, m) and its height. */
+  tower: { east: number; north: number; height: number };
+}
+
 /** Launch pads at Starbase, Texas. */
-export const PADS: Record<'pad1' | 'pad2', { label: string; lat: number; lon: number; groundAlt: number; mountHeight: number }> = {
-  // mountHeight: height of the booster's base above the ground while on the launch mount, m.
-  pad1: { label: 'Pad 1', lat: 25.99683, lon: -97.1542, groundAlt: 3, mountHeight: 21 },
-  pad2: { label: 'Pad 2', lat: 25.99545, lon: -97.15565, groundAlt: 3, mountHeight: 24 },
+export const PADS: Record<PadId, PadSite> = {
+  pad1: { label: 'Pad 1', lat: 25.99683, lon: -97.1542, groundAlt: 3, mountHeight: 21, catchBaseHeight: 27, tower: { east: 0, north: 24, height: 146 } },
+  pad2: { label: 'Pad 2', lat: 25.99545, lon: -97.15565, groundAlt: 3, mountHeight: 24, catchBaseHeight: 30, tower: { east: 0, north: 26, height: 152 } },
 };
+
+/** Where Super Heavy aims for a Gulf splashdown, about 10 km off the beach. */
+export const GULF_SPLASHDOWN = { lat: 26.0, lon: -97.054 };
 
 export const GENERATIONS: Record<Generation, { label: string; blurb: string }> = {
   b1: { label: 'Block 1', blurb: 'Raptor 2 engines, the original 121 m stack, Pad 1.' },

@@ -1,0 +1,321 @@
+.page {
+  min-height: calc(100dvh - var(--header-h));
+  padding: 30px 24px 80px;
+}
+
+.inner {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.h1 {
+  margin: 0;
+  font-family: var(--font-wide);
+  font-weight: 700;
+  font-size: clamp(34px, 5.4vw, 52px);
+  line-height: 1.02;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lead {
+  max-width: 600px;
+  margin: 16px 0 0;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.h2 {
+  margin: 48px 0 12px;
+  font-family: var(--font-wide);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.prose {
+  max-width: 720px;
+}
+
+.prose p,
+.prose li {
+  font-size: 14.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.prose p {
+  margin: 0 0 14px;
+}
+
+.prose ul {
+  margin: 0 0 14px;
+  padding-left: 18px;
+}
+
+.prose strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.prose a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+
+.prose a:hover {
+  text-decoration-color: #fff;
+}
+
+/* ---------------------------------------------------------- flights list */
+
+.gen {
+  margin-top: 46px;
+}
+
+.genHead {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.genName {
+  font-family: var(--font-wide);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.genBlurb {
+  font-size: 10px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.flight {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 8px 28px;
+  padding: 22px 0 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.flightName {
+  font-family: var(--font-wide);
+  font-weight: 700;
+  font-size: 20px;
+  line-height: 1.05;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flightMeta {
+  margin-top: 8px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  line-height: 1.6;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.headline {
+  margin: 0 0 10px;
+  font-weight: 700;
+  font-size: 15.5px;
+  line-height: 1.35;
+}
+
+.outcomeLine {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+
+.outcomeTag {
+  margin-right: 8px;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0 14px;
+  max-width: 640px;
+}
+
+.statLabel {
+  font-size: 9.5px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.statValue {
+  margin-top: 5px;
+  font-weight: 700;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.statUnit {
+  margin-left: 4px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.flightActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn {
+  height: 32px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  font-size: 10.5px;
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--line-active);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+}
+
+.btnPrimary {
+  background: #fff;
+  color: #000;
+  border-color: #fff;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.events {
+  grid-column: 2;
+  margin-top: 10px;
+}
+
+.events summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 10px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.events summary::-webkit-details-marker {
+  display: none;
+}
+
+.events summary::before {
+  content: '+';
+  display: inline-block;
+  width: 14px;
+}
+
+.events[open] summary::before {
+  content: '−';
+}
+
+.eventList {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 5px 18px;
+  margin: 12px 0 0;
+  font-size: 12.5px;
+}
+
+.eventList dt {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+
+.eventList dd {
+  margin: 0;
+  color: var(--text);
+}
+
+/* ------------------------------------------------------------ about extras */
+
+.credits {
+  display: grid;
+  gap: 14px;
+  max-width: 720px;
+  margin: 0;
+}
+
+.credit {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.creditTitle {
+  font-size: 10.5px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+}
+
+.creditText {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+
+.creditText a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+
+@media (max-width: 720px) {
+  .page {
+    padding: 22px 16px 60px;
+  }
+
+  .flight {
+    grid-template-columns: 1fr;
+  }
+
+  .events {
+    grid-column: 1;
+  }
+
+  .stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .statValue {
+    font-size: 16px;
+  }
+}

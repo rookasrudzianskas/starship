@@ -1,0 +1,358 @@
+.page {
+  min-height: calc(100dvh - var(--header-h));
+  padding: 30px 24px 80px;
+}
+
+.inner {
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.h1 {
+  margin: 0;
+  font-family: var(--font-wide);
+  font-weight: 700;
+  font-size: clamp(34px, 5.4vw, 52px);
+  line-height: 1.02;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lead {
+  max-width: 620px;
+  margin: 16px 0 0;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-2);
+}
+
+.toolbar,
+.flightsBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-top: 26px;
+}
+
+.toolLabel {
+  font-size: 10px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  height: 32px;
+  padding: 0 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  font-size: 10.5px;
+  letter-spacing: var(--track);
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--text-2);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.chip:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-active);
+}
+
+.chip[aria-pressed='true'] {
+  background: #fff;
+  color: #000;
+  border-color: #fff;
+}
+
+.chip:disabled {
+  opacity: 0.4;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  margin-top: 16px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.check input {
+  width: 14px;
+  height: 14px;
+  accent-color: #fff;
+}
+
+.hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.flightGrid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.flightChip {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 3px;
+  align-items: center;
+  padding: 9px 10px;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.02);
+  opacity: 0.45;
+  transition: opacity 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.flightChip[aria-pressed='true'] {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.flightChip[data-focus] {
+  border-color: var(--line-active);
+}
+
+.flightChip[data-loading] .flightChipMeta::after {
+  content: ' · …';
+}
+
+.flightChip i {
+  grid-row: 1 / span 2;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.flightChipName {
+  font-weight: 700;
+  font-size: 11.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.flightChipMeta {
+  font-size: 10px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.charts {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.chart {
+  padding: 12px 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.chartHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dragHandle {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-3);
+  cursor: grab;
+}
+
+.chartTitle {
+  margin: 0;
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+}
+
+.chartUnit {
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+
+.maxButton {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--text-3);
+  border-radius: 2px;
+}
+
+.maxButton:hover,
+.maxButton[aria-pressed='true'] {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.plot {
+  position: relative;
+  height: 230px;
+  margin-top: 6px;
+  cursor: crosshair;
+}
+
+.chart[data-max] .plot {
+  height: 520px;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.tooltip {
+  position: absolute;
+  top: 10px;
+  min-width: 150px;
+  padding: 8px 10px;
+  background: rgba(10, 10, 12, 0.94);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  pointer-events: none;
+  font-size: 11px;
+}
+
+.tooltipTime {
+  margin-bottom: 5px;
+  font-size: 10px;
+  letter-spacing: var(--track);
+  color: var(--text-2);
+}
+
+.tooltipRow {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 7px;
+  line-height: 1.7;
+  color: var(--text-2);
+}
+
+.tooltipRow i {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.tooltipRow b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.brushRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.brushLabel {
+  font-size: 9.5px;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.brushTime {
+  min-width: 64px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+  text-align: center;
+}
+
+.brush {
+  position: relative;
+  flex: 1;
+  height: 18px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  touch-action: none;
+}
+
+.brushWin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 2px;
+  cursor: grab;
+}
+
+.brushHandle {
+  position: absolute;
+  top: -1px;
+  bottom: -1px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.brushHandle[data-side='l'] {
+  left: -4px;
+}
+
+.brushHandle[data-side='r'] {
+  right: -4px;
+}
+
+@media (max-width: 1100px) {
+  .flightGrid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 22px 14px 60px;
+  }
+
+  .flightGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plot {
+    height: 200px;
+  }
+
+  .chart[data-max] .plot {
+    height: 380px;
+  }
+}

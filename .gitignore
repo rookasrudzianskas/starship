@@ -42,3 +42,6 @@ next-env.d.ts
 
 # imagery downloads (scripts/fetch-imagery.mjs)
 /.imagery-cache/
+
+# local tooling
+/.claude/
