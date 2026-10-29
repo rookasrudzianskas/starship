@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react';
 import { IconDrag, IconMaximize } from '@/components/icons';
 import { formatEventTime } from '@/lib/format';
 import type { Metric, Series } from './series';
@@ -11,6 +11,8 @@ export interface Line {
   color: string;
   dashed: boolean;
   label: string;
+  /** Write the event names next to this line's event markers (the other lines get the markers only). */
+  labelEvents?: boolean;
 }
 
 interface Props {
@@ -21,16 +23,23 @@ interface Props {
   extent: [number, number];
   alignEnd: boolean;
   fadeUnpowered: boolean;
+  /** Mark each line's major events. */
+  showEvents: boolean;
   cursorT: number | null;
   maximized: boolean;
   onWindow(w: [number, number]): void;
   onToggleMax(): void;
   onDragStart(e: DragEvent): void;
+  onDragEnd(e: DragEvent): void;
   onDragOver(e: DragEvent): void;
   onDrop(e: DragEvent): void;
 }
 
 const PAD = { left: 52, right: 14, top: 14, bottom: 24 };
+
+/** Tooltip metrics, matching compare.module.css: row height (11 px text at line-height 1.7) and everything else. */
+const TIP_ROW = 19;
+const TIP_CHROME = 52;
 
 function niceStep(range: number, target: number): number {
   const raw = range / Math.max(1, target);
@@ -63,7 +72,7 @@ function valueAt(s: Series, metric: Metric, x: number, alignEnd: boolean): numbe
 }
 
 export function Chart(props: Props) {
-  const { metric, lines, window: win, extent, alignEnd, fadeUnpowered, cursorT, maximized } = props;
+  const { metric, lines, window: win, extent, alignEnd, fadeUnpowered, showEvents, cursorT, maximized } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 600, h: 220 });
@@ -102,19 +111,24 @@ export function Chart(props: Props) {
     if (!canvas) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const { w, h } = size;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
+    // Resizing the backing store reallocates it, so only when the size or the pixel ratio changed.
+    const bw = Math.round(w * dpr);
+    const bh = Math.round(h * dpr);
+    if (canvas.width !== bw) canvas.width = bw;
+    if (canvas.height !== bh) canvas.height = bh;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    // The page's own typeface (next/font gives it a generated family name).
+    const family = getComputedStyle(canvas).fontFamily;
     const pw = w - PAD.left - PAD.right;
     const ph = h - PAD.top - PAD.bottom;
     const X = (x: number) => PAD.left + ((x - win[0]) / (win[1] - win[0])) * pw;
     const Y = (y: number) => PAD.top + (1 - (y - yRange[0]) / (yRange[1] - yRange[0])) * ph;
 
     // Grid and axes.
-    ctx.font = '10px D-DIN, system-ui, sans-serif';
+    ctx.font = `10px ${family}`;
     ctx.textBaseline = 'middle';
     ctx.lineWidth = 1;
     const ys = niceStep(yRange[1] - yRange[0], Math.max(3, Math.round(ph / 42)));
@@ -188,6 +202,45 @@ export function Chart(props: Props) {
     ctx.globalAlpha = 1;
     ctx.setLineDash([]);
 
+    // Event markers: a dot on every line, then names on the emphasised lines wherever they don't collide.
+    if (showEvents) {
+      const marks: { l: Line; label: string; x: number; y: number }[] = [];
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 1.5;
+      for (const l of lines) {
+        for (const e of l.series.events) {
+          const x = alignEnd ? e.t - l.series.end : e.t;
+          if (x < win[0] || x > win[1]) continue;
+          const v = valueAt(l.series, metric, x, alignEnd);
+          if (v === null) continue;
+          ctx.fillStyle = l.color;
+          ctx.beginPath();
+          ctx.arc(X(x), Y(v), 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          if (l.labelEvents) marks.push({ l, label: e.label, x: X(x), y: Y(v) });
+        }
+      }
+      ctx.font = `9px ${family}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = 3;
+      const taken: [number, number, number, number][] = [];
+      for (const m of marks) {
+        const tw = ctx.measureText(m.label).width + 6;
+        // Above the dot, or below it near the top of the plot.
+        const cy = m.y - 13 < PAD.top + 6 ? m.y + 13 : m.y - 13;
+        const box: [number, number, number, number] = [m.x - tw / 2, cy - 7, m.x + tw / 2, cy + 7];
+        if (taken.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+        taken.push(box);
+        ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+        ctx.strokeText(m.label, m.x, cy);
+        ctx.fillStyle = m.l.color;
+        ctx.fillText(m.label, m.x, cy);
+      }
+    }
+
     // Race cursor or hover line with dots.
     const markX = cursorT ?? (hoverX !== null ? win[0] + ((hoverX - PAD.left) / pw) * (win[1] - win[0]) : null);
     if (markX !== null && markX >= win[0] && markX <= win[1]) {
@@ -208,7 +261,7 @@ export function Chart(props: Props) {
       }
     }
     ctx.restore();
-  }, [size, lines, metric, win, yRange, alignEnd, fadeUnpowered, cursorT, hoverX]);
+  }, [size, lines, metric, win, yRange, alignEnd, fadeUnpowered, showEvents, cursorT, hoverX]);
 
   const hoverValues = useMemo(() => {
     const markX = cursorT ?? (hoverX !== null ? win[0] + ((hoverX - PAD.left) / (size.w - PAD.left - PAD.right)) * (win[1] - win[0]) : null);
@@ -220,10 +273,39 @@ export function Chart(props: Props) {
     return { x: markX, rows };
   }, [cursorT, hoverX, lines, metric, win, alignEnd, size.w]);
 
+  // As many rows as the plot's height allows, in two columns on a wide chart, then a count of the rest.
+  let tooltip: ReactNode = null;
+  if (hoverValues && hoverValues.rows.length > 0) {
+    const all = hoverValues.rows;
+    const perColumn = Math.max(3, Math.floor((size.h - TIP_CHROME) / TIP_ROW));
+    const columns = all.length > perColumn && size.w >= 560 ? 2 : 1;
+    const rows = all.length > perColumn * columns ? all.slice(0, perColumn * columns - 1) : all;
+    const px = PAD.left + ((hoverValues.x - win[0]) / (win[1] - win[0])) * (size.w - PAD.left - PAD.right);
+    tooltip = (
+      // Beside the cursor line, on the side with more room.
+      <div className={styles.tooltip} style={px > size.w / 2 ? { right: size.w - px + 12 } : { left: px + 12 }}>
+        <div className={styles.tooltipTime}>{alignEnd ? `${formatEventTime(hoverValues.x).replace('T', 'E')}` : formatEventTime(hoverValues.x)}</div>
+        <div className={styles.tooltipRows} style={{ gridTemplateRows: `repeat(${Math.ceil(rows.length / columns)}, auto)` }}>
+          {rows.map(({ l, v }) => (
+            <div key={`${l.series.flight}-${l.series.vehicle}`} className={styles.tooltipRow}>
+              <i style={{ background: l.color }} />
+              <span>{l.label}</span>
+              <b>
+                {metric.format(v)}
+                {metric.unit && metric.unit !== '°' ? ` ${metric.unit}` : metric.unit}
+              </b>
+            </div>
+          ))}
+        </div>
+        {all.length > rows.length ? <div className={styles.tooltipMore}>+{all.length - rows.length} more</div> : null}
+      </div>
+    );
+  }
+
   return (
     <section className={styles.chart} data-max={maximized || undefined} onDragOver={props.onDragOver} onDrop={props.onDrop} aria-label={metric.title}>
       <header className={styles.chartHead}>
-        <span className={styles.dragHandle} draggable onDragStart={props.onDragStart} title="Drag to reorder" aria-hidden="true">
+        <span className={styles.dragHandle} draggable onDragStart={props.onDragStart} onDragEnd={props.onDragEnd} title="Drag to reorder" aria-hidden="true">
           <IconDrag size={14} />
         </span>
         <h3 className={styles.chartTitle}>{metric.title}</h3>
@@ -243,21 +325,7 @@ export function Chart(props: Props) {
         onDoubleClick={() => props.onWindow(extent)}
       >
         <canvas ref={canvasRef} className={styles.canvas} style={{ width: size.w, height: size.h }} />
-        {hoverValues && hoverValues.rows.length > 0 ? (
-          <div className={styles.tooltip} style={{ left: Math.min(size.w - 170, Math.max(PAD.left, PAD.left + ((hoverValues.x - win[0]) / (win[1] - win[0])) * (size.w - PAD.left - PAD.right) + 12)) }}>
-            <div className={styles.tooltipTime}>{alignEnd ? `${formatEventTime(hoverValues.x).replace('T', 'E')}` : formatEventTime(hoverValues.x)}</div>
-            {hoverValues.rows.slice(0, 8).map(({ l, v }) => (
-              <div key={`${l.series.flight}-${l.series.vehicle}`} className={styles.tooltipRow}>
-                <i style={{ background: l.color }} />
-                <span>{l.label}</span>
-                <b>
-                  {metric.format(v)}
-                  {metric.unit && metric.unit !== '°' ? ` ${metric.unit}` : metric.unit}
-                </b>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        {tooltip}
       </div>
       <WindowBrush window={win} extent={extent} onWindow={props.onWindow} alignEnd={alignEnd} />
     </section>

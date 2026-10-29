@@ -35,6 +35,14 @@
   margin-top: 26px;
 }
 
+/* A label and its buttons, which wrap together. */
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
 .toolLabel {
   font-size: 10px;
   letter-spacing: var(--track-wide);
@@ -224,6 +232,8 @@
   height: 230px;
   margin-top: 6px;
   cursor: crosshair;
+  /* Vertical swipes scroll and pinches zoom the page; horizontal swipes read values along the chart. */
+  touch-action: pan-y pinch-zoom;
 }
 
 .chart[data-max] .plot {
@@ -253,6 +263,19 @@
   font-size: 10px;
   letter-spacing: var(--track);
   color: var(--text-2);
+}
+
+.tooltipRows {
+  display: grid;
+  grid-auto-flow: column;
+  column-gap: 18px;
+}
+
+.tooltipMore {
+  margin-top: 2px;
+  font-size: 10px;
+  letter-spacing: var(--track);
+  color: var(--text-3);
 }
 
 .tooltipRow {

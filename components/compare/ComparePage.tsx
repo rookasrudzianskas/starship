@@ -60,6 +60,7 @@ export function ComparePage() {
   const focus = focusOverride ?? (FLIGHTS.some((x) => x.n === urlFlight) ? urlFlight : LATEST_FLIGHT);
   const [overlayOne, setOverlayOne] = useState(false);
   const [fade, setFade] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
   const [order, setOrder] = useState<MetricId[]>(METRICS.map((m) => m.id));
   const [maximized, setMaximized] = useState<MetricId | null>(null);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -108,14 +109,14 @@ export function ComparePage() {
       const pair = data.get(focus);
       if (pair) {
         const f = getFlight(focus);
-        out.push({ series: pair.booster, color: '#ff8a6b', dashed: true, label: `Super Heavy ${f.boosterId}`.trim() });
-        out.push({ series: pair.ship, color: '#7ab8ff', dashed: false, label: `Starship ${f.shipId}` });
+        out.push({ series: pair.booster, color: '#ff8a6b', dashed: true, label: `Super Heavy ${f.boosterId}`.trim(), labelEvents: true });
+        out.push({ series: pair.ship, color: '#7ab8ff', dashed: false, label: `Starship ${f.shipId}`, labelEvents: true });
       }
       return out;
     }
     const ordered = [...data.entries()].filter(([n]) => selected.has(n)).sort((a, b) => (a[0] === focus ? 1 : b[0] === focus ? -1 : a[0] - b[0]));
     for (const [n, pair] of ordered) {
-      out.push({ series: pair[vehicle], color: flightColor(n), dashed: false, label: getFlight(n).name });
+      out.push({ series: pair[vehicle], color: flightColor(n), dashed: false, label: getFlight(n).name, labelEvents: n === focus });
     }
     return out;
   }, [data, selected, vehicle, overlayOne, focus]);
@@ -176,31 +177,35 @@ export function ComparePage() {
           </p>
 
           <div className={styles.toolbar}>
-            <span className={styles.toolLabel}>Vehicle</span>
-            <div className={styles.group}>
-              {(['ship', 'booster'] as VehicleId[]).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={styles.chip}
-                  aria-pressed={vehicle === v && !overlayOne}
-                  onClick={() => {
-                    setVehicle(v);
-                    setOverlayOne(false);
-                    if (preset) applyPreset(preset, v);
-                  }}
-                >
-                  {v === 'ship' ? 'Starship' : 'Super Heavy'}
-                </button>
-              ))}
+            <div className={styles.field}>
+              <span className={styles.toolLabel}>Vehicle</span>
+              <div className={styles.group}>
+                {(['ship', 'booster'] as VehicleId[]).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={styles.chip}
+                    aria-pressed={vehicle === v && !overlayOne}
+                    onClick={() => {
+                      setVehicle(v);
+                      setOverlayOne(false);
+                      if (preset) applyPreset(preset, v);
+                    }}
+                  >
+                    {v === 'ship' ? 'Starship' : 'Super Heavy'}
+                  </button>
+                ))}
+              </div>
             </div>
-            <span className={styles.toolLabel}>Window</span>
-            <div className={styles.group}>
-              {PRESETS.map((p) => (
-                <button key={p.id} type="button" className={styles.chip} aria-pressed={preset === p.id} onClick={() => applyPreset(p.id)}>
-                  {p.label}
-                </button>
-              ))}
+            <div className={styles.field}>
+              <span className={styles.toolLabel}>Window</span>
+              <div className={styles.group}>
+                {PRESETS.map((p) => (
+                  <button key={p.id} type="button" className={styles.chip} aria-pressed={preset === p.id} onClick={() => applyPreset(p.id)}>
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className={styles.group}>
               <button type="button" className={styles.chip} onClick={race} disabled={lines.length === 0}>
@@ -220,6 +225,10 @@ export function ComparePage() {
             <label className={styles.check}>
               <input type="checkbox" checked={fade} onChange={(e) => setFade(e.target.checked)} />
               Fade lines while engines are off
+            </label>
+            <label className={styles.check}>
+              <input type="checkbox" checked={showEvents} onChange={(e) => setShowEvents(e.target.checked)} />
+              Mark events on the lines
             </label>
             <label className={styles.check}>
               <input
@@ -290,6 +299,7 @@ export function ComparePage() {
                   extent={extent}
                   alignEnd={alignEnd}
                   fadeUnpowered={fade}
+                  showEvents={showEvents}
                   cursorT={cursor}
                   maximized={maximized === id}
                   onWindow={(w) => {
@@ -300,6 +310,11 @@ export function ComparePage() {
                   onDragStart={(e) => {
                     dragId.current = id;
                     e.dataTransfer.effectAllowed = 'move';
+                    // Firefox only starts a drag that carries data.
+                    e.dataTransfer.setData('application/x-starship-chart', id);
+                  }}
+                  onDragEnd={() => {
+                    dragId.current = null;
                   }}
                   onDragOver={(e) => {
                     if (dragId.current) e.preventDefault();
