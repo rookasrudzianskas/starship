@@ -1,14 +1,15 @@
 'use client';
 
-import { memo } from 'react';
+import { memo, useMemo, useState, type KeyboardEvent } from 'react';
 import { ENGINE_FAILED, ENGINE_LIT, type EngineSlot, type VehicleId } from '@/lib/sim/types';
 import styles from './replay.module.css';
 
 interface EngineMapProps {
   vehicle: VehicleId;
   slots: EngineSlot[];
+  /** Pass a new array only when the states change: the map is memoised on it. */
   states: Uint8Array;
-  /** When set, engines are clickable (flight director). */
+  /** When set, engines are buttons (flight director): click one, or pick one with the arrow keys and press Enter. */
   onEngineClick?: (index: number) => void;
 }
 
@@ -16,50 +17,104 @@ const COLOR_LIT = '#ffffff';
 const COLOR_OFF = 'rgba(255,255,255,0.16)';
 const COLOR_FAILED = 'rgba(255,90,78,0.85)';
 
+/** Drawn radius of an engine's nozzle, in map units (metres). */
+function nozzleRadius(s: EngineSlot): number {
+  return s.exitRadius * (s.vacuum ? 0.94 : 0.9);
+}
+
+/** Click target per engine: up to 1.6× the nozzle, without reaching into a neighbour's target. */
+function targetRadii(slots: EngineSlot[]): number[] {
+  return slots.map((s, i) => {
+    let room = Infinity;
+    for (let j = 0; j < slots.length; j++) {
+      if (j !== i) room = Math.min(room, Math.hypot(slots[j].x - s.x, slots[j].z - s.z) / 2);
+    }
+    return Math.max(nozzleRadius(s), Math.min(room, nozzleRadius(s) * 1.6));
+  });
+}
+
 /** Engine layout seen from below; lit engines white, failed engines red. */
-export function EngineMap({ vehicle, slots, states, onEngineClick }: EngineMapProps) {
+export const EngineMap = memo(function EngineMap({ vehicle, slots, states, onEngineClick }: EngineMapProps) {
   const hull = vehicle === 'booster' ? 4.78 : 4.55;
+  const targets = useMemo(() => targetRadii(slots), [slots]);
+  // Roving focus: the map is one Tab stop and the arrow keys move between engines.
+  const [focused, setFocused] = useState(0);
+  const tabStop = Math.min(focused, slots.length - 1);
+
+  const onKeyDown = (e: KeyboardEvent<SVGGElement>, i: number) => {
+    let next = -1;
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        next = (i + 1) % slots.length;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        next = (i - 1 + slots.length) % slots.length;
+        break;
+      case 'Home':
+        next = 0;
+        break;
+      case 'End':
+        next = slots.length - 1;
+        break;
+      case 'Enter':
+      case ' ':
+        if (states[i] !== ENGINE_FAILED) onEngineClick?.(i);
+        break;
+      default:
+        return;
+    }
+    // Handled here: keep the replay's global shortcuts (seek, speed, play/pause) out of it.
+    e.preventDefault();
+    e.stopPropagation();
+    if (next >= 0) e.currentTarget.parentElement?.querySelector<SVGGElement>(`[data-engine="${next}"]`)?.focus();
+  };
+
   return (
     <svg
       className={styles.engineMap}
       viewBox="-5 -5 10 10"
       data-interactive={onEngineClick ? '' : undefined}
       role={onEngineClick ? 'group' : 'img'}
-      aria-label={onEngineClick ? 'Engines: click one to shut it down' : 'Engines'}
+      aria-label={onEngineClick ? 'Engines: choose one to shut it down' : 'Engines'}
     >
       <circle r={hull} fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.32)" strokeWidth={0.12} />
       {slots.map((s, i) => {
         const st = states[i];
         const fill = st === ENGINE_LIT ? COLOR_LIT : st === ENGINE_FAILED ? COLOR_FAILED : COLOR_OFF;
-        const r = s.exitRadius * (s.vacuum ? 0.94 : 0.9);
+        if (!onEngineClick) return <circle key={i} cx={s.x} cy={s.z} r={nozzleRadius(s)} fill={fill} />;
+        const failed = st === ENGINE_FAILED;
         return (
-          <circle
+          <g
             key={i}
             data-engine={i}
-            cx={s.x}
-            cy={s.z}
-            r={r}
-            fill={fill}
-            onClick={onEngineClick && st !== ENGINE_FAILED ? () => onEngineClick(i) : undefined}
+            role="button"
+            tabIndex={i === tabStop ? 0 : -1}
+            aria-disabled={failed || undefined}
+            onClick={failed ? undefined : () => onEngineClick(i)}
+            onKeyDown={(e) => onKeyDown(e, i)}
+            onFocus={() => setFocused(i)}
           >
-            {onEngineClick ? <title>{`Engine ${i + 1}${st === ENGINE_FAILED ? ' (failed)' : ''}`}</title> : null}
-          </circle>
+            <title>{`Engine ${i + 1}${failed ? ' (failed)' : ''}`}</title>
+            <circle cx={s.x} cy={s.z} r={targets[i]} fill="transparent" />
+            <circle className={styles.nozzle} cx={s.x} cy={s.z} r={nozzleRadius(s)} fill={fill} />
+          </g>
         );
       })}
     </svg>
   );
-}
+});
 
 interface AttitudeProps {
   vehicle: VehicleId;
+  /** Degrees, as in Track.pitch: 90 nose up, 0 nose downrange, 180 nose uprange. */
   pitch: number;
-  /** Mirror for the right-hand (ship) panel so "downrange" points the same way on screen. */
-  mirrored?: boolean;
 }
 
-/** Pitch of the vehicle in the plane of the trajectory: 90° nose up, 0° nose downrange. */
-export const AttitudeDial = memo(function AttitudeDial({ vehicle, pitch, mirrored }: AttitudeProps) {
-  const rot = mirrored ? pitch - 90 : 90 - pitch;
+/** Pitch of the vehicle in the plane of the trajectory, with downrange to the right on both panels. */
+export const AttitudeDial = memo(function AttitudeDial({ vehicle, pitch }: AttitudeProps) {
+  const rot = 90 - pitch;
   return (
     <div className={styles.attitude}>
       <svg className={styles.attitudeDial} viewBox="-20 -20 40 40" aria-hidden="true">
@@ -90,6 +145,7 @@ interface PropellantProps {
   split: boolean;
   lox: number;
   ch4: number;
+  /** False shows '–' and an empty bar, as before liftoff and while the ship rides on the booster. */
   known: boolean;
 }
 
@@ -98,7 +154,7 @@ function pct(f: number): string {
 }
 
 /** Propellant remaining: one gauge, or separate LOX/CH4 bars like the early webcasts. */
-export function PropellantGauge({ split, lox, ch4, known }: PropellantProps) {
+export const PropellantGauge = memo(function PropellantGauge({ split, lox, ch4, known }: PropellantProps) {
   if (split) {
     return (
       <div className={styles.propBlock}>
@@ -136,4 +192,4 @@ export function PropellantGauge({ split, lox, ch4, known }: PropellantProps) {
       </div>
     </div>
   );
-}
+});

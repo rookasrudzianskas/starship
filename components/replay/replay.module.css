@@ -311,8 +311,18 @@
   margin-left: 5px;
 }
 
+/* Dimmed (riding on the booster, flight over, loading): values and instruments fade, labels stay. */
 .dim .readoutValue {
+  color: var(--text-2);
+}
+
+.dim .readoutUnit {
   color: var(--text-3);
+}
+
+.dim .propBlock,
+.dim .attitude {
+  opacity: 0.6;
 }
 
 .instruments {
@@ -339,11 +349,17 @@
   overflow: visible;
 }
 
-.engineMap[data-interactive] circle[data-engine] {
+.engineMap g[data-engine] {
   cursor: pointer;
+  outline: none;
 }
 
-.engineMap[data-interactive] circle[data-engine]:hover {
+.engineMap g[data-engine][aria-disabled] {
+  cursor: default;
+}
+
+.engineMap g[data-engine]:not([aria-disabled]):hover .nozzle,
+.engineMap g[data-engine]:focus-visible .nozzle {
   stroke: var(--mod);
   stroke-width: 0.6;
 }
@@ -359,18 +375,15 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 92px;
+  width: 108px;
 }
 
+/* The value follows the label, or drops under it at the bar's end where the block is too narrow for both. */
 .propRow {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.panelRight .propRow {
-  flex-direction: row-reverse;
+  gap: 3px 8px;
 }
 
 .propLabel {
@@ -381,6 +394,7 @@
 }
 
 .propValue {
+  margin-left: auto;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--text);
@@ -1036,6 +1050,10 @@ kbd.key {
 @media (max-width: 1100px) {
   .readoutValue {
     font-size: 26px;
+  }
+
+  .propBlock {
+    width: 92px;
   }
 
   .readouts {
