@@ -1,0 +1,208 @@
+{
+  "version": 1,
+  "generated": "2026-10-29T19:14:22.706Z",
+  "globe": {
+    "projection": "Equirectangular (plate carrée) on WGS84 latitude/longitude, pixel-is-area: u = (lon + 180°) / 360°, v = (90° − lat) / 180° (first/top row at 90° N, first column at 180° W).",
+    "bounds": {
+      "west": -180,
+      "south": -90,
+      "east": 180,
+      "north": 90
+    },
+    "day": [
+      {
+        "quality": "low",
+        "file": "day-4k.jpg",
+        "bytes": 769686,
+        "width": 4096,
+        "height": 2048,
+        "attribution": "bmng"
+      },
+      {
+        "quality": "high",
+        "file": "day-8k.jpg",
+        "bytes": 2404111,
+        "width": 8192,
+        "height": 4096,
+        "attribution": "bmng"
+      }
+    ],
+    "night": {
+      "file": "night-4k.jpg",
+      "bytes": 248895,
+      "width": 4096,
+      "height": 2048,
+      "channels": "grey: artificial light intensity",
+      "attribution": "black-marble"
+    },
+    "water": {
+      "file": "water-4k.png",
+      "bytes": 684988,
+      "width": 4096,
+      "height": 2048,
+      "channels": "grey: water fraction (1 = water)",
+      "attribution": "bmng"
+    }
+  },
+  "patches": [
+    {
+      "id": "pad",
+      "file": "patch-pad.jpg",
+      "bytes": 156966,
+      "width": 2048,
+      "height": 2048,
+      "zoom": 15,
+      "tiles": 81,
+      "projection": "EPSG:3857 spherical Web Mercator (R = 6378137 m): x = R·lon, y = R·ln(tan(π/4 + lat/2)). u is linear in x from xmin (u = 0, west edge) to xmax; v is linear in y from ymax (v = 0, first/top row, north edge) to ymin.",
+      "mercator": {
+        "xmin": -10820129.530564945,
+        "ymin": 2993708.763245873,
+        "xmax": -10810345.590944443,
+        "ymax": 3003492.7028663754
+      },
+      "bounds": {
+        "west": -97.19887733459473,
+        "south": 25.95661698926603,
+        "east": -97.11098670959473,
+        "north": 26.03561516208282
+      },
+      "center": {
+        "lat": 25.996122715071202,
+        "lon": -97.15493202209474
+      },
+      "groundMetresPerPixel": 4.293963331294711,
+      "colourGain": [
+        0.7389669286388836,
+        0.6637294468930065,
+        0.3727858078264472
+      ],
+      "waterChannel": "r",
+      "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
+      "attribution": "s2cloudless-2016"
+    },
+    {
+      "id": "mid",
+      "file": "patch-mid.jpg",
+      "bytes": 418262,
+      "width": 2048,
+      "height": 2048,
+      "zoom": 12,
+      "tiles": 100,
+      "projection": "EPSG:3857 spherical Web Mercator (R = 6378137 m): x = R·lon, y = R·ln(tan(π/4 + lat/2)). u is linear in x from xmin (u = 0, west edge) to xmax; v is linear in y from ymax (v = 0, first/top row, north edge) to ymin.",
+      "mercator": {
+        "xmin": -10859255.73441842,
+        "ymin": 2954558.67282106,
+        "xmax": -10771200.277833898,
+        "ymax": 3042614.129405584
+      },
+      "bounds": {
+        "west": -97.55035400390625,
+        "south": 25.63997880288866,
+        "east": -96.75933837890626,
+        "north": 26.350959624512157
+      },
+      "center": {
+        "lat": 25.996006995027518,
+        "lon": -97.15484619140625
+      },
+      "groundMetresPerPixel": 38.64570804378228,
+      "colourGain": [
+        0.7389669286388836,
+        0.6637294468930065,
+        0.3727858078264472
+      ],
+      "waterChannel": "g",
+      "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
+      "attribution": "s2cloudless-2016"
+    },
+    {
+      "id": "wide",
+      "file": "patch-wide.jpg",
+      "bytes": 653311,
+      "width": 2560,
+      "height": 2560,
+      "zoom": 9,
+      "tiles": 121,
+      "projection": "EPSG:3857 spherical Web Mercator (R = 6378137 m): x = R·lon, y = R·ln(tan(π/4 + lat/2)). u is linear in x from xmin (u = 0, west edge) to xmax; v is linear in y from ymax (v = 0, first/top row, north edge) to ymin.",
+      "mercator": {
+        "xmin": -11206585.59094626,
+        "ymin": 2607114.1607507914,
+        "xmax": -10423870.421306057,
+        "ymax": 3389829.330390997
+      },
+      "bounds": {
+        "west": -100.67047119140625,
+        "south": 22.79390725849893,
+        "east": -93.63922119140626,
+        "north": 29.1113758012654
+      },
+      "center": {
+        "lat": 25.995081230575074,
+        "lon": -97.15484619140625
+      },
+      "groundMetresPerPixel": 274.8160891483683,
+      "colourGain": [
+        0.7389669286388836,
+        0.6637294468930065,
+        0.3727858078264472
+      ],
+      "waterChannel": "b",
+      "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
+      "attribution": "s2cloudless-2016"
+    }
+  ],
+  "patchWater": {
+    "file": "patch-water.png",
+    "bytes": 169971,
+    "width": 1024,
+    "height": 1024,
+    "channels": "water fraction: r = pad, g = mid, b = wide; each channel spans its own patch footprint (same u/v as the patch)",
+    "attribution": "s2cloudless-2016"
+  },
+  "attribution": [
+    {
+      "id": "bmng",
+      "short": "NASA",
+      "text": "Blue Marble: Next Generation (July 2004, topography and bathymetry), NASA Earth Observatory / Reto Stöckli",
+      "licence": "Public domain (NASA imagery; credit requested: \"NASA Earth Observatory\")",
+      "urls": [
+        "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73751/world.topo.bathy.200407.3x21600x10800.jpg",
+        "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74092/world.200407.3x21600x10800.jpg"
+      ],
+      "usedFor": [
+        "day-4k",
+        "day-8k",
+        "mask"
+      ]
+    },
+    {
+      "id": "black-marble",
+      "short": "NASA",
+      "text": "Black Marble 2016, NASA Earth Observatory images by Joshua Stevens, using Suomi NPP VIIRS data from Miguel Román, NASA Goddard Space Flight Center",
+      "licence": "Public domain (NASA imagery; credit requested)",
+      "urls": [
+        "https://eoimages.gsfc.nasa.gov/images/imagerecords/144000/144898/BlackMarble_2016_3km.jpg"
+      ],
+      "usedFor": [
+        "night"
+      ]
+    },
+    {
+      "id": "s2cloudless-2016",
+      "short": "Sentinel-2 cloudless 2016 by EOX (CC BY 4.0)",
+      "text": "Sentinel-2 cloudless 2016 by EOX IT Services GmbH (https://s2maps.eu, https://cloudless.eox.at). Contains modified Copernicus Sentinel data 2016. Colour-matched to Blue Marble and reprojected/cropped.",
+      "licence": "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+      "urls": [
+        "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg",
+        "https://tiles.maps.eox.at/wmts/1.0.0/WMTSCapabilities.xml"
+      ],
+      "usedFor": [
+        "patch-pad",
+        "patch-mid",
+        "patch-wide",
+        "patch-masks"
+      ]
+    }
+  ],
+  "creditLine": "Imagery NASA · Sentinel-2 cloudless 2016 by EOX (CC BY 4.0)"
+}

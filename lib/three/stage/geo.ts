@@ -24,13 +24,13 @@ export function enuAt(p: V3, east: THREE.Vector3, north: THREE.Vector3, up: THRE
   north.crossVectors(up, east).normalize();
 }
 
-/** Rotation that maps a local frame (+X east, +Y up, +Z north) to ECEF at p. */
+/** Rotation that maps a local frame (+X east, +Y up, +Z south; right-handed) to ECEF at p. */
 export function enuQuaternion(p: V3, out: THREE.Quaternion): THREE.Quaternion {
   const e = new THREE.Vector3();
   const n = new THREE.Vector3();
   const u = new THREE.Vector3();
   enuAt(p, e, n, u);
-  const m = new THREE.Matrix4().makeBasis(e, u, n);
+  const m = new THREE.Matrix4().makeBasis(e, u, n.negate());
   return out.setFromRotationMatrix(m);
 }
 

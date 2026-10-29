@@ -3,16 +3,16 @@ import { getFlight, PADS } from '@/lib/flights/catalog';
 import { ENGINE_OFF, Phase, type FlightResult, type Generation, type PadId, type Track, type VehicleId } from '@/lib/sim/types';
 import { useReplay } from '@/lib/store/replay';
 import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry';
-import { createEarth, sunDirectionEcef } from '@/lib/three/earth';
+import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
 import { createPad } from '@/lib/three/pad';
 import { createBooster, createShip } from '@/lib/three/vehicles';
-import type { Earth, Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
+import type { Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
 import { blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, type CameraPose, type DragInput, type Focus } from './cameras';
 import { autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
-import { copy3, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
+import { copy3, damp, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
 import { Overlay } from './overlay';
-import { BOOSTER_COLOR, createGates, disposeGates, predictCoast, SHIP_COLOR, TrajectoryLines, type Gate } from './paths';
+import { createGates, disposeGates, predictCoast, TrajectoryLines, type Gate } from './paths';
 import { createSample, firstPhaseTime, sampleTrack, type StageSample } from './sample';
 
 export interface StageOptions {
@@ -139,7 +139,8 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
   ro.observe(canvas);
 
   // ------------------------------------------------------------ scene graph
-  let earth: Earth | null = null;
+  let earth: EarthHandle | null = null;
+  let exposure = 1;
   let earthPad: PadId | null = null;
   let earthReady = false;
   let pad: PadModel | null = null;
@@ -168,13 +169,15 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
   function ensureEarth(p: PadId) {
     if (earth && earthPad === p) return;
     if (earth) {
-      scene.remove(earth.object, earth.sunLight, earth.skyLight, earth.sunLight.target);
+      scene.remove(earth.object, earth.sunLight);
       earth.dispose();
     }
     earth = createEarth({ renderer, scene, quality, pad: p });
     earthPad = p;
     earthReady = false;
-    scene.add(earth.object, earth.sunLight, earth.skyLight, earth.sunLight.target);
+    // The sun light carries its own target as a child. Sky light comes from scene.environment (set by the
+    // Earth), so the hemisphere light is left out to avoid lighting PBR materials twice.
+    scene.add(earth.object, earth.sunLight);
     earth.ready.then(() => {
       earthReady = true;
     }, options.onError);
@@ -572,12 +575,6 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
 
     placeAll(p.pos, t);
     earth?.update({ cameraEcef: p.pos, camera: cam, sunDir, time: t });
-    if (earth) {
-      // Directional light from the Sun; camera-relative, so place it near the origin.
-      earth.sunLight.position.copy(sunDir).multiplyScalar(1000);
-      earth.sunLight.target.position.set(0, 0, 0);
-      earth.sunLight.target.updateMatrixWorld();
-    }
     lines?.update(t, p.pos, show, vp.w, vp.h);
     booster.model?.update(booster.visual, cam, dt);
     ship.model?.update(ship.visual, cam, dt);
@@ -772,6 +769,14 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
         blendPose(fromPose, target, blendT, pose);
       } else copyPose(target, pose);
       copyPose(pose, lastPose);
+
+      // Eye adaptation: brighten towards the Earth's suggestion in twilight and at night, capped so the
+      // plumes don't blow out.
+      if (earth) {
+        const goal = Math.min(4, Math.max(1, earth.exposureHint));
+        exposure += (goal - exposure) * damp(1, dt);
+        renderer.toneMappingExposure = exposure;
+      }
 
       // ---- render
       renderer.setScissorTest(false);

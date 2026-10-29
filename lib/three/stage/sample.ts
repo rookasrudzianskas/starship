@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Track } from '@/lib/sim/types';
+import type { PhaseCode, Track } from '@/lib/sim/types';
 import { sampleIndex } from '@/lib/telemetry';
 
 /** Everything the stage needs from one track at one instant. Reused between frames (no allocation). */
@@ -19,7 +19,7 @@ export interface StageSample {
   throttle: number;
   heating: number;
   aero: [number, number, number, number];
-  phase: number;
+  phase: PhaseCode;
 }
 
 export function createSample(): StageSample {
@@ -88,7 +88,7 @@ export function sampleTrack(track: Track, t: number, out: StageSample): StageSam
   out.throttle = lerp(track.throttle);
   out.heating = lerp(track.heating);
   for (let k = 0; k < 4; k++) out.aero[k] = track.aero[i * 4 + k] + (track.aero[j * 4 + k] - track.aero[i * 4 + k]) * s;
-  out.phase = track.phase[s < 1 ? i : j];
+  out.phase = track.phase[s < 1 ? i : j] as PhaseCode;
   return out;
 }
 

@@ -117,7 +117,7 @@ export interface PadState {
 }
 
 export interface PadModel {
-  /** Origin on the ground at the launch mount centre, +Y local up, +Z local north, +X local east. */
+  /** Origin on the ground at the launch mount centre, +X local east, +Y local up, +Z local south (right-handed). */
   object: THREE.Group;
   /** Height of the booster base above the ground while on the mount, m. */
   mountHeight: number;
