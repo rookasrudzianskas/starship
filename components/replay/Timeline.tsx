@@ -77,10 +77,11 @@ interface PlacedLabel {
 }
 
 function placeLabels(events: FlightEvent[], axis: TimeAxis, width: number): PlacedLabel[] {
-  const charW = 5.9;
+  // 8.5 px uppercase with 0.14em tracking is about 6.6 px per character; keep a gap between labels.
+  const charW = 6.6;
   const candidates = events
     .filter((e) => e.major)
-    .map((e) => ({ e, x: axis.toX(e.t) * width, w: e.short.length * charW + 10 }))
+    .map((e) => ({ e, x: axis.toX(e.t) * width, w: e.short.length * charW + 14 }))
     .sort((a, b) => (LABEL_PRIORITY[a.e.key] ?? 50) - (LABEL_PRIORITY[b.e.key] ?? 50) || a.e.t - b.e.t);
   const rows: Array<Array<[number, number]>> = [[], []];
   const placed: PlacedLabel[] = [];

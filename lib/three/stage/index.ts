@@ -474,10 +474,11 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
       }
       case 'booster-top': {
         if (!booster.visible) return false;
-        LOCAL.set(0, L.booster + 0.4, 3.6);
-        DIR.set(0, 1, -0.08).normalize();
+        // On the outside of the interstage, looking up along the hull at the ship's engines.
+        LOCAL.set(0, L.booster - 3.2, 5.6);
+        DIR.set(0, 1, -0.2).normalize();
         UP.set(0, 0, -1);
-        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 92, out);
+        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 84, out);
         return true;
       }
       case 'booster-aft': {
@@ -580,13 +581,16 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
     }
   }
 
-  function renderView(p: CameraPose, cam: THREE.PerspectiveCamera, vp: Viewport, t: number, dt: number) {
+  function renderView(p: CameraPose, cam: THREE.PerspectiveCamera, vp: Viewport, t: number, dt: number, liftCentre = 0) {
     cam.position.set(0, 0, 0);
     cam.quaternion.copy(p.quat);
     cam.fov = p.fov;
     cam.aspect = vp.w / Math.max(1, vp.h);
     cam.near = 0.3;
     cam.far = 4e8;
+    // Raise the optical centre so what the camera aims at sits above the HUD that overlays the bottom.
+    if (liftCentre > 0) cam.setViewOffset(vp.w, vp.h, 0, vp.h * liftCentre, vp.w, vp.h);
+    else cam.clearViewOffset();
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld(true);
 
@@ -796,6 +800,8 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
       }
 
       // ---- render
+      // On wide screens the HUD overlays the bottom of the view; on narrow ones it sits below the canvas.
+      const lift = width > 860 ? 0.13 : 0;
       renderer.setScissorTest(false);
       renderer.clear();
       overlay.begin();
@@ -805,16 +811,16 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
         chaseRight.pose(focusS, dt, rightPose);
         const left: Viewport = { x: 0, y: 0, w: half, h: height };
         const right: Viewport = { x: half, y: 0, w: width - half, h: height };
-        renderView(leftPose, camera, left, t, dt);
+        renderView(leftPose, camera, left, t, dt, lift);
         labels(leftPose.pos, camera, left, t, st.settings.showLabels, false);
-        renderView(rightPose, sideCamera, right, t, 0);
+        renderView(rightPose, sideCamera, right, t, 0, lift);
         labels(rightPose.pos, sideCamera, right, t, st.settings.showLabels, false);
         const fl = getFlight(flightN);
         overlay.frame('split-left', 0, 0, half, height, `Super Heavy ${fl.boosterId}`.trim());
         overlay.frame('split-right', half, 0, width - half, height, `Starship ${fl.shipId}`);
       } else {
         const full: Viewport = { x: 0, y: 0, w: width, h: height };
-        renderView(pose, camera, full, t, dt);
+        renderView(pose, camera, full, t, dt, lift);
         labels(pose.pos, camera, full, t, st.settings.showLabels, st.settings.showGates && st.camera === 'globe');
       }
 
