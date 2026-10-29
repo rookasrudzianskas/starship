@@ -5,8 +5,8 @@ import { useReplay } from '@/lib/store/replay';
 import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry';
 import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
-import { createPad } from '@/lib/three/pad';
-import { createBooster, createShip } from '@/lib/three/vehicles';
+import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
+import { boosterCatchHeight, createBooster, createShip } from '@/lib/three/vehicles';
 import type { Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
 import { blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, type CameraPose, type DragInput, type Focus } from './cameras';
 import { autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
@@ -76,10 +76,11 @@ function makeRig(id: VehicleId): Rig {
   };
 }
 
+/** Fallback lengths before the models exist (the models report their own, e.g. without Flight 1's ring). */
 const LENGTH: Record<Generation, { booster: number; ship: number }> = {
-  b1: { booster: 71, ship: 50.3 },
-  b2: { booster: 71, ship: 52.1 },
-  v3: { booster: 72.3, ship: 52.1 },
+  b1: { booster: 70.8, ship: 50.3 },
+  b2: { booster: 70.8, ship: 52.1 },
+  v3: { booster: 72, ship: 52.1 },
 };
 
 const v1 = new THREE.Vector3();
@@ -159,6 +160,7 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
   let current: FlightResult | null = null;
   let currentBaseline: FlightResult | null = null;
   let catchTime: number | null = null;
+  let catchArmsHeight: number | null = null;
   let sats: { t: number; index: number; offset: V3; drift: V3 }[] = [];
   let flightN = 0;
   let readyFired = false;
@@ -239,6 +241,17 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
 
     plan = planDirector(result);
     catchTime = result.booster.endKind === 'catch' ? firstPhaseTime(result.booster, Phase.Caught) ?? result.booster.end : null;
+    // Arms close just under the grid fins: base height above the pad at the catch + the catch point on the booster.
+    catchArmsHeight = null;
+    if (catchTime !== null) {
+      const probe = createSample();
+      sampleTrack(result.booster, catchTime, probe);
+      v1.set(0, 1, 0).applyQuaternion(probe.quat);
+      const base: V3 = [probe.pos[0] - v1.x * probe.com, probe.pos[1] - v1.y * probe.com, probe.pos[2] - v1.z * probe.com];
+      v2.set(padEcef[0], padEcef[1], padEcef[2]).normalize();
+      const baseHeight = (base[0] - padEcef[0]) * v2.x + (base[1] - padEcef[1]) * v2.y + (base[2] - padEcef[2]) * v2.z;
+      catchArmsHeight = baseHeight + boosterCatchHeight(flight.generation) - CHOPSTICK_RAIL_TOP;
+    }
 
     for (const rig of [booster, ship]) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
@@ -361,7 +374,8 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
   canvas.addEventListener('webglcontextlost', onLost);
 
   function lengths(): { booster: number; ship: number } {
-    return LENGTH[generation ?? 'v3'];
+    const fallback = LENGTH[generation ?? 'v3'];
+    return { booster: booster.model?.length ?? fallback.booster, ship: ship.model?.length ?? fallback.ship };
   }
 
   function focusSize(follow: string): number {
@@ -549,7 +563,10 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
       if (!track) continue;
       const i = track.n - 1;
       if (rig.explosion) {
-        rig.explosion.object.position.set(track.pos[i * 3] - cameraEcef[0], track.pos[i * 3 + 1] - cameraEcef[1], track.pos[i * 3 + 2] - cameraEcef[2]);
+        const endPos: V3 = [track.pos[i * 3], track.pos[i * 3 + 1], track.pos[i * 3 + 2]];
+        rig.explosion.object.position.set(endPos[0] - cameraEcef[0], endPos[1] - cameraEcef[1], endPos[2] - cameraEcef[2]);
+        // Smoke rises along local up.
+        enuQuaternion(endPos, rig.explosion.object.quaternion);
       }
       if (rig.splash && rig.touchdown !== null) {
         rig.splash.object.position.set(rig.base[0] - cameraEcef[0], rig.base[1] - cameraEcef[1], rig.base[2] - cameraEcef[2]);
@@ -697,7 +714,7 @@ export function createStage(canvas: HTMLCanvasElement, options: StageOptions): S
         const site = PADS[padId ?? 'pad1'];
         const holding = catchTime !== null && t >= catchTime;
         const approaching = catchTime !== null && t >= catchTime - 30 && t < catchTime;
-        const catchHeight = site.catchBaseHeight + L.booster - 6;
+        const catchHeight = catchArmsHeight ?? site.catchBaseHeight + L.booster - 8;
         pad.update(
           {
             t,

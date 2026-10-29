@@ -60,7 +60,8 @@ export function readTrack(track: Track, t: number, out: Reading): Reading {
   const f = t1 > t0 ? Math.min(1, Math.max(0, (tc - t0) / (t1 - t0))) : 0;
   out.ended = t > track.end;
   out.speed = lerp(track.speed[i], track.speed[i + 1] ?? track.speed[i], f);
-  out.alt = lerp(track.alt[i], track.alt[i + 1] ?? track.alt[i], f);
+  // Like the webcast, altitude reads 0 on the pad: measure from where the vehicle's centre of mass started.
+  out.alt = Math.max(0, lerp(track.alt[i], track.alt[i + 1] ?? track.alt[i], f) - track.alt[0]);
   out.vspeed = lerp(track.vspeed[i], track.vspeed[i + 1] ?? track.vspeed[i], f);
   out.accel = lerp(track.accel[i], track.accel[i + 1] ?? track.accel[i], f);
   out.mach = lerp(track.mach[i], track.mach[i + 1] ?? track.mach[i], f);
