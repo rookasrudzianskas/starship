@@ -11,6 +11,21 @@ export interface TimeAxis {
   breaks: number[];
 }
 
+/**
+ * Long stretches with no events (coasts, but also the quiet middle of a long entry glide), keeping a
+ * margin around each event so the moments that matter keep their room.
+ */
+export function quietGaps(eventTimes: number[], tStart: number, tEnd: number, minGap = 480, margin = 60): Array<[number, number]> {
+  const times = [tStart, ...eventTimes.filter((t) => t > tStart && t < tEnd), tEnd].sort((a, b) => a - b);
+  const gaps: Array<[number, number]> = [];
+  for (let i = 1; i < times.length; i++) {
+    const a = times[i - 1];
+    const b = times[i];
+    if (b - a >= minGap) gaps.push([a + margin, b - margin]);
+  }
+  return gaps;
+}
+
 interface Segment {
   t0: number;
   t1: number;

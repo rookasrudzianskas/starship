@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import { formatAltitude, formatClock, formatDate, formatEventTime, formatSpeed, formatVerticalSpeed } from '../format';
-import { buildTimeAxis } from '../timeAxis';
+import { buildTimeAxis, quietGaps } from '../timeAxis';
+
+describe('quietGaps', () => {
+  it('finds long event-free stretches with margins', () => {
+    const gaps = quietGaps([0, 69, 139, 508, 1520, 7938, 9591, 11292], -10, 11320);
+    expect(gaps).toEqual([
+      [568, 1460],
+      [1580, 7878],
+      [7998, 9531],
+      [9651, 11232],
+    ]);
+  });
+
+  it('returns nothing for a busy flight', () => {
+    expect(quietGaps([0, 60, 120, 180, 240], -10, 260)).toEqual([]);
+  });
+});
 
 describe('buildTimeAxis', () => {
   it('maps the ends to 0 and 1 and is monotonic', () => {

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerE
 import { formatClock, formatEventTime } from '@/lib/format';
 import type { FlightEvent, FlightResult, Track } from '@/lib/sim/types';
 import { useReplay } from '@/lib/store/replay';
-import { buildTimeAxis, type TimeAxis } from '@/lib/timeAxis';
+import { buildTimeAxis, quietGaps, type TimeAxis } from '@/lib/timeAxis';
 import { sampleIndex } from '@/lib/telemetry';
 import styles from './replay.module.css';
 
@@ -151,7 +151,10 @@ export function Timeline() {
   }, []);
 
   const axis = useMemo(
-    () => (result ? buildTimeAxis(result.tStart, result.tEnd, result.coasts) : buildTimeAxis(-10, 600, [])),
+    () =>
+      result
+        ? buildTimeAxis(result.tStart, result.tEnd, quietGaps(result.events.map((e) => e.t), result.tStart, result.tEnd))
+        : buildTimeAxis(-10, 600, []),
     [result],
   );
 
