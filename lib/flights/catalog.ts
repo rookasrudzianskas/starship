@@ -485,9 +485,9 @@ export const FLIGHTS: Flight[] = [
       },
     },
     anomalies: [
-      { t: 330, vehicle: 'ship', kind: 'engine-out', count: 1, note: 'A Raptor Vacuum goes out.' },
-      { t: 336, vehicle: 'ship', kind: 'engine-out', count: 3, note: 'Three more engines go out.' },
-      { t: 345, vehicle: 'ship', kind: 'tumble', note: 'Attitude control is lost; the ship starts to spin.' },
+      { t: 484, vehicle: 'ship', kind: 'engine-out', engines: [0], note: 'A flash in the aft section destroys a centre sea-level Raptor.' },
+      { t: 488, vehicle: 'ship', kind: 'engine-out', engines: [1, 2, 3], note: 'The other two centre engines and a Raptor Vacuum shut down.' },
+      { t: 495, vehicle: 'ship', kind: 'tumble', note: 'Attitude control is lost; the ship starts to spin.' },
       { t: 579, vehicle: 'ship', kind: 'breakup', note: 'Contact lost.' },
     ],
   },
