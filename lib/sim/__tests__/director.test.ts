@@ -33,6 +33,13 @@ function endLatLon(tr: Track): { lat: number; lon: number } {
   return ecefToLatLonAlt(tr.pos[3 * i], tr.pos[3 * i + 1], tr.pos[3 * i + 2]);
 }
 
+/** Highest dynamic pressure of the ship's entry (hypersonic and belly flop), Pa. */
+function entryLoads(r: FlightResult): number {
+  let q = 0;
+  for (let i = 0; i < r.ship.n; i++) if (r.ship.phase[i] === Phase.Entry || r.ship.phase[i] === Phase.BellyFlop) q = Math.max(q, r.ship.q[i]);
+  return q;
+}
+
 /** Angle (deg) between the body +Y axis and the local vertical at sample i. */
 function tiltAt(tr: Track, i: number): number {
   const x = tr.quat[4 * i], y = tr.quat[4 * i + 1], z = tr.quat[4 * i + 2], w = tr.quat[4 * i + 3];
@@ -140,6 +147,25 @@ describe('booster return', () => {
     expect(heavy.booster.end - lb).toBeLessThan(60);
   });
 
+  it('a boostback with no engine left to light is not called out', () => {
+    // Every engine out just after the staging command: nothing can relight for the return.
+    const all = Array.from({ length: 33 }, (_, e) => ({ id: `e${e}`, t: 157, kind: 'engine-out' as const, vehicle: 'booster' as const, engine: e }));
+    const r = run(5, { ...AS_FLOWN, interventions: all });
+    expect(ev(r, 'boostback')).toBeUndefined();
+    expect(r.booster.endKind).toBe('impact');
+  });
+
+  it('Flight 12 flown to plan boosts back at full thrust, like the 13-engine boostbacks before it', () => {
+    const r = run(12, PLAN);
+    const bb = ev(r, 'boostback')?.t as number;
+    expect((ev(r, 'boostback-end')?.t as number) - bb).toBeLessThan(60);
+    expect(r.booster.endKind).toBe('splashdown');
+    // As flown, the boostback is still cut after 17 s and the booster still hits the Gulf.
+    const flown = run(12, AS_FLOWN);
+    expect((ev(flown, 'boostback-end')?.t as number) - (ev(flown, 'boostback')?.t as number)).toBeCloseTo(17, 0);
+    expect(flown.booster.endKind).toBe('impact');
+  });
+
   it('a splashed-down booster tips over from the way it leans, without snapping upright', () => {
     const b = run(13, AS_FLOWN).booster;
     const s = b.phase.indexOf(Phase.Splashed);
@@ -204,14 +230,46 @@ describe('ship', () => {
     }
   });
 
-  it('a flight sent to orbit deorbits on the pass that brings it down at its zone', () => {
-    for (const n of [5, 10]) {
-      const r = run(n, { ...AS_FLOWN, shipMission: 'orbital' });
+  it('a flight sent to orbit deorbits on the pass that brings it down at its zone, through an ordinary entry', () => {
+    for (const [n, s] of [
+      [5, AS_FLOWN],
+      [6, AS_FLOWN],
+      [8, PLAN],
+      [10, AS_FLOWN],
+      [11, AS_FLOWN],
+    ] as Array<[number, Scenario]>) {
+      const r = run(n, { ...s, shipMission: 'orbital' });
       expect(r.ship.endKind, `F${n}`).toBe('splashdown');
+      expect(entryLoads(r), `F${n} entry q`).toBeLessThan(20_000);
       const i = r.ship.n - 1;
       const d = surfaceDistance(Float64Array.from([r.ship.pos[3 * i], r.ship.pos[3 * i + 1], r.ship.pos[3 * i + 2]]), Float64Array.from(latLonAltToEcef(24.5, -157.5, 0)));
       expect(d, `F${n} miss`).toBeLessThan(300_000);
     }
+  });
+
+  it('a ship that cannot reach its zone flies its entry for range instead of diving', () => {
+    // Forty satellites leave Flight 1's ship far short of Kauai, which lies most of the way round the globe.
+    const r = run(1, { ...PLAN, payloadCount: 40 });
+    expect(entryLoads(r)).toBeLessThan(20_000);
+    expect(r.ship.endKind).toBe('splashdown');
+  });
+
+  it('the deploy starts only when a satellite can still leave the bay', () => {
+    // Four of six engines out on the climb: the ship never reaches orbit and falls below the deploy altitude early.
+    const out = [0, 1, 3, 4].map((e) => ({ id: `e${e}`, t: 220, kind: 'engine-out' as const, vehicle: 'ship' as const, engine: e }));
+    for (const n of [14, 12]) {
+      const r = run(n, { ...PLAN, interventions: out });
+      if (ev(r, 'payload-start')) expect(r.payload.length, `F${n}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('an engine that does not relight for landing fails before the landing-burn callout', () => {
+    // Flight 12's last sea-level Raptor does not relight; with the other two shut down there is no landing burn.
+    const out = [0, 1].map((e) => ({ id: `e${e}`, t: 1000, kind: 'engine-out' as const, vehicle: 'ship' as const, engine: e }));
+    const r = run(12, { ...AS_FLOWN, interventions: out });
+    expect(ev(r, 'ship-landing-burn')).toBeUndefined();
+    expect(r.events.some((e) => e.key === 'anomaly' && /relight for landing/.test(e.note ?? ''))).toBe(true);
+    expect(r.ship.endKind).toBe('impact');
   });
 
   it('a ship left in orbit is still in orbit, not lost', () => {
@@ -250,6 +308,41 @@ describe('ship', () => {
     const peak = ev(r, 'peak-heating');
     if (peak) expect(peak.t).toBeLessThan(r.ship.end - 5);
     expect(run(10, AS_FLOWN).events.some((e) => e.key === 'peak-heating')).toBe(true);
+  });
+});
+
+describe('structural limits', () => {
+  const aeroLoss = (r: FlightResult, vehicle: string) => r.events.some((e) => e.key === 'anomaly' && e.vehicle === vehicle && /Aerodynamic loads/.test(e.note ?? ''));
+  const maxQ = (tr: Track) => {
+    let q = 0;
+    for (let i = 0; i < tr.n; i++) if (tr.phase[i] !== Phase.Destroyed) q = Math.max(q, tr.q[i]);
+    return q;
+  };
+
+  it('a ship steered down into thick air breaks up instead of flying on at hypersonic speed', () => {
+    const r = run(14, { ...AS_FLOWN, interventions: [{ id: 'p', t: 250, kind: 'pitch', vehicle: 'ship', deg: -40 }] });
+    expect(r.ship.endKind).toBe('lost');
+    expect(aeroLoss(r, 'ship')).toBe(true);
+    expect(maxQ(r.ship)).toBeLessThan(85_000);
+  });
+
+  it('a booster driven down by its boostback breaks up', () => {
+    const r = run(5, { ...AS_FLOWN, interventions: [{ id: 'p', t: 170, kind: 'pitch', vehicle: 'booster', deg: -60 }] });
+    expect(r.booster.endKind).toBe('lost');
+    expect(aeroLoss(r, 'booster')).toBe(true);
+  });
+
+  it('a vehicle whose flight is over takes no more commands', () => {
+    const ship = run(10, AS_FLOWN).ship;
+    const booster = run(5, AS_FLOWN).booster;
+    // During the ship's tip-over and while the booster hangs in the arms.
+    const r1 = run(10, { ...AS_FLOWN, interventions: [{ id: 'x', t: ship.end - 3, kind: 'terminate', vehicle: 'ship' }, { id: 'e', t: ship.end - 3, kind: 'engine-out', vehicle: 'ship', engine: 0 }] });
+    expect(r1.ship.endKind).toBe('splashdown');
+    expect(r1.events.filter((e) => e.key === 'ship-end')).toHaveLength(1);
+    expect(r1.events.filter((e) => e.key === 'intervention')).toHaveLength(0);
+    const r2 = run(5, { ...AS_FLOWN, interventions: [{ id: 'x', t: booster.end - 2, kind: 'terminate', vehicle: 'booster' }] });
+    expect(r2.booster.endKind).toBe('catch');
+    expect(r2.events.filter((e) => e.key === 'booster-end')).toHaveLength(1);
   });
 });
 

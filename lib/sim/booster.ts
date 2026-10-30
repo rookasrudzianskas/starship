@@ -54,6 +54,14 @@ const BOOSTBACK_MAX = 120;
 const LANDING_RESERVE = 0.3;
 /** Typical landing-burn ignition height above the aim point, m (used to aim the descent). */
 const LB_HEIGHT = 2_000;
+/**
+ * Dynamic pressure at which the booster breaks up, Pa: engines first (twice the steepest nominal descent), or met
+ * by the flow any other way (the attached stack's limit).
+ */
+const Q_BREAKUP_TAIL = 300_000;
+const Q_BREAKUP_NOSE = 80_000;
+/** Angle of attack beyond which the booster flies engines first, rad. */
+const ENGINES_FIRST = 120 * DEG;
 /** Landing reference table: 10 m steps up to 25 km. */
 const REF_DH = 10;
 const REF_N = 2500;
@@ -286,6 +294,8 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
 
   const applyAction = (a: Action) => {
     const at = a.t;
+    // Once its flight is over (in the arms, in the water) the booster takes no more commands or failures.
+    if (ended) return;
     if (a.iv) {
       const iv = a.iv;
       if (iv.kind === 'stage-now' || iv.vehicle !== 'booster') return;
@@ -391,8 +401,13 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     }
     if (mode === 'flip' && t >= bbIgnT - 1e-9) {
       centreOn = false;
-      if (!bbPending || consumeSkip()) {
-        bbPending = false;
+      // Skipped, or nothing left to light (every engine out, tanks dry): no boostback.
+      if (bbPending && consumeSkip()) bbPending = false;
+      if (bbPending) {
+        part.setEngines(selectBoosterEngines(bbEngines, (i) => part.usable(i)), t);
+        if (!part.anyLit()) bbPending = false;
+      }
+      if (!bbPending) {
         part.shutdownAll(t);
         mode = 'coast';
         phase = Phase.Coast;
@@ -405,7 +420,6 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
           ctx.boosterTarget('splashdown', target);
           note = 'Too heavy for the tower arms: heading for a splashdown in the Gulf.';
         }
-        part.setEngines(selectBoosterEngines(bbEngines, (i) => part.usable(i)), t);
         part.throttle = p.bbThrottle;
         mode = 'boostback';
         phase = Phase.Boostback;
@@ -704,6 +718,13 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     stepBody(body, dt, ctx.windPeak, air, stepOpts);
     t += dt;
     if (air.depleted) part.shutdownAll(t);
+    // Structural limit: engines first, the booster takes the loads of a fast descent; met by the flow any other
+    // way (driven down under thrust, turning in thick air) it breaks up far sooner.
+    if (air.q > (air.aoa > ENGINES_FIRST ? Q_BREAKUP_TAIL : Q_BREAKUP_NOSE)) {
+      ctx.addEvent('anomaly', 'booster', t, ev(), 'Aerodynamic loads exceed what the structure can take; the booster breaks up.');
+      finish('lost', t, true);
+      continue;
+    }
 
     // Contact with the sea or the ground (the launch site stands a few metres above the sea).
     qAxis(yAx, body.q, 1);

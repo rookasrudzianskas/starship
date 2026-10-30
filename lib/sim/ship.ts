@@ -34,12 +34,29 @@ const SHIP_LANDING_DECEL = 4;
 const DEPLOY_ALT = 150_000;
 /** Closest spacing between two satellite releases when a larger load has to fit a shorter coast, s. */
 const DEPLOY_MIN_SPACING = 15;
+/** Altitude where entry begins (the entry interface), m. */
+const ENTRY_ALT = 120_000;
 /**
- * From the start of a deorbit burn to splashdown, on the calibrated Flight 14: the arc travelled in the
- * orbital plane (rad) and the time taken (s). Used to pick the pass for orbits a flight was not planned for.
+ * From the entry interface to splashdown on the calibrated Flight 14: the arc flown (rad, inertial) and the time
+ * it takes (s). With the coast from the deorbit burn worked out from the orbit, it places the splashdown of orbits
+ * a flight was not planned for.
  */
-const DEORBIT_ARC = 198 * DEG;
-const DEORBIT_SPAN = 3342;
+const ENTRY_ARC = 86.9 * DEG;
+const ENTRY_SPAN = 1695;
+/**
+ * Entry dynamic pressure where the bank guidance starts to trade range control for lift, and where it flies full
+ * lift up, Pa (nominal entries peak near 9 kPa): a ship short of or beyond its target never dives into thick air.
+ */
+const ENTRY_Q_SOFT = 12_000;
+const ENTRY_Q_HARD = 20_000;
+/**
+ * Dynamic pressure at which the ship breaks up, Pa: nose first (the attached stack's limit, more than twice any
+ * flight's max Q), or belly first and sideways (over three times the peak of a nominal entry, some 8 g).
+ */
+const Q_BREAKUP_NOSE = 80_000;
+const Q_BREAKUP_BELLY = 30_000;
+/** Angle of attack below which the ship flies nose first, rad. */
+const NOSE_FIRST = 30 * DEG;
 
 type Mode = 'hotstage' | 'ascent' | 'coast' | 'burn' | 'entry' | 'flip' | 'landing' | 'free' | 'splashed' | 'done';
 type BurnKind = 'relight' | 'insertion' | 'deorbit';
@@ -198,6 +215,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
 
   const applyAction = (a: Action) => {
     const at = a.t;
+    // Once its flight is over (in the water) the ship takes no more commands or failures.
+    if (ended) return;
     if (a.iv) {
       const iv = a.iv;
       if (iv.kind === 'stage-now' || iv.vehicle !== 'ship') return;
@@ -315,12 +334,16 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     return null;
   };
 
-  /** Fits the deploy window into the coast: the planned cadence, squeezed (down to a limit) to end in time. */
+  /**
+   * Fits the deploy window into the coast: the planned cadence, squeezed (down to a limit) to end in time. A burn
+   * changes the path, so the window is fitted again after each one (only its end, once the deploy has begun).
+   */
   const fitDeploy = () => {
     if (!pay) return;
+    // Last moment for a release: before the path drops below DEPLOY_ALT, and before the deorbit burn.
+    payLatest = Math.min(t + timeToDescend(body.r, body.v, RE + DEPLOY_ALT) - 30, (orbital ? Math.min(tCap, deorbitBurn.t) : tCap) - 120);
+    if (payStarted) return;
     payStartT = Math.max(pay.start, t + 60);
-    // Last moment for a release: before the deorbit burn in orbit, else before the path drops below DEPLOY_ALT.
-    payLatest = orbital ? Math.min(tCap, deorbitBurn.t) - 120 : t + timeToDescend(body.r, body.v, RE + DEPLOY_ALT) - 30;
     paySpacing = (pay.end - pay.start) / (pay.count + 1);
     const room = (payLatest - payStartT) / (pay.count + 1);
     if (room < paySpacing) paySpacing = Math.max(DEPLOY_MIN_SPACING, room);
@@ -335,31 +358,65 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   };
 
   /**
-   * Deorbit time for an orbit the flight was not planned for: the pass whose ground track, DEORBIT_ARC on
-   * from the burn, comes closest to the landing zone (near-circular orbit, Earth turning underneath).
+   * Deorbit time for an orbit the flight was not planned for: the pass that brings the splashdown closest to the
+   * landing zone. Each candidate burn point comes from the current orbit (Kepler); the burn turns it into the
+   * apoapsis of an orbit with its periapsis at the deorbit perigee, which sets the coast to the entry interface;
+   * entry then flies Flight 14's range (ENTRY_ARC, ENTRY_SPAN) while the Earth turns underneath.
    */
   const chooseDeorbit = (): number => {
     const r = body.r, v = body.v;
     const rl = Math.sqrt(r[0] ** 2 + r[1] ** 2 + r[2] ** 2);
+    const v2 = v[0] ** 2 + v[1] ** 2 + v[2] ** 2;
     const hx = r[1] * v[2] - r[2] * v[1], hy = r[2] * v[0] - r[0] * v[2], hz = r[0] * v[1] - r[1] * v[0];
     const hl = Math.sqrt(hx * hx + hy * hy + hz * hz);
-    const a = -MU / (2 * ((v[0] ** 2 + v[1] ** 2 + v[2] ** 2) / 2 - MU / rl));
+    const a = -MU / (2 * (v2 / 2 - MU / rl));
     if (!(a > 0) || hl <= 0) return Infinity;
     const n = Math.sqrt(MU / (a * a * a));
-    // In-plane basis: the current position and the direction of motion.
-    const ux = r[0] / rl, uy = r[1] / rl, uz = r[2] / rl;
-    const wx = (hy * uz - hz * uy) / hl, wy = (hz * ux - hx * uz) / hl, wz = (hx * uy - hy * ux) / hl;
+    // Eccentricity vector (v × h)/μ − r/|r|; perifocal basis P (periapsis, or here when circular), Q = h × P.
+    let px = (v[1] * hz - v[2] * hy) / MU - r[0] / rl, py = (v[2] * hx - v[0] * hz) / MU - r[1] / rl, pz = (v[0] * hy - v[1] * hx) / MU - r[2] / rl;
+    let e = Math.sqrt(px * px + py * py + pz * pz);
+    if (e < 1e-6) {
+      px = r[0] / rl;
+      py = r[1] / rl;
+      pz = r[2] / rl;
+      e = 0;
+    } else {
+      px /= e;
+      py /= e;
+      pz /= e;
+    }
+    e = Math.min(e, 0.9);
+    const qx = (hy * pz - hz * py) / hl, qy = (hz * px - hx * pz) / hl, qz = (hx * py - hy * px) / hl;
+    const nu0 = Math.atan2(r[0] * qx + r[1] * qy + r[2] * qz, r[0] * px + r[1] * py + r[2] * pz);
+    const ecc0 = 2 * Math.atan(Math.sqrt((1 - e) / (1 + e)) * Math.tan(nu0 / 2));
+    const m0 = ecc0 - e * Math.sin(ecc0);
+    const rp = RE + p.deorbitPerigee, re = RE + ENTRY_ALT;
+    if (rp >= re) return Infinity;
     const ll = Math.sqrt(landing[0] ** 2 + landing[1] ** 2 + landing[2] ** 2);
     let best = -2;
     let bestT = Infinity;
-    for (let td = t + 120; td <= tCap - DEORBIT_SPAN - 600; td += 15) {
-      const ang = n * (td - t) + DEORBIT_ARC;
+    for (let td = t + 120; td <= tCap; td += 15) {
+      // Burn point: mean anomaly forward, Kepler's equation by Newton steps.
+      const m = m0 + n * (td - t);
+      let ea = m;
+      for (let k = 0; k < 5; k++) ea -= (ea - e * Math.sin(ea) - m) / (1 - e * Math.cos(ea));
+      const nu = 2 * Math.atan2(Math.sqrt(1 + e) * Math.sin(ea / 2), Math.sqrt(1 - e) * Math.cos(ea / 2));
+      const rb = a * (1 - e * Math.cos(ea));
+      if (rb <= re) continue;
+      // After the burn: apoapsis rb, periapsis rp; the coast runs from the apoapsis down to the entry interface.
+      const a2 = (rb + rp) / 2, e2 = (rb - rp) / (rb + rp);
+      const nuE = Math.acos(clamp((a2 * (1 - e2 * e2) / re - 1) / e2, -1, 1));
+      const eaE = 2 * Math.atan(Math.sqrt((1 - e2) / (1 + e2)) * Math.tan(nuE / 2));
+      const coast = (Math.PI - eaE + e2 * Math.sin(eaE)) / Math.sqrt(MU / (a2 * a2 * a2));
+      const ts = td + coast + ENTRY_SPAN;
+      if (ts > tCap - 300) break;
+      const ang = nu + (Math.PI - nuE) + ENTRY_ARC;
       const c = Math.cos(ang), sn = Math.sin(ang);
-      const px = c * ux + sn * wx, py = c * uy + sn * wy, pz = c * uz + sn * wz;
+      const ix = c * px + sn * qx, iy = c * py + sn * qy, iz = c * pz + sn * qz;
       // Into the Earth-fixed frame at splashdown.
-      const th = OMEGA * (td + DEORBIT_SPAN);
-      const ex = Math.cos(th) * px + Math.sin(th) * py, ey = -Math.sin(th) * px + Math.cos(th) * py;
-      const cosD = (ex * landing[0] + ey * landing[1] + pz * landing[2]) / ll;
+      const th = OMEGA * ts;
+      const ex = Math.cos(th) * ix + Math.sin(th) * iy, ey = -Math.sin(th) * ix + Math.cos(th) * iy;
+      const cosD = (ex * landing[0] + ey * landing[1] + iz * landing[2]) / ll;
       if (cosD > best) {
         best = cosD;
         bestT = td;
@@ -404,12 +461,15 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       if (done) {
         endBurn();
         if (active.kind === 'insertion' && deorbitBurn.t === Infinity) deorbitBurn.t = chooseDeorbit();
+        if (payFitted && !payEnded) fitDeploy();
       }
     }
     if (mode === 'coast' && !uncontrolled) {
       const b = nextBurn();
       if (b) {
-        const bt = Number.isNaN(b.t) ? (vr < 25 && t > secoT + 120 ? t : Infinity) : b.t;
+        // Untimed (an insertion the flight did not plan): at the top of the climb, where a prograde burn
+        // raises the far side of the path without lifting the top.
+        const bt = Number.isNaN(b.t) ? (vr < 2 && t > secoT + 120 ? t : Infinity) : b.t;
         if (t >= bt - 1e-9) startBurn(b);
       }
     }
@@ -420,7 +480,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       }
       // Coasting in space (not during a burn, never once the air thickens or entry has begun).
       const canRelease = mode === 'coast' && !entryDone && air.alt > DEPLOY_ALT;
-      if (!payStarted && t >= payStartT - 1e-9 && t <= payLatest && canRelease) {
+      // The deploy begins only if its first release still fits before the deadline.
+      if (!payStarted && t >= payStartT - 1e-9 && Math.max(t, payNext) <= payLatest && canRelease) {
         payStarted = true;
         ctx.addEvent('payload-start', 'ship', t, ev());
       }
@@ -620,7 +681,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         const corridor = (2 + 8 * clamp(air.airspeed / 7500, 0, 1)) * D;
         if (xr > corridor && bankSign < 0) bankSign = 1;
         else if (xr < -corridor && bankSign > 0) bankSign = -1;
-        const cb = mach > 2 ? cosBank : 1; // wings level once slow
+        // Wings level once slow; lift turned up as the dynamic pressure climbs past the entry corridor.
+        const cb = mach > 2 ? Math.max(cosBank, Math.min(1, (air.q - ENTRY_Q_SOFT) / (ENTRY_Q_HARD - ENTRY_Q_SOFT))) : 1;
         entryAttitude(thr, zr, air.vAir, up, entryAoA(p.entryAoA, mach), cb, bankSign);
         qLook(qT, thr, zr);
         slew(body, qT, 6 * D, 4 * D, adt);
@@ -653,8 +715,14 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
               phase = Phase.BellyFlop;
             } else {
               part.setEngines(sl, t);
+              if (part.anyLit()) {
+                // Failures of the ignition itself (an engine that does not relight) strike before the callout.
+                ctx.armPhase('ship-landing-burn', t);
+                while (actIdx < acts.length && acts[actIdx].t <= t + 1e-9 && !modeIs('done')) applyAction(acts[actIdx++]);
+                if (modeIs('done')) break;
+              }
               if (!part.anyLit()) {
-                // Nothing left to light (tanks dry): no landing burn, the belly flop goes all the way down.
+                // Nothing left to light (tanks dry, engines out): no landing burn, the belly flop goes all the way down.
                 landingSet = [];
               } else {
                 part.throttle = 0.7;
@@ -663,7 +731,6 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
                 phase = Phase.ShipFlip;
                 ctx.addEvent('ship-flip', 'ship', t, ev());
                 ctx.addEvent('ship-landing-burn', 'ship', t, ev());
-                ctx.armPhase('ship-landing-burn', t);
                 if (ctx.shipLandingFail) {
                   landingFailT = t + 0.5;
                   destroyT = t + 1.5;
@@ -716,6 +783,12 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     } else stepBody(body, dt, ctx.windPeak, air, stepOpts);
     t += dt;
     if (air.depleted) part.shutdownAll(t);
+    // Structural limit: a ship driven through thick air too fast (a dive, a climb kept low) breaks up.
+    if (air.q > (air.aoa < NOSE_FIRST ? Q_BREAKUP_NOSE : Q_BREAKUP_BELLY)) {
+      ctx.addEvent('anomaly', 'ship', t, ev(), 'Aerodynamic loads exceed what the structure can take; the ship breaks up.');
+      finish('lost', t, true);
+      break;
+    }
     if (mode === 'entry' && air.heating > peakHeat) {
       peakHeat = air.heating;
       peakHeatT = t;
@@ -813,18 +886,31 @@ function entryAttitude(yOut: Float64Array, zOut: Float64Array, vAir: Float64Arra
 
 const mr = v3(), mv = v3();
 
-/** Predicted along-track overshoot (m, + = beyond the target) for a constant bank. */
+/**
+ * Predicted along-track overshoot (m, + = beyond the target) for a constant bank: arc lengths along the great
+ * circle from the current ground point through the predicted end point. The target always counts as ahead (up
+ * to a full turn of the globe), so a ship that cannot reach it sees an undershoot and flies for range.
+ */
 function missAlong(body: Body, t: number, cfg: Body['aero'], aoa: number, cosBank: number, sign: number, target: Float64Array, aim: number, out: EntryPrediction, tmp: Float64Array): number {
   mr.set(body.r);
   mv.set(body.v);
   predictEntry(mr, mv, t, body.mass, cfg, aoa, cosBank, sign, out);
-  // Direction of travel near the end ≈ from the current ground point to the predicted end point.
   inertialToEcef(tmp, body.r, t);
   const e = out.end;
-  const dx = e[0] - target[0], dy = e[1] - target[1], dz = e[2] - target[2];
-  const fx = e[0] - tmp[0], fy = e[1] - tmp[1], fz = e[2] - tmp[2];
-  const fl = Math.sqrt(fx * fx + fy * fy + fz * fz) || 1;
-  return (dx * fx + dy * fy + dz * fz) / fl + aim;
+  const r0 = Math.sqrt(tmp[0] * tmp[0] + tmp[1] * tmp[1] + tmp[2] * tmp[2]);
+  const ux = tmp[0] / r0, uy = tmp[1] / r0, uz = tmp[2] / r0;
+  // Forward direction at the current point, in the plane of the current point and the end point.
+  const nx = uy * e[2] - uz * e[1], ny = uz * e[0] - ux * e[2], nz = ux * e[1] - uy * e[0];
+  let wx = ny * uz - nz * uy, wy = nz * ux - nx * uz, wz = nx * uy - ny * ux;
+  const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
+  if (wl < 1e-12) return aim;
+  wx /= wl;
+  wy /= wl;
+  wz /= wl;
+  const thE = Math.atan2(e[0] * wx + e[1] * wy + e[2] * wz, e[0] * ux + e[1] * uy + e[2] * uz);
+  let thT = Math.atan2(target[0] * wx + target[1] * wy + target[2] * wz, target[0] * ux + target[1] * uy + target[2] * uz);
+  if (thT < 0) thT += 2 * Math.PI;
+  return RE * (thE - thT) + aim;
 }
 
 /** Signed angle (rad) between the ground track direction and the bearing to the target; + = target to the right. */
