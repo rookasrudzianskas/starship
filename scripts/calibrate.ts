@@ -7,7 +7,8 @@
  *   npx tsx scripts/calibrate.ts --report   print the table for the current calibration only
  *
  * Plans that went elsewhere than the flight did (PLAN_LANDING) also get the cut-off of their plan fitted,
- * stored under `plans` and used by runs with asFlown = false.
+ * stored under `plans` and used by runs with asFlown = false, next to plan values the flight cannot tell
+ * (PLAN_FIXED).
  */
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +28,12 @@ const PLAN: Scenario = { asFlown: false, interventions: [] };
  * were to cross the Indian Ocean and the Pacific to a splashdown off Kauai about 90 minutes after launch.
  */
 const PLAN_LANDING: Record<number, number> = { 2: 5400 };
+/**
+ * Plan values the flight cannot tell us. Flight 12's boostback was cut after 17 s, so its fitted throttle (pinned
+ * at the 0.4 floor) only describes those seconds; the planned 13-engine boostback runs at full thrust, like the
+ * 13-engine boostbacks of the earlier boosters, instead of burning for two minutes.
+ */
+const PLAN_FIXED: Record<number, FlightParamOverrides> = { 12: { bbThrottle: 1 } };
 const calibration = calibrationData as unknown as CalibrationFile;
 /** Reference flight of each generation (calibrated first; seeds the others). */
 const REFERENCE: Record<string, number> = { b1: 5, b2: 10, v3: 13 };
@@ -729,10 +736,10 @@ function pick(p: FlightParamOverrides, keys: Array<keyof FlightParams>): FlightP
 function writeCalibration(file: CalibrationFile): void {
   const ordered: CalibrationFile = { flights: {} };
   for (const k of Object.keys(file.flights).sort((a, b) => Number(a) - Number(b))) ordered.flights[k] = file.flights[k];
-  if (file.plans) {
-    ordered.plans = {};
-    for (const k of Object.keys(file.plans).sort((a, b) => Number(a) - Number(b))) ordered.plans[k] = file.plans[k];
-  }
+  const plans = { ...(file.plans ?? {}) };
+  for (const [k, fixed] of Object.entries(PLAN_FIXED)) plans[k] = { ...(plans[k] ?? {}), ...fixed };
+  ordered.plans = {};
+  for (const k of Object.keys(plans).sort((a, b) => Number(a) - Number(b))) ordered.plans[k] = plans[k];
   writeFileSync(OUT, JSON.stringify(ordered, null, 2) + '\n');
 }
 
