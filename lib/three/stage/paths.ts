@@ -3,7 +3,8 @@ import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { FlightEvent, FlightResult, Track } from '@/lib/sim/types';
-import { sampleIndex } from '@/lib/telemetry';
+// Relative so the lines can be unit tested (vitest has no @/ alias).
+import { sampleIndex } from '../../telemetry';
 import type { CoastPrediction } from './coast';
 import type { V3 } from './geo';
 
