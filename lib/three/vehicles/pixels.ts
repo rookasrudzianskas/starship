@@ -461,7 +461,8 @@ export type PixelResult = Uint8Array | SteelPixels;
  */
 export function pixelJobs(q?: Quality): Record<string, PixelJob> {
   const jobs: Record<string, PixelJob> = { [NOISE_KEY]: { kind: 'noise' }, [PUFF_ATLAS_KEY]: { kind: 'puff' } };
-  if (q) jobs[steelPixelsKey(q)] = { kind: 'steel', quality: q };
+  // Only the qualities models are built with (anything else would make a copy no model ever uses).
+  if (q === 'high' || q === 'low') jobs[steelPixelsKey(q)] = { kind: 'steel', quality: q };
   return jobs;
 }
 

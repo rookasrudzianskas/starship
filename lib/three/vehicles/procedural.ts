@@ -184,56 +184,66 @@ export class SharedScope {
 // ---------------------------------------------------------------------------
 
 let pixelWorker: Worker | null | undefined;
-let prefetched: Promise<void> | null = null;
+/** Jobs posted to the worker and not answered yet, by key: settle() resolves their waiters. */
+const inFlight = new Map<string, { done: Promise<void>; settle: () => void }>();
+
+/** The pixel worker, started on first use; null where workers are unavailable or after it failed. */
+function getPixelWorker(): Worker | null {
+  if (pixelWorker !== undefined) return pixelWorker;
+  let w: Worker | null = null;
+  try {
+    w = typeof Worker === 'undefined' ? null : new Worker(new URL('./pixels.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    w = null;
+  }
+  pixelWorker = w;
+  if (!w) return null;
+  w.addEventListener('message', (e: MessageEvent<{ key: string; pixels: PixelResult }>) => {
+    const { key, pixels } = e.data;
+    // A model built meanwhile has made these on the main thread: keep that copy.
+    if (!generated.has(key)) generated.set(key, pixels);
+    inFlight.get(key)?.settle();
+    inFlight.delete(key);
+  });
+  // A worker that fails to load or crashes: whatever it still owed is made on the main thread when used.
+  const fail = () => {
+    if (pixelWorker === w) pixelWorker = null;
+    w.terminate();
+    for (const job of inFlight.values()) job.settle();
+    inFlight.clear();
+  };
+  w.addEventListener('error', fail);
+  w.addEventListener('messageerror', fail);
+  return w;
+}
 
 /**
  * Starts making the pixels of the large shared textures (noise, smoke puffs and, given the quality, the
- * steel maps) in a worker, so that building the first models only uploads them. The promise resolves
- * when they are cached (at once if there is nothing to do, or if workers are unavailable); anything
- * still missing when a model needs it is made on the spot by generatedOnce, and the late copy is dropped.
+ * steel maps) in a worker, so that building the first models only uploads them. Safe to call any number
+ * of times, with or without a quality: each image is requested once, and every call's promise resolves
+ * when the images it asked for are cached (at once if they already are, or if workers are unavailable)
+ * or the worker has failed. Anything still missing when a model needs it is made on the spot by
+ * generatedOnce, and the worker's late copy is dropped.
  */
 export function prefetchGenerated(quality?: Quality): Promise<void> {
-  const jobs = Object.entries(pixelJobs(quality)).filter(([key]) => !generated.has(key));
-  if (jobs.length === 0) return prefetched ?? Promise.resolve();
-  if (pixelWorker === undefined) {
-    try {
-      pixelWorker = typeof Worker === 'undefined' ? null : new Worker(new URL('./pixels.worker.ts', import.meta.url), { type: 'module' });
-    } catch {
-      pixelWorker = null;
+  const waits: Promise<void>[] = [];
+  for (const [key, job] of Object.entries(pixelJobs(quality))) {
+    if (generated.has(key)) continue;
+    let pending = inFlight.get(key);
+    if (!pending) {
+      const w = getPixelWorker();
+      if (!w) break;
+      let settle = () => {};
+      const done = new Promise<void>((resolve) => {
+        settle = () => resolve();
+      });
+      pending = { done, settle };
+      inFlight.set(key, pending);
+      w.postMessage({ key, job });
     }
+    waits.push(pending.done);
   }
-  const w = pixelWorker;
-  if (!w) return Promise.resolve();
-  const before = prefetched ?? Promise.resolve();
-  const batch = new Promise<void>((resolve) => {
-    let left = jobs.length;
-    const done = () => {
-      left--;
-      if (left <= 0) {
-        w.removeEventListener('message', onMessage);
-        w.removeEventListener('error', onError);
-        resolve();
-      }
-    };
-    const keys = new Set(jobs.map(([key]) => key));
-    const onMessage = (e: MessageEvent<{ key: string; pixels: PixelResult }>) => {
-      if (!keys.delete(e.data.key)) return;
-      if (!generated.has(e.data.key)) generated.set(e.data.key, e.data.pixels);
-      done();
-    };
-    // A worker that fails to load or crashes: everything is made on the main thread instead.
-    const onError = () => {
-      pixelWorker = null;
-      w.terminate();
-      left = 1;
-      done();
-    };
-    w.addEventListener('message', onMessage);
-    w.addEventListener('error', onError);
-    for (const [key, job] of jobs) w.postMessage({ key, job });
-  });
-  prefetched = Promise.all([before, batch]).then(() => undefined);
-  return prefetched;
+  return Promise.all(waits).then(() => undefined);
 }
 
 // ---------------------------------------------------------------------------
