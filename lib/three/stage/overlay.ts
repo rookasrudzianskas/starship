@@ -94,8 +94,11 @@ export class Overlay {
     this.used.add(id);
   }
 
-  /** A bordered frame with a title (small frame or one half of the split view). */
-  frame(id: string, x: number, y: number, w: number, h: number, title: string, onClose?: () => void): void {
+  /**
+   * A bordered frame with a title (small frame or one half of the split view); `titleTop` keeps the title clear of
+   * page controls over the frame's top edge.
+   */
+  frame(id: string, x: number, y: number, w: number, h: number, title: string, onClose?: () => void, titleTop = 7): void {
     let el = this.frames.get(id);
     if (!el) {
       el = document.createElement('div');
@@ -145,6 +148,7 @@ export class Overlay {
     Object.assign(el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, display: 'block' });
     const titleEl = el.firstChild as HTMLDivElement;
     if (titleEl.textContent !== title) titleEl.textContent = title;
+    titleEl.style.top = `${titleTop}px`;
     this.usedFrames.add(id);
   }
 

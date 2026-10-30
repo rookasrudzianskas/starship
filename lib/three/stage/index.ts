@@ -7,13 +7,13 @@ import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/ear
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
 import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
 import { boosterCatchHeight, createBooster, createShip } from '@/lib/three/vehicles';
-import type { Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
+import type { EarthFrame, Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
 import { blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, type CameraPose, type DragInput, type Focus } from './cameras';
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
 import { autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
 import { copy3, damp, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
 import { Overlay } from './overlay';
-import { EventGates, TrajectoryLines } from './paths';
+import { EventGates, TrajectoryLines, type GateMark } from './paths';
 import { ResolutionGovernor } from './resolution';
 import { createSample, firstPhaseTime, sampleTrack, type StageSample } from './sample';
 
@@ -322,6 +322,10 @@ export function createStage(): StageHandle {
   let padT = 0;
 
   const sunDir = new THREE.Vector3(1, 0, 0);
+  const earthFrame: EarthFrame = { cameraEcef: [0, 0, 0], camera, sunDir, time: 0 };
+  /** Frame titles and gate labels for the current flight, made once per result rather than every frame. */
+  const titles = { booster: '', ship: '', stack: 'Super Heavy · Starship' };
+  const gateLabels = new WeakMap<GateMark, { id: string; time: string; color: string }>();
 
   function createEarthFor(p: PadId) {
     const e = createEarth({ renderer, scene, quality, pad: p });
@@ -416,6 +420,8 @@ export function createStage(): StageHandle {
     overlay.clearGates();
     gates.setResult(result);
 
+    titles.booster = `Super Heavy ${flight.boosterId}`.trim();
+    titles.ship = `Starship ${flight.shipId}`;
     plan = planDirector(result);
     catchTime = result.booster.endKind === 'catch' ? firstPhaseTime(result.booster, Phase.Caught) ?? result.booster.end : null;
     // Arms close just under the grid fins: base height above the pad at the catch + the catch point on the booster.
@@ -891,11 +897,19 @@ export function createStage(): StageHandle {
     cam.updateMatrixWorld(true);
 
     placeAll(p.pos, t);
-    earth?.update({ cameraEcef: p.pos, camera: cam, sunDir, time: t, utcMs: current ? current.launchUtc + t * 1000 : undefined });
+    if (earth) {
+      earthFrame.cameraEcef = p.pos;
+      earthFrame.camera = cam;
+      earthFrame.time = t;
+      earthFrame.utcMs = current ? current.launchUtc + t * 1000 : undefined;
+      earth.update(earthFrame);
+    }
     lines?.update(t, p.pos, show, tips);
     if (primary) updateModels(cam, t);
     else viewModels(cam);
   }
+
+  const closePip = () => useReplay.getState().setPip(false);
 
   function drawView(cam: THREE.PerspectiveCamera, vp: Viewport) {
     renderer.setViewport(vp.x, height - vp.y - vp.h, vp.w, vp.h);
@@ -931,17 +945,24 @@ export function createStage(): StageHandle {
         const stacked = current !== null && isStacked(current, t);
         const name = stacked ? 'Starship' : rig.id === 'booster' ? 'Super Heavy' : 'Starship';
         const id = stacked ? '' : rig.id === 'booster' ? flight.boosterId : flight.shipId;
-        overlay.label(`veh:${rig.id}`, pt.x, pt.y, name, id, rig.id === 'booster' && !stacked ? '#ff7a66' : '#7ab4ff', 'vehicle');
+        overlay.label(rig.id === 'booster' ? 'veh:booster' : 'veh:ship', pt.x, pt.y, name, id, rig.id === 'booster' && !stacked ? '#ff7a66' : '#7ab4ff', 'vehicle');
       }
     }
     if (settingsGates && gates?.mesh.visible) {
       for (const g of gates.items) {
         if (hiddenByEarth(cameraEcef, g.pos)) continue;
         if (!project(g.pos, cameraEcef, cam, vp)) continue;
-        const color = g.event.vehicle === 'booster' ? '#ff8a78' : g.event.vehicle === 'ship' ? '#8cc0ff' : '#ffffff';
-        const m = Math.round(Math.abs(g.event.t));
-        const time = m >= 3600 ? `T+${Math.floor(m / 3600)}:${String(Math.floor((m % 3600) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}` : `T+${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
-        overlay.label(`gate:${g.event.key}:${g.event.t}`, pt.x, pt.y, g.event.short, time, color, 'gate');
+        let l = gateLabels.get(g);
+        if (!l) {
+          const m = Math.round(Math.abs(g.event.t));
+          l = {
+            id: `gate:${g.event.key}:${g.event.t}`,
+            time: m >= 3600 ? `T+${Math.floor(m / 3600)}:${String(Math.floor((m % 3600) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}` : `T+${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`,
+            color: g.event.vehicle === 'booster' ? '#ff8a78' : g.event.vehicle === 'ship' ? '#8cc0ff' : '#ffffff',
+          };
+          gateLabels.set(g, l);
+        }
+        overlay.label(l.id, pt.x, pt.y, g.event.short, l.time, l.color, 'gate');
       }
     }
   }
@@ -1211,9 +1232,10 @@ export function createStage(): StageHandle {
       prepareView(rightPose, sideCamera, right, t, false, lift);
       drawView(sideCamera, right);
       labels(rightPose.pos, sideCamera, right, t, st.settings.showLabels, false);
-      const fl = getFlight(flightN);
-      overlay.frame('split-left', 0, 0, half, height, `Super Heavy ${fl.boosterId}`.trim());
-      overlay.frame('split-right', half, 0, width - half, height, `Starship ${fl.shipId}`);
+      // Below the camera bar, which sits over the top of the view on wide screens.
+      const titleTop = lift > 0 ? 52 : 7;
+      overlay.frame('split-left', 0, 0, half, height, titles.booster, undefined, titleTop);
+      overlay.frame('split-right', half, 0, width - half, height, titles.ship, undefined, titleTop);
     } else {
       const full: Viewport = { x: 0, y: 0, w: width, h: height };
       prepareView(pose, camera, full, t, true, lift);
@@ -1226,9 +1248,7 @@ export function createStage(): StageHandle {
       const vp: Viewport = { x: width - w - 16, y: 52, w, h };
       prepareView(pipPose, sideCamera, vp, t, false);
       drawView(sideCamera, vp);
-      const fl = getFlight(flightN);
-      const title = !sep ? 'Super Heavy · Starship' : pip.id === 'booster' ? `Super Heavy ${fl.boosterId}`.trim() : `Starship ${fl.shipId}`;
-      overlay.frame('pip', vp.x, vp.y, vp.w, vp.h, title, () => useReplay.getState().setPip(false));
+      overlay.frame('pip', vp.x, vp.y, vp.w, vp.h, !sep ? titles.stack : pip.id === 'booster' ? titles.booster : titles.ship, closePip);
     }
     overlay.end();
     if (governor.end(now, st.playing)) applySize();

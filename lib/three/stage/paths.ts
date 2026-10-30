@@ -279,6 +279,7 @@ export class EventGates {
 // --------------------------------------------------------------- set
 
 type Pair<T> = { booster: T; ship: T };
+const VEHICLES = ['booster', 'ship'] as const;
 
 /** All trajectory lines for one result. */
 export class TrajectoryLines {
@@ -363,7 +364,7 @@ export class TrajectoryLines {
    */
   update(t: number, cameraEcef: V3, show: { flown: boolean; planned: boolean; coast: boolean }, tips: Pair<V3 | null>): void {
     this.group.position.set(this.origin[0] - cameraEcef[0], this.origin[1] - cameraEcef[1], this.origin[2] - cameraEcef[2]);
-    for (const v of ['booster', 'ship'] as const) {
+    for (const v of VEHICLES) {
       this.flown[v].line.visible = show.flown;
       const tip = tips[v];
       let rel: V3 | null = null;
