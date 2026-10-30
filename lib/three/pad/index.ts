@@ -19,6 +19,9 @@ import { buildTower, type StaticBuilders } from './tower';
 
 export { CHOPSTICKS, CHOPSTICK_RAIL_TOP } from './tower';
 
+/** Render order of the apron, whose feathered edge makes it transparent (before every effect particle). */
+const APRON_ORDER = -30;
+
 /**
  * Starbase-style launch site (satisfies PadModel). Frame (right-handed): origin on the ground at the
  * launch-mount centre, +X east, +Y up, +Z SOUTH. The site is authored in (east, up, north) coordinates
@@ -45,7 +48,8 @@ export function createPad(pad: PadId, quality: Quality): PadModel {
   const B: StaticBuilders = {
     paint: new MeshBuilder(),
     steel: new MeshBuilder(),
-    concrete: new MeshBuilder(),
+    // The apron's edge fades out through vertex alpha.
+    concrete: new MeshBuilder(true),
     cast: new MeshBuilder(),
     white: new MeshBuilder(),
     plate: new MeshBuilder(),
@@ -75,15 +79,21 @@ export function createPad(pad: PadId, quality: Quality): PadModel {
 
   const detail: THREE.Object3D[] = [...tower.detail];
   const addStatic = (b: MeshBuilder, mat: THREE.Material, name: string, isDetail: boolean, shadows = true) => {
-    if (b.isEmpty) return;
+    if (b.isEmpty) return null;
     const mesh = new THREE.Mesh(b.build(), mat);
     mesh.name = name;
     mesh.castShadow = shadows;
     mesh.receiveShadow = shadows;
     content.add(mesh);
     if (isDetail) detail.push(mesh);
+    return mesh;
   };
-  addStatic(B.concrete, mats.concrete, 'pad-concrete', false);
+  const apron = addStatic(B.concrete, mats.concrete, 'pad-concrete', false);
+  if (apron) {
+    // A see-through edge on the ground: first among the transparent objects, so steam and spray blend over it.
+    apron.renderOrder = APRON_ORDER;
+    apron.castShadow = false;
+  }
   addStatic(B.cast, mats.cast, 'pad-cast-concrete', false);
   addStatic(B.paint, mats.paint, 'pad-steelwork', false);
   addStatic(B.steel, mats.steel, 'pad-bare-steel', false);

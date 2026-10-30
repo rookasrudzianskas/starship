@@ -46,6 +46,10 @@ export class MeshBuilder {
   private cr = 1;
   private cg = 1;
   private cb = 1;
+  private ca = 1;
+
+  /** `alpha`: vertex colours carry a fourth, alpha component (for a material with vertex alpha). */
+  constructor(private readonly alpha = false) {}
 
   get vertexCount(): number {
     return this.pos.length / 3;
@@ -64,6 +68,12 @@ export class MeshBuilder {
     return this;
   }
 
+  /** Sets the vertex alpha for following primitives (only kept by a builder made with alpha). */
+  opacity(a: number): this {
+    this.ca = a;
+    return this;
+  }
+
   /** Sets the vertex colour from linear components. */
   rgb(r: number, g: number, b: number): this {
     this.cr = r;
@@ -77,6 +87,7 @@ export class MeshBuilder {
     this.nor.push(nx, ny, nz);
     this.uv.push(u, v);
     this.col.push(this.cr, this.cg, this.cb);
+    if (this.alpha) this.col.push(this.ca);
     return this.pos.length / 3 - 1;
   }
 
@@ -296,11 +307,12 @@ export class MeshBuilder {
    * (display-space) factor; it is converted to linear so 0.5 really looks half as bright.
    */
   shade(f: (x: number, y: number, z: number) => number, from = 0): this {
+    const stride = this.alpha ? 4 : 3;
     for (let i = from; i < this.vertexCount; i++) {
       const k = Math.pow(Math.max(0, f(this.pos[i * 3], this.pos[i * 3 + 1], this.pos[i * 3 + 2])), 2.2);
-      this.col[i * 3] *= k;
-      this.col[i * 3 + 1] *= k;
-      this.col[i * 3 + 2] *= k;
+      this.col[i * stride] *= k;
+      this.col[i * stride + 1] *= k;
+      this.col[i * stride + 2] *= k;
     }
     return this;
   }
@@ -310,7 +322,7 @@ export class MeshBuilder {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, this.alpha ? 4 : 3));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     g.computeBoundingBox();

@@ -8,8 +8,9 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, mix,
  *  - air: an incandescent fireball of lumpy puffs that cools from white through orange into dark soot
  *    and white vapour, rises buoyantly and spreads; hot debris streaks arc out on drag + gravity
  *    trajectories, some leaving persistent smoke trails.
- *  - vacuum: a short, very bright flash; a fast, freely expanding vapour/debris cloud that thins out
- *    in seconds; debris flies in straight lines. No buoyant smoke.
+ *  - vacuum: a short, very bright flash; a thin shell of propellant vapour expanding freely at about
+ *    100 m/s, sunlit and brightest at its rim, that dilutes away within about two seconds; glowing
+ *    fragments fly in straight lines. No fireball, no buoyant smoke.
  *  - in between: both models evaluated and blended by w = ratio^0.3.
  * Buoyancy and gravity act along the local vertical: the scene's HemisphereLight direction if there is
  * one, converted into the object's frame; otherwise the object's +Y (orient the object with +Y = up).
@@ -88,6 +89,7 @@ export function createExplosion(): Explosion {
   // Fireball, smoke, flash, debris sparks and smoke trails share one depth-sorted batch (one draw call).
   const batch = new Billboards(CAPACITY, atlas);
   batch.mesh.name = 'explosion-particles';
+  batch.insideFade = 0.25;
   object.add(batch.mesh);
 
   const defs = buildDefs();
@@ -177,7 +179,7 @@ export function createExplosion(): Explosion {
     // --- Vacuum halo: a large, faint, freely expanding sphere of vapour that dilutes quickly.
     if (w < 0.98) {
       const tau = age;
-      const op = (1 - w) * 0.22 * Math.exp(-tau / 1.6) * smooth(0, 0.08, tau);
+      const op = (1 - w) * 0.12 * Math.exp(-tau / 0.9) * smooth(0, 0.08, tau);
       if (op > 0.003) {
         rec.x = 0;
         rec.y = 0;
@@ -214,19 +216,20 @@ export function createExplosion(): Explosion {
       const tempA = 1.12 * Math.exp(-tau / (d.cool * (d.soot ? 1.25 : 0.55) * ts));
       const opA = smooth(0, 0.05, tau) * (1 - smooth(28 * ts, 75 * ts, tau)) * 0.62;
       const erA = 0.06 + 0.55 * smooth(3 * ts, 60 * ts, tau);
-      // Vacuum model: a self-similar, freely expanding shell of vapour and fine debris (no drag, no
-      // buoyancy) that thins out within seconds; incandescence lasts only a moment.
+      // Vacuum model: a thin shell of vapour and fine debris expanding freely (no drag, no buoyancy).
+      // Soft, faint, overlapping blobs (no billowy texture: nothing condenses into puffs in vacuum) make a
+      // hollow, rim-brightened haze that dilutes away within about two seconds and glows only at first.
       const td = 6;
       const kV = td * (1 - Math.exp(-tau / td));
       const shell = 0.55 + 0.45 * Math.sqrt(d.spd);
-      const vx = d.dir.x * S * shell * 2.0 * kV;
-      const vy = d.dir.y * S * shell * 2.0 * kV;
-      const vz = d.dir.z * S * shell * 2.0 * kV;
-      const distV = Math.sqrt(vx * vx + vy * vy + vz * vz);
-      const sizeV = S * (d.s0 * 1.2 + 0.05 * tau) + distV * 0.55;
+      const reach = S * (0.12 + shell * 2.0 * kV);
+      const vx = d.dir.x * reach;
+      const vy = d.dir.y * reach;
+      const vz = d.dir.z * reach;
+      const sizeV = S * (d.s0 + 0.03 * tau) + reach * 0.45;
       const tempV = 1.15 * Math.exp(-tau / (0.12 * d.cool));
-      const opV = smooth(0, 0.04, tau) * (0.75 / (1 + (tau / 0.8) * (tau / 0.8))) * (1 - smooth(3.5, 8, tau));
-      const erV = 0.15 + 0.55 * smooth(0.15, 3, tau);
+      const opV = smooth(0, 0.04, tau) * (0.32 / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.4, 3, tau));
+      const erV = 0.25 + 0.5 * smooth(0.1, 2, tau);
 
       const op = mix(opV, opA, w);
       const temp = mix(tempV, tempA, w);
@@ -246,11 +249,11 @@ export function createExplosion(): Explosion {
       rec.er = rec.eg = rec.eb = 1;
       rec.temp = temp;
       rec.m0 = d.rot + d.spin * tau;
-      rec.m1 = d.cell;
+      rec.m1 = w < 0.4 ? 4 : d.cell;
       rec.m2 = mix(erV, erA, w);
       rec.m3 = 0;
       rec.mode = MODE_PUFF;
-        batch.add(rec);
+      batch.add(rec);
     }
 
     // --- Debris streaks and their smoke trails.

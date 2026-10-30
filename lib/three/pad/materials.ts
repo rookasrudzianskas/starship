@@ -26,7 +26,7 @@ export interface PadMaterials {
   steelInst: THREE.MeshStandardMaterial;
   /** Stainless tank shells with ring welds. Vertex colours. */
   tank: THREE.MeshStandardMaterial;
-  /** Apron concrete with slab joints. Vertex colours carry soot. */
+  /** Apron concrete with slab joints. Vertex colours carry soot, vertex alpha the feathered edge. */
   concrete: THREE.MeshStandardMaterial;
   /** Cast-in-place concrete (legs, walls, footings). Vertex colours carry soot. */
   cast: THREE.MeshStandardMaterial;
@@ -55,7 +55,14 @@ export function createPadMaterials(scope: SharedScope): PadMaterials {
   steelInst.name = 'pad-steel-instanced';
   const tank = new THREE.MeshStandardMaterial({ color: 0xffffff, map: ringMap, vertexColors: true, roughness: 0.34, metalness: 0.92 });
   tank.name = 'pad-tank';
-  const concrete = new THREE.MeshStandardMaterial({ color: 0xffffff, map: concreteMap, vertexColors: true, roughness: 0.93, metalness: 0 });
+  const concrete = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: concreteMap,
+    vertexColors: true,
+    roughness: 0.93,
+    metalness: 0,
+    transparent: true,
+  });
   concrete.name = 'pad-concrete';
   const cast = new THREE.MeshStandardMaterial({ color: 0xffffff, map: castMap, vertexColors: true, roughness: 0.9, metalness: 0 });
   cast.name = 'pad-cast-concrete';

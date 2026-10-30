@@ -5,7 +5,8 @@ import { MeshBuilder, v3 } from './builder';
 import type { StaticBuilders } from './tower';
 
 /**
- * Pad surroundings: the concrete apron (with soot baked into vertex colours), the propellant tank farm
+ * Pad surroundings: the concrete apron (soot baked into vertex colours, its edge feathered into the ground
+ * imagery with vertex alpha), the propellant tank farm
  * (vertical stainless tanks, horizontal white tanks, pipe rack), deluge water tanks, support buildings
  * and light poles. Pad 1's tank farm sits west of the mount, Pad 2's east.
  */
@@ -36,25 +37,52 @@ function apronShade(pad: PadId, x: number, z: number): number {
   return Math.max(0.28, (1 - Math.min(0.72, s)) * grime);
 }
 
+/**
+ * The apron: concrete slabs inside a rounded, slightly ragged outline, a band of gravel round them, and an
+ * edge that fades into the ground imagery (vertex alpha) rather than ending in a ruler-straight slab.
+ */
 function buildApron(B: MeshBuilder, pad: PadId, side: number): void {
   const x0 = side < 0 ? -178 : -102;
   const x1 = side < 0 ? 102 : 178;
   const z0 = -96;
   const z1 = 86;
-  const nx = Math.round((x1 - x0) / 3.5);
-  const nz = Math.round((z1 - z0) / 3.5);
+  const cx = (x0 + x1) / 2;
+  const cz = (z0 + z1) / 2;
+  const hx = (x1 - x0) / 2;
+  const hz = (z1 - z0) / 2;
+  const corner = 22;
+  const border = 34;
+  const ax0 = x0 - border;
+  const az0 = z0 - border;
+  const nx = Math.round((x1 - x0 + 2 * border) / 3.5);
+  const nz = Math.round((z1 - z0 + 2 * border) / 3.5);
   const base = B.vertexCount;
   for (let j = 0; j <= nz; j++) {
     for (let i = 0; i <= nx; i++) {
-      const x = x0 + ((x1 - x0) * i) / nx;
-      const z = z0 + ((z1 - z0) * j) / nz;
-      // Perceptual shade to linear vertex colour.
+      const x = ax0 + ((x1 - x0 + 2 * border) * i) / nx;
+      const z = az0 + ((z1 - z0 + 2 * border) * j) / nz;
+      // Distance outside the rounded slab outline (negative inside), roughened so the edge wanders.
+      const qx = Math.abs(x - cx) - (hx - corner);
+      const qz = Math.abs(z - cz) - (hz - corner);
+      const d =
+        Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) +
+        Math.min(Math.max(qx, qz), 0) -
+        corner +
+        (noise2(x, z, 23, 11) - 0.5) * 9 +
+        (noise2(x, z, 7, 13) - 0.5) * 3;
+      const gravel = smoothstep(-4, 3, d);
+      const alpha = 1 - smoothstep(4, border - 6, d + (noise2(x, z, 11, 17) - 0.5) * 10);
+      // Perceptual shade to linear vertex colour; soot is warm (brown-black): darker areas lose a little blue.
       const k = Math.pow(apronShade(pad, x, z), 2.2);
-      // Soot is warm (brown-black): darker areas lose a little blue.
-      B.rgb(k, k * (0.97 + 0.03 * k), k * (0.9 + 0.1 * k));
-      B.vertex(x, APRON_Y, z, 0, 1, 0, x, z);
+      const g = 0.3 + 0.12 * noise2(x, z, 5, 19);
+      const toGravel = (c: number, gc: number) => c + (gc - c) * gravel;
+      B.rgb(toGravel(k, g), toGravel(k * (0.97 + 0.03 * k), g * 0.93), toGravel(k * (0.9 + 0.1 * k), g * 0.8));
+      B.opacity(alpha);
+      // The gravel lies a little lower than the slabs.
+      B.vertex(x, APRON_Y - (APRON_Y - 0.08) * gravel, z, 0, 1, 0, x, z);
     }
   }
+  B.opacity(1);
   const row = nx + 1;
   for (let j = 0; j < nz; j++) {
     for (let i = 0; i < nx; i++) {
@@ -66,13 +94,6 @@ function buildApron(B: MeshBuilder, pad: PadId, side: number): void {
       B.tri(b, c, d);
     }
   }
-  // Slab edges, so the apron reads as a raised pad over the surrounding ground.
-  B.rgb(0.8, 0.8, 0.78);
-  const lo = -1.2;
-  B.quad(v3(x0, lo, z0), v3(x1, lo, z0), v3(x1, APRON_Y, z0), v3(x0, APRON_Y, z0));
-  B.quad(v3(x1, lo, z1), v3(x0, lo, z1), v3(x0, APRON_Y, z1), v3(x1, APRON_Y, z1));
-  B.quad(v3(x0, lo, z1), v3(x0, lo, z0), v3(x0, APRON_Y, z0), v3(x0, APRON_Y, z1));
-  B.quad(v3(x1, lo, z0), v3(x1, lo, z1), v3(x1, APRON_Y, z1), v3(x1, APRON_Y, z0));
 }
 
 function verticalTank(B: MeshBuilder, x: number, z: number, r: number, h: number): void {
