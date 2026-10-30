@@ -79,6 +79,74 @@ export function applyEnvFallback(root: THREE.Object3D, mats: THREE.MeshStandardM
   }
 }
 
+const PLUME_LIGHT_DECL = /* glsl */ `
+uniform vec3 uPlumeLight;
+uniform vec3 uPlumeLightColor;
+`;
+
+const PLUME_LIGHT_TERM = /* glsl */ `
+{
+  // Exhaust glow below the nozzles: a soft warm source (5 m radius keeps the falloff finite close in).
+  vec3 plumeLv = (viewMatrix * vec4(uPlumeLight, 1.0)).xyz - geometryPosition;
+  float plumeD2 = dot(plumeLv, plumeLv);
+  IncidentLight plumeLight;
+  plumeLight.direction = plumeLv * inversesqrt(max(plumeD2, 1e-4));
+  plumeLight.color = uPlumeLightColor / (plumeD2 + 25.0);
+  plumeLight.visible = true;
+  RE_Direct(plumeLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
+}
+`;
+
+const PLUME_LIGHT_COLOR = new THREE.Color(1.0, 0.62, 0.32);
+
+/**
+ * The light a vehicle's own exhaust casts on it (aft skirt, flaps, engine bells): a warm source a few
+ * metres below the nozzles, lost in daylight but what lights a night landing burn. It is added to the
+ * vehicle's lit materials in the shader rather than as a three.js light, so the scene's light count, and
+ * with it every program, stays the same whether the engines burn or not.
+ */
+export class PlumeLight {
+  readonly uniforms = {
+    uPlumeLight: { value: new THREE.Vector3() },
+    uPlumeLightColor: { value: new THREE.Color(0, 0, 0) },
+  };
+  private readonly local = new THREE.Vector3();
+
+  /** `y`: height of the source in the vehicle frame (below the nozzle exits, which are at 0). */
+  constructor(
+    private readonly root: THREE.Object3D,
+    y: number,
+  ) {
+    this.local.set(0, y, 0);
+  }
+
+  /** Adds the term to a lit material (call once, before its first render). */
+  apply(m: THREE.MeshStandardMaterial): void {
+    const prev = m.onBeforeCompile;
+    const key = m.customProgramCacheKey();
+    m.onBeforeCompile = (shader, renderer) => {
+      prev.call(m, shader, renderer);
+      Object.assign(shader.uniforms, this.uniforms);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>\n${PLUME_LIGHT_DECL}`)
+        .replace('#include <lights_fragment_begin>', `#include <lights_fragment_begin>\n${PLUME_LIGHT_TERM}`);
+    };
+    m.customProgramCacheKey = () => `${key}|plume-light`;
+  }
+
+  /** `power`: mean engine intensity (0..1); `alt`: altitude factor (the vacuum exhaust barely glows). */
+  set(power: number, alt: number): void {
+    const k = 260 * Math.max(0, power) * (1 - 0.8 * Math.min(1, Math.max(0, (alt - 0.2) / 0.7)));
+    this.uniforms.uPlumeLightColor.value.copy(PLUME_LIGHT_COLOR).multiplyScalar(k);
+  }
+
+  /** Places the source for the view being drawn (the stage moves objects per view, camera-relative). */
+  place(): void {
+    this.root.updateWorldMatrix(true, false);
+    this.uniforms.uPlumeLight.value.copy(this.local).applyMatrix4(this.root.matrixWorld);
+  }
+}
+
 /** Deterministic per-index flicker in 0..1 (no Math.random, so scrubbing is stable). */
 export function flicker(t: number, i: number): number {
   return 0.5 + 0.25 * Math.sin(t * 23.1 + i * 2.39) + 0.25 * Math.sin(t * 37.7 + i * 5.13);

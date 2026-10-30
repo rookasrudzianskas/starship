@@ -10,7 +10,7 @@ import { engineSlots } from './engines-layout';
 import { gridFinGeometry } from './parts';
 import { PlumeCores, PlumeGlow, PlumeVolume, altitudeFactor, clusterShape, newVolumeShape } from './plumes';
 import { Plasma } from './plasma';
-import { EngineSmoother, applyEnvFallback, flicker } from './runtime';
+import { EngineSmoother, PlumeLight, applyEnvFallback, flicker } from './runtime';
 
 /**
  * Super Heavy.
@@ -115,6 +115,8 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
   const finMat = new THREE.MeshStandardMaterial({ color: 0x8f8e8b, roughness: 0.48, metalness: 0.88 });
   const engineMat = createEngineMaterial();
   const envMats: THREE.MeshStandardMaterial[] = [skin.material, ringSkin.material, dark, interior, finMat, engineMat];
+  const plumeLight = new PlumeLight(object, -7);
+  for (const m of envMats) plumeLight.apply(m);
 
   // ---------------------------------------------------------------- body
   const bodyParts: THREE.BufferGeometry[] = [];
@@ -355,6 +357,8 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
       volume.updateCamera(camera);
 
       glow.uniforms.uIntensity.value = power * (0.7 + 1.4 * alt) * plumeBrightness;
+      plumeLight.set(power * plumeBrightness, alt);
+      plumeLight.place();
       glow.uniforms.uSize.value = R * (1.9 + 1.6 * alt) * Math.sqrt(Math.max(power, 0.05));
       glow.uniforms.uColor.value.setRGB(1.0, 0.9 - 0.12 * alt, 0.76 + 0.24 * alt);
       glow.mesh.visible = power > 0.002;
@@ -374,6 +378,7 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
     setCamera(camera: THREE.Camera) {
       volume.updateCamera(camera);
       plasma.setCamera(camera);
+      plumeLight.place();
     },
     setQuality(q: Quality) {
       volume.setSteps(q === 'high' ? 12 : 6);

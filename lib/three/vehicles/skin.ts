@@ -163,7 +163,8 @@ float skSoot = 0.0;
   // The odd replacement tile from a different batch reads slightly lighter.
   tileBase *= h2 > 0.993 ? 1.7 : 1.0;
   vec3 tileCol = mix(tileBase, vec3(0.006), grout);
-  skTileRough = mix(0.36 + 0.22 * h2, 0.9, grout);
+  // Matte ceramic: low gloss, so the tiles stay black under a low, warm sun instead of taking on its colour.
+  skTileRough = mix(0.64 + 0.2 * h2, 0.92, grout);
   skTileH = smoothstep(0.5 - gw, 0.31, d) * (1.0 - far) * 0.004;
   diffuseColor.rgb = mix(diffuseColor.rgb, tileCol, skTileMask);
 #endif
@@ -208,6 +209,14 @@ float skSoot = 0.0;
   roughnessFactor = mix(roughnessFactor, skTileRough, skTileMask);
   metalnessFactor = mix(metalnessFactor, 0.0, skTileMask);
 }
+`;
+
+const FRAG_SPECULAR = /* glsl */ `
+#ifdef SKIN_TILES
+// The tiles reflect less than the generic 4% dielectric, and much less at grazing angles.
+material.specularColorBlended = mix(material.specularColorBlended, vec3(0.025), skTileMask);
+material.specularF90 = mix(material.specularF90, 0.55, skTileMask);
+#endif
 `;
 
 const FRAG_NORMAL = /* glsl */ `
@@ -258,9 +267,10 @@ export function createSkinMaterial(o: SkinOptions): SkinMaterial {
       .replace('#include <common>', `#include <common>\n${FRAG_DECL}`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>\n${FRAG_SURFACE}`)
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FRAG_NORMAL}`)
+      .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>\n${FRAG_SPECULAR}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${FRAG_EMISSIVE}`);
   };
-  material.customProgramCacheKey = () => `veh-skin-v1|${o.tiles ? 't' : ''}${o.frost ? 'f' : ''}`;
+  material.customProgramCacheKey = () => `veh-skin-v2|${o.tiles ? 't' : ''}${o.frost ? 'f' : ''}`;
   return { material, uniforms };
 }
 

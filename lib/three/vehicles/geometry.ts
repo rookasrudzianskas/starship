@@ -34,6 +34,12 @@ export interface LatheOptions {
   bandTolerance?: number;
   /** Flip faces inwards (for interiors). */
   inward?: boolean;
+  /**
+   * Leave a rectangular opening: faces between the rings at y0 and y1 (both must be profile rings) whose
+   * centres lie within halfAngle of the azimuth `theta` are skipped. The cut follows whole segments, so
+   * pick halfAngle as a multiple of the segment angle (2π / segments).
+   */
+  hole?: { y0: number; y1: number; theta: number; halfAngle: number };
 }
 
 interface Ring {
@@ -129,17 +135,33 @@ export function lathe(profile: ProfilePoint[], o: LatheOptions): THREE.BufferGeo
     return start;
   };
 
+  // Columns (segments) inside the opening, for ring pairs within its height.
+  let holeCols: boolean[] | null = null;
+  if (o.hole) {
+    const h = o.hole;
+    holeCols = [];
+    for (let j = 0; j < seg; j++) {
+      const th = t0 + (tl * (j + 0.5)) / seg - h.theta;
+      holeCols.push(Math.abs(Math.atan2(Math.sin(th), Math.cos(th))) < h.halfAngle);
+    }
+  }
+  const skipFor = (a: Ring, b: Ring) => {
+    if (!holeCols || !o.hole) return null;
+    const ym = (a.y + b.y) / 2;
+    return ym > o.hole.y0 && ym < o.hole.y1 ? holeCols : null;
+  };
+
   for (let i = 0; i < rings.length; i++) {
     if (bandStart[i]) {
       // Close the previous band with this ring at the old reference radius, then start a new row.
       const closeRow = emitRow(rings[i], bandRef[i - 1]);
-      pushQuads(index, rowBase, closeRow, cols, o.inward ?? false);
+      pushQuads(index, rowBase, closeRow, cols, o.inward ?? false, skipFor(rings[i - 1], rings[i]));
       rowBase = emitRow(rings[i], bandRef[i]);
       continue;
     }
     const row = emitRow(rings[i], bandRef[i]);
     if (i > 0 && !(rings[i].y === rings[i - 1].y && rings[i].r === rings[i - 1].r)) {
-      pushQuads(index, rowBase, row, cols, o.inward ?? false);
+      pushQuads(index, rowBase, row, cols, o.inward ?? false, skipFor(rings[i - 1], rings[i]));
     }
     rowBase = row;
   }
@@ -153,8 +175,9 @@ export function lathe(profile: ProfilePoint[], o: LatheOptions): THREE.BufferGeo
   return g;
 }
 
-function pushQuads(index: number[], a: number, b: number, cols: number, inward: boolean) {
+function pushQuads(index: number[], a: number, b: number, cols: number, inward: boolean, skip: boolean[] | null = null) {
   for (let j = 0; j < cols - 1; j++) {
+    if (skip?.[j]) continue;
     const a0 = a + j;
     const a1 = a + j + 1;
     const b0 = b + j;

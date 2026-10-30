@@ -10,7 +10,7 @@ import { engineSlots } from './engines-layout';
 import { flapGeometry, flapPivot, type FlapPlanform } from './parts';
 import { PlumeCores, PlumeGlow, PlumeVolume, altitudeFactor, clusterShape, newVolumeShape } from './plumes';
 import { Plasma } from './plasma';
-import { EngineSmoother, applyEnvFallback } from './runtime';
+import { EngineSmoother, PlumeLight, applyEnvFallback } from './runtime';
 
 /**
  * Starship (upper stage).
@@ -119,13 +119,23 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
   const dark = createDarkMaterial(0x1d1c1b, 0.8, 0.3);
   const engineMat = createEngineMaterial();
   const envMats: THREE.MeshStandardMaterial[] = [skin.material, flapSkin.material, dark, engineMat];
+  const plumeLight = new PlumeLight(object, -6);
+  for (const m of envMats) plumeLight.apply(m);
 
   // ---------------------------------------------------------------- hull profile
+  // Payload slot (the "Pez" door) on the leeward side: a real opening, cut on whole hull segments.
+  const segAngle = (Math.PI * 2) / seg;
+  const dw = Math.max(1, Math.round(sp.door.width / R / 2 / segAngle)) * segAngle;
+  const dh = sp.door.height;
+  const slotY0 = sp.door.y - dh / 2;
+  const slotY1 = sp.door.y + dh / 2;
   const profile: ProfilePoint[] = [
     { y: 0, r: 4.36, crease: true },
     { y: 0.12, r: R, crease: true },
   ];
-  for (let y = 8; y < sp.noseBase - 1; y += 8) profile.push({ y, r: R });
+  const barrel = [slotY0, slotY1];
+  for (let y = 8; y < sp.noseBase - 1; y += 8) barrel.push(y);
+  for (const y of [...new Set(barrel)].sort((a, b) => a - b)) profile.push({ y, r: R });
   profile.push({ y: sp.noseBase, r: R });
   const nn = quality === 'high' ? 30 : 18;
   for (let i = 1; i <= nn; i++) {
@@ -145,7 +155,7 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
   skin.uniforms.uTileEdge.value.set(1.63, sNose + sp.wrapStart, sTip - 1.1, 0);
 
   const bodyParts: THREE.BufferGeometry[] = [];
-  bodyParts.push(lathe(profile, { segments: seg, tileKind: 1 }));
+  bodyParts.push(lathe(profile, { segments: seg, tileKind: 1, hole: { y0: slotY0, y1: slotY1, theta: Math.PI, halfAngle: dw } }));
 
   // Aft heat-shield plate between the engines (tiled) and the skirt interior (dark).
   const plateY = 3.3;
@@ -217,14 +227,14 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
   object.add(body);
 
   // ---------------------------------------------------------------- payload door (leeward)
-  const dw = sp.door.width / R / 2;
-  const dh = sp.door.height;
-  const slotParts: THREE.BufferGeometry[] = [];
-  slotParts.push(onlyAttributes(cylinderPatch(R + 0.008, Math.PI - dw, Math.PI + dw, sp.door.y - dh / 2, sp.door.y + dh / 2, 10), ['position', 'normal']));
-  const doorGeo = ensureSkinAttributes(cylinderPatch(R + 0.016, Math.PI - dw * 0.97, Math.PI + dw * 0.97, sp.door.y - dh * 0.47, sp.door.y + dh * 0.47, 10));
+  // Flush with the skin when closed; it pulls in and slides up inside the hull to open the slot.
+  const doorSteps = Math.round((2 * dw) / segAngle);
+  const doorGeo = ensureSkinAttributes(cylinderPatch(R, Math.PI - dw, Math.PI + dw, slotY0, slotY1, doorSteps));
   const door = new THREE.Mesh(doorGeo, skin.material);
   door.name = 'payload-door';
+  door.castShadow = true;
   object.add(door);
+  const slotParts = [slotRecess(R, 1.0, slotY0, slotY1, dw, doorSteps)];
 
   // ---------------------------------------------------------------- dark parts: skirt interior + slot
   {
@@ -303,8 +313,8 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
   const flapAngles = [NaN, NaN, NaN, NaN];
   const setDoor = (v: number) => {
     doorOpen = Math.max(0, Math.min(1, v));
-    // The panel slides up along the hull, uncovering the dark slot.
-    door.position.set(0, doorOpen * dh * 1.02, -doorOpen * 0.03);
+    // Pull in behind the skin (towards the axis is +Z on the leeward side), then slide up out of sight.
+    door.position.set(0, smoothstep(0.15, 1, doorOpen) * (dh + 0.2), smoothstep(0, 0.15, doorOpen) * 0.12);
   };
 
   const model: ShipModel = {
@@ -343,6 +353,8 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
 
       glow.uniforms.uPos.value.set(0, -1.0 - 0.8 * (1 - hs), 0);
       glow.uniforms.uIntensity.value = power * (0.8 - 0.3 * alt + 0.5 * hs) * plumeBrightness;
+      plumeLight.set(power * plumeBrightness, alt);
+      plumeLight.place();
       glow.uniforms.uSize.value = R * (1.5 + 0.7 * alt) * Math.sqrt(Math.max(power, 0.05));
       glow.uniforms.uColor.value.setRGB(1.0, 0.9 - 0.12 * alt - 0.1 * hs, 0.78 + 0.22 * alt - 0.3 * hs);
       glow.mesh.visible = power > 0.002;
@@ -366,6 +378,7 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
     setCamera(camera: THREE.Camera) {
       volume.updateCamera(camera);
       plasma.setCamera(camera);
+      plumeLight.place();
     },
     setQuality(q: Quality) {
       volume.setSteps(q === 'high' ? 12 : 6);
@@ -393,4 +406,46 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
     plumeBrightness = Math.max(0, k);
   };
   return model;
+}
+
+/**
+ * Inside of the payload slot behind the hull opening (position and normal only): ceiling, floor, side
+ * walls and the dark back of the payload bay, `depth` metres in from the skin at radius r.
+ */
+function slotRecess(r: number, depth: number, y0: number, y1: number, dw: number, steps: number): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const at = (rr: number, th: number, y: number) => new THREE.Vector3(rr * Math.sin(th), y, rr * Math.cos(th));
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  // Two triangles facing `n` (the winding is chosen from the normal, so corners may come in either order).
+  const quad = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, n: THREE.Vector3) => {
+    const flip = e1.subVectors(b, a).cross(e2.subVectors(c, a)).dot(n) < 0;
+    const tri = flip ? [a, c, b, a, d, c] : [a, b, c, a, c, d];
+    for (const p of tri) {
+      pos.push(p.x, p.y, p.z);
+      nrm.push(n.x, n.y, n.z);
+    }
+  };
+  const ri = r - depth;
+  const up = new THREE.Vector3(0, 1, 0);
+  const down = new THREE.Vector3(0, -1, 0);
+  for (let k = 0; k < steps; k++) {
+    const ta = Math.PI - dw + (2 * dw * k) / steps;
+    const tb = Math.PI - dw + (2 * dw * (k + 1)) / steps;
+    const tm = (ta + tb) / 2;
+    quad(at(r, ta, y1), at(r, tb, y1), at(ri, tb, y1), at(ri, ta, y1), down);
+    quad(at(r, ta, y0), at(r, tb, y0), at(ri, tb, y0), at(ri, ta, y0), up);
+    quad(at(ri, ta, y0), at(ri, tb, y0), at(ri, tb, y1), at(ri, ta, y1), new THREE.Vector3(Math.sin(tm), 0, Math.cos(tm)));
+  }
+  for (const side of [-1, 1]) {
+    const th = Math.PI + side * dw;
+    // Tangent of increasing azimuth; each side wall faces the middle of the slot.
+    const n = new THREE.Vector3(Math.cos(th), 0, -Math.sin(th)).multiplyScalar(-side);
+    quad(at(r, th, y0), at(ri, th, y0), at(ri, th, y1), at(r, th, y1), n);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  return onlyAttributes(g, ['position', 'normal']);
 }

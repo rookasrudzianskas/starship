@@ -128,8 +128,10 @@ function steelPixels(q: Quality): SteelPixels {
       albedo[k + 2] = clampByte(b);
       albedo[k + 3] = 255;
 
-      // ORM: roughness rises on the bead and heat-affected zones; grain adds streaky variation.
-      const rough = 0.3 + grain * 0.07 * g + fine * 0.02 + beadAll * 0.3 + straw * 0.08;
+      // ORM: brushed steel is a blurred mirror, not a polished one (in shade it would otherwise just repeat
+      // the sky behind the vehicle and read as glass); roughness rises on the bead and heat-affected zones,
+      // grain adds streaky variation.
+      const rough = 0.42 + grain * 0.07 * g + fine * 0.02 + beadAll * 0.3 + straw * 0.08;
       orm[k] = clampByte(255 * (1 - beadAll * 0.25));
       orm[k + 1] = clampByte(rough * 255);
       orm[k + 2] = clampByte(255 * (1 - beadAll * 0.15));
