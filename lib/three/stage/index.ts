@@ -175,15 +175,18 @@ const PAD_SHOT: Shot = { id: 'pad', vehicle: 'booster' };
 /** Height of one row of labels over the view, CSS px. */
 const LABEL_ROW = 15;
 
-/** Width of a letter of a label's title (vehicles, event gates) and of its second part, CSS px (see overlay.ts). */
-const LABEL_CHAR_VEHICLE = 9;
-const LABEL_CHAR_GATE = 8.6;
-const LABEL_CHAR_SUB = 8;
+/** Average width of a letter in a label's title (vehicles, event gates) and in its second part, CSS px (overlay.ts). */
+const LABEL_CHAR_VEHICLE = 8;
+const LABEL_CHAR_GATE = 7.6;
+const LABEL_CHAR_SUB = 7;
 
-/** About how wide a label is (CSS px): worked out from its letters, not read back from the page every frame. */
+/**
+ * About how wide a label is (CSS px), with a little room after it: worked out from its letters, not read back from
+ * the page every frame.
+ */
 function labelWidth(title: string, sub: string, kind: 'vehicle' | 'gate'): number {
   const head = kind === 'vehicle' ? 15 + title.length * LABEL_CHAR_VEHICLE : title.length * LABEL_CHAR_GATE;
-  return Math.ceil(head + (sub ? 8 + sub.length * LABEL_CHAR_SUB : 0));
+  return Math.ceil(head + (sub ? 8 + sub.length * LABEL_CHAR_SUB : 0)) + 6;
 }
 
 /** Ray from a to b passes through the Earth before reaching b. */
