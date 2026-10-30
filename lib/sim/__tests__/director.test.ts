@@ -4,7 +4,7 @@ import { engineStatesAt } from '../engines';
 import { ecefToLatLonAlt, latLonAltToEcef, surfaceDistance } from '../geo';
 import { isLand } from '../land';
 import { simulateFlight } from '../simulate';
-import { ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Intervention, type Scenario, type Track } from '../types';
+import { EARTH_MU, EARTH_RADIUS, ENGINE_LIT, G0, Phase, type EngineTimeline, type FlightResult, type Intervention, type Scenario, type Track } from '../types';
 
 /**
  * Flight director scenarios: whatever the user does, the outcome stays physically sensible.
@@ -47,6 +47,41 @@ function tiltAt(tr: Track, i: number): number {
   const px = tr.pos[3 * i], py = tr.pos[3 * i + 1], pz = tr.pos[3 * i + 2];
   const l = Math.hypot(px, py, pz);
   return (Math.acos(Math.min(1, (yx * px + yy * py + yz * pz) / l)) * 180) / Math.PI;
+}
+
+/** Height of the vehicle's base (the engine plane) above the sea at sample i, m. */
+function baseHeight(tr: Track, i: number): number {
+  const x = tr.quat[4 * i], y = tr.quat[4 * i + 1], z = tr.quat[4 * i + 2], w = tr.quat[4 * i + 3];
+  const c = tr.com[i];
+  const bx = tr.pos[3 * i] - 2 * (x * y - z * w) * c;
+  const by = tr.pos[3 * i + 1] - (1 - 2 * (x * x + z * z)) * c;
+  const bz = tr.pos[3 * i + 2] - 2 * (y * z + x * w) * c;
+  return Math.hypot(bx, by, bz) - EARTH_RADIUS;
+}
+
+/**
+ * Lean of a landing from time `from` (deg): the most over the last `band` metres above where the descent ends (in
+ * the arms or at the water), and at that moment.
+ */
+function landingLean(tr: Track, from: number, band: number): { max: number; end: number } {
+  let k = tr.n - 1;
+  while (k > 0 && (tr.phase[k] === Phase.Caught || tr.phase[k] === Phase.Splashed || tr.phase[k] === Phase.Destroyed)) k--;
+  const hEnd = baseHeight(tr, k);
+  let max = 0;
+  for (let i = 0; i <= k; i++) if (tr.t[i] >= from && baseHeight(tr, i) - hEnd < band) max = Math.max(max, tiltAt(tr, i));
+  return { max, end: tiltAt(tr, k) };
+}
+
+/** Thrust and drag acceleration between samples i − 1 and i, in g (the frame's own terms, under 0.2 g, are left in). */
+function forceG(tr: Track, i: number): number {
+  const dt = tr.t[i] - tr.t[i - 1];
+  const px = tr.pos[3 * i], py = tr.pos[3 * i + 1], pz = tr.pos[3 * i + 2];
+  const r = Math.hypot(px, py, pz);
+  const g = EARTH_MU / (r * r * r);
+  const ax = (tr.vel[3 * i] - tr.vel[3 * i - 3]) / dt + g * px;
+  const ay = (tr.vel[3 * i + 1] - tr.vel[3 * i - 2]) / dt + g * py;
+  const az = (tr.vel[3 * i + 2] - tr.vel[3 * i - 1]) / dt + g * pz;
+  return Math.hypot(ax, ay, az) / G0;
 }
 
 describe('engine-outs on the climb', () => {
@@ -171,9 +206,92 @@ describe('booster return', () => {
     const s = b.phase.indexOf(Phase.Splashed);
     for (let i = Math.max(1, s - 2); i < s + 10; i++) expect(Math.abs(tiltAt(b, i) - tiltAt(b, i - 1)), `step ${i}`).toBeLessThan(2);
   });
+
+  it('a landing booster leans into its divert high up and comes down the last 100 m nearly upright', () => {
+    for (const [n, s, end] of [
+      [5, AS_FLOWN, 'catch'],
+      [7, AS_FLOWN, 'catch'],
+      [8, AS_FLOWN, 'catch'],
+      [7, { ...AS_FLOWN, wind: 90 }, 'catch'],
+      [11, { ...AS_FLOWN, boosterRecovery: 'catch' }, 'catch'],
+      [4, AS_FLOWN, 'splashdown'],
+      [10, AS_FLOWN, 'splashdown'],
+      [13, AS_FLOWN, 'splashdown'], // short boostback: it lets its aim go and brakes where it falls
+      [14, AS_FLOWN, 'splashdown'],
+    ] as Array<[number, Scenario, string]>) {
+      const r = run(n, s);
+      expect(r.booster.endKind, `F${n}`).toBe(end);
+      const lb = ev(r, 'booster-landing-burn')?.t as number;
+      const low = landingLean(r.booster, lb, 100);
+      expect(low.max, `F${n} lean over the last 100 m`).toBeLessThan(6);
+      expect(low.end, `F${n} lean at the end`).toBeLessThan(3);
+      expect(landingLean(r.booster, lb, 3_000).max, `F${n} lean in the divert`).toBeGreaterThan(8);
+    }
+  });
+
+  it('the boostback throttles back as the booster gets light, to at most 8 g', () => {
+    for (const [n, s] of [
+      [14, AS_FLOWN],
+      [13, PLAN],
+      [12, PLAN],
+      [5, AS_FLOWN],
+    ] as Array<[number, Scenario]>) {
+      const b = run(n, s).booster;
+      let peak = 0;
+      for (let i = 1; i < b.n; i++) if (b.phase[i] === Phase.Boostback && b.phase[i - 1] === Phase.Boostback) peak = Math.max(peak, forceG(b, i));
+      expect(peak, `F${n}`).toBeGreaterThan(4);
+      expect(peak, `F${n}`).toBeLessThan(8.3);
+    }
+  });
+
+  it('a throttle limit caps the landing engines rather than scaling them up, and the landing is planned within it', () => {
+    const nominal = ev(run(5, AS_FLOWN), 'booster-landing-burn')?.t as number;
+    const r = run(5, { ...AS_FLOWN, interventions: [{ id: 't', t: nominal - 5, kind: 'throttle', vehicle: 'booster', value: 0.6 }] });
+    expect(r.booster.endKind).toBe('catch');
+    // Within 60% the burn has to start higher.
+    expect(ev(r, 'booster-landing-burn')?.t as number).toBeLessThan(nominal - 1);
+  });
+
+  it('an inner-ring engine stands in for a centre engine lost in the final approach', () => {
+    for (const engines of [[2], [1, 2]]) {
+      const r = run(7, { ...AS_FLOWN, interventions: engines.map((e) => ({ id: `e${e}`, t: 400, kind: 'engine-out' as const, vehicle: 'booster' as const, engine: e })) });
+      expect(r.booster.endKind, `centre ${engines} out`).toBe('catch');
+      expect(litAt(r.boosterEngines, r.booster.end - 6), `centre ${engines} out`).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe('ship', () => {
+  it('flips upright, takes out its drift and splashes down upright', () => {
+    for (const n of [4, 6, 11, 12, 14]) {
+      const r = run(n, AS_FLOWN);
+      const s = r.ship;
+      expect(s.endKind, `F${n}`).toBe('splashdown');
+      const lb = ev(r, 'ship-landing-burn')?.t as number;
+      expect(landingLean(s, lb, 100).max, `F${n} lean over the last 100 m`).toBeLessThan(7);
+      expect(landingLean(s, lb, 30).max, `F${n} lean over the last 30 m`).toBeLessThan(4);
+      expect(landingLean(s, lb, 30).end, `F${n} lean at splashdown`).toBeLessThan(3);
+      // The flip's sideways kick stays small and the burn takes it out.
+      let drift = 0, last = 0;
+      for (let i = 0; i < s.n; i++) {
+        if (s.t[i] < lb || s.phase[i] === Phase.Splashed) continue;
+        const h = Math.sqrt(Math.max(0, s.speed[i] ** 2 - s.vspeed[i] ** 2));
+        drift = Math.max(drift, h);
+        last = h;
+      }
+      expect(drift, `F${n} drift after the flip`).toBeLessThan(35);
+      expect(last, `F${n} drift at splashdown`).toBeLessThan(2);
+    }
+  });
+
+  it('under a throttle limit a light ship sheds engines rather than climbing back up', () => {
+    const r = run(6, { ...PLAN, interventions: [{ id: 's', t: 53, kind: 'throttle', vehicle: 'ship', value: 0.7 }] });
+    expect(r.ship.endKind).toBe('splashdown');
+    let climb = 0;
+    for (let i = 0; i < r.ship.n; i++) if (r.ship.phase[i] === Phase.LandingBurn) climb = Math.max(climb, r.ship.vspeed[i]);
+    expect(climb).toBeLessThan(2);
+  });
+
   it('satellites leave the bay only in space, before entry', () => {
     for (const [n, s] of [
       [14, { ...AS_FLOWN, shipMission: 'suborbital' }],

@@ -158,6 +158,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   let heldUntil = 0;
   let lbSeg = 0;
   let attAcc = 0;
+  /** Engines the final approach may run on: the last set and its spares (see VehicleRt.throttleTo). */
   let finalSet: number[] = [];
   const segAcc: number[] = [];
   const segSwitch: number[] = [];
@@ -711,7 +712,8 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
         lbSeg++;
         const last = lbSeg === segSwitch.length;
         part.setEngines(selectBoosterEngines(last ? finalCount() : segN[lbSeg], (i) => part.usable(i)), t);
-        if (last) finalSet = part.litEngines();
+        // Spares for the final approach: the set, then the next engines in (the inner ring) to stand in for one that fails.
+        if (last) finalSet = selectBoosterEngines(Math.min(13, part.litTotal() + 3), (i) => part.usable(i));
       }
       // Track the reference: feed-forward deceleration scaled by how fast we actually descend (so a booster
       // that stalls above the aim point keeps settling instead of hovering), plus velocity feedback.

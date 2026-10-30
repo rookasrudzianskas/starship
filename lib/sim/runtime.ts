@@ -7,8 +7,13 @@ import { q4, v3 } from './vec';
 export const SPOOL_UP = 1.5;
 export const SPOOL_DOWN = 0.6;
 const SPOOL_FAIL = 0.25;
-/** Engines left after a shutdown in the final approach must still give this many times the weight. */
+/**
+ * Engines left after a shutdown in the final approach must still give this many times the weight. When even
+ * minimum throttle pushes the vehicle back up (a light vehicle under a throttle limit), coming down a little hard
+ * beats climbing away until the tanks run dry, so the margin drops below 1.
+ */
 const HOLD_MARGIN = 1.25;
+const HOLD_MARGIN_CLIMBING = 0.9;
 const LIT = ENGINE_LIT;
 const OFF = ENGINE_OFF;
 const FAILED = ENGINE_FAILED;
@@ -243,12 +248,13 @@ export class VehicleRt {
     }
     const full = this.litThrustPotential(p);
     const potential = full * Math.min(1, this.ceiling);
+    const margin = need < MINT * full * 0.5 ? HOLD_MARGIN_CLIMBING : HOLD_MARGIN;
     // Hysteresis: shed only well below the minimum, relight a spare only near full throttle.
     if (
       mayShed &&
       litCount > 1 &&
       need < MINT * full * 0.8 &&
-      (potential * (litCount - 1)) / litCount >= HOLD_MARGIN * this.mass * GEE &&
+      (potential * (litCount - 1)) / litCount >= margin * this.mass * GEE &&
       t >= this.nextEngineChange
     ) {
       this.shutdown(lastLit, t);
