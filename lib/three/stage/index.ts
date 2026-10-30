@@ -643,9 +643,11 @@ export function createStage(): StageHandle {
   let blendDur = 1;
   /** The blend swings round the Earth (into or out of the globe) instead of cutting straight across. */
   let blendGlobe = false;
-  /** What the view a blend starts from was following, and where that was at the switch. */
+  /** What the view a blend starts from was following, and where that was when it was last posed. */
   let fromFocus: Focus | null = null;
   const fromAnchor: V3 = [0, 0, 0];
+  /** Where the main view's subject was when the last pose was made (a blend starts from that pose). */
+  const viewFocusAt: V3 = [0, 0, 0];
   let viewKey = '';
   let lastShot: Shot | null = null;
   /** What the main view follows (null for the globe), as of the last frame. */
@@ -1386,7 +1388,7 @@ export function createStage(): StageHandle {
         copyPose(lastPose, fromPose);
         // The view being left keeps moving with what it followed, so a blend never falls behind a fast vehicle.
         fromFocus = viewFocus;
-        if (fromFocus) copy3(fromFocus.pos, fromAnchor);
+        copy3(viewFocusAt, fromAnchor);
         blendGlobe = key === 'globe' || viewKey === 'globe';
         blendT = 0;
         blendDur = blendGlobe ? 1.6 : 0.9;
@@ -1402,6 +1404,7 @@ export function createStage(): StageHandle {
     } else copyPose(target, pose);
     copyPose(pose, lastPose);
     viewFocus = followed;
+    if (followed) copy3(followed.pos, viewFocusAt);
 
     const half = Math.floor(width / 2);
     if (split) {
