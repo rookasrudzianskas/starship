@@ -90,6 +90,14 @@ const ATTRIBUTION = [
 const PATCH_CENTER = { lat: (25.99683 + 25.99545) / 2, lon: (-97.1542 + -97.15565) / 2 };
 
 /**
+ * Sentinel-2 → Blue Marble colour transfer, by distance from the pads (m). The wide patch fades into Blue Marble
+ * from 270 km out, so from the end of this range a per-channel gain matches Blue Marble's palette. Near the pads
+ * that gain would turn the true-colour Sentinel-2 ground orange (blue × 0.37), so there only the brightness is
+ * matched and Sentinel-2's own hue is kept; the pad and mid patches lie entirely within the start of the range.
+ */
+const GAIN_BLEND = [60_000, 250_000];
+
+/**
  * Ground patches. `window` is the square crop in native tile pixels at `zoom`; `size` the output size.
  * pad ≈ 8.8 km, mid ≈ 79 km, wide ≈ 704 km across (at 26° N).
  */
@@ -180,6 +188,14 @@ const mercX = (lonDeg) => WM_R * lonDeg * deg;
 const mercY = (latDeg) => WM_R * Math.log(Math.tan(Math.PI / 4 + (latDeg * deg) / 2));
 const mercToLon = (x) => x / WM_R / deg;
 const mercToLat = (y) => (2 * Math.atan(Math.exp(y / WM_R)) - Math.PI / 2) / deg;
+
+/** Great-circle distance (m) from the patch centre. */
+function distanceFromPads(lat, lon) {
+  const p0 = PATCH_CENTER.lat * deg;
+  const p1 = lat * deg;
+  const a = Math.sin((p1 - p0) / 2) ** 2 + Math.cos(p0) * Math.cos(p1) * Math.sin(((lon - PATCH_CENTER.lon) * deg) / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.min(1, Math.sqrt(a)));
+}
 
 /** Global pixel coordinates (top-left origin) at a zoom level of the GoogleMapsCompatible matrix set. */
 function mercToPixel(x, y, zoom) {
@@ -515,7 +531,9 @@ async function buildPatches(manifest) {
       }
   }
   const gain = sumS2.map((v, c) => (v > 0 ? sumBM[c] / v : 1));
-  console.log('S2 → BMNG land colour gain (linear):', gain.map((g) => g.toFixed(3)).join(' '));
+  const luminance = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const gainNear = luminance(sumBM) / luminance(sumS2);
+  console.log('S2 → BMNG land colour gain (linear):', gain.map((g) => g.toFixed(3)).join(' '), `(near the pads ${gainNear.toFixed(3)})`);
 
   const maskChannels = [];
   for (const r of results) {
@@ -533,8 +551,9 @@ async function buildPatches(manifest) {
         const w = patchWater(bm, r.rgb, p, lat, lon, wf);
         water8[k] = Math.round(w * 255);
         if (w > 0) bm.water(lat, lon, wc);
+        const far = smoothstep(GAIN_BLEND[0], GAIN_BLEND[1], distanceFromPads(lat, lon));
         for (let c = 0; c < 3; c++) {
-          const landLin = SRGB_LUT[r.rgb[p + c]] * gain[c];
+          const landLin = SRGB_LUT[r.rgb[p + c]] * (gainNear + (gain[c] - gainNear) * far);
           out[p + c] = linearToSrgb8(w > 0 ? landLin * (1 - w) + wc[c] * w : landLin);
         }
       }
@@ -571,7 +590,7 @@ async function buildPatches(manifest) {
       bounds: { west: mercToLon(m.xmin), south: mercToLat(m.ymin), east: mercToLon(m.xmax), north: mercToLat(m.ymax) },
       center: { lat: centerLat, lon: mercToLon((m.xmin + m.xmax) / 2) },
       groundMetresPerPixel: ((m.xmax - m.xmin) / size) * Math.cos(centerLat * deg),
-      colourGain: gain,
+      colourGain: { near: [gainNear, gainNear, gainNear], far: gain, blendMetres: GAIN_BLEND },
       waterChannel: ['r', 'g', 'b'][maskChannels.length - 1],
       note: 'Water pixels replaced with the Blue Marble water colour so patches blend into the globe.',
       attribution: 's2cloudless-2016',

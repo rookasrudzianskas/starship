@@ -189,6 +189,9 @@ export function createPatchMaterial(shared: SharedUniforms, placeholder: THREE.T
     uPatchWide: { value: placeholder as THREE.Texture },
     uPatchWater: { value: placeholder as THREE.Texture },
     uPatchParams: { value: new THREE.Vector4(1, PATCH_LAYOUT.fadeStart, PATCH_LAYOUT.fadeEnd, 0) },
+    // Ground size of a texel (m) of the pad, mid and wide imagery: set from the manifest.
+    uPatchTexel: { value: new THREE.Vector3(4.3, 38.6, 270) },
+    uGroundDetail: { value: 0.6 },
   };
   const material = new THREE.ShaderMaterial({
     name: 'EarthGroundPatch',

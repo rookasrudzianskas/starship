@@ -99,6 +99,7 @@ varying vec2 vUvPad;
 varying vec2 vUvMid;
 varying vec2 vUvWide;
 varying float vArcDist;
+varying vec2 vGround;
 void main() {
   vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
   vNormalW = mat3(modelMatrix) * normal;
@@ -107,6 +108,7 @@ void main() {
   vUvMid = uvMid;
   vUvWide = uvWide;
   vArcDist = arcDist;
+  vGround = position.xy; // east / north of the pad (m): anchors the ground detail
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   #include <logdepthbuf_vertex>
 }
@@ -123,6 +125,8 @@ uniform sampler2D uPatchMid;
 uniform sampler2D uPatchWide;
 uniform sampler2D uPatchWater;     // r: pad, g: mid, b: wide
 uniform vec4 uPatchParams;         // x: overall fade, y/z: radial fade start/end (m), w: patch textures ready
+uniform vec3 uPatchTexel;          // ground size of a texel (m): pad, mid, wide
+uniform float uGroundDetail;       // strength of the sub-texel ground detail (0: off)
 varying vec3 vWorldPos;
 varying vec3 vNormalW;
 varying vec2 vUvGlobe;
@@ -130,16 +134,54 @@ varying vec2 vUvPad;
 varying vec2 vUvMid;
 varying vec2 vUvWide;
 varying float vArcDist;
+varying vec2 vGround;
 
 float edgeWeight(vec2 uv, float feather) {
   vec2 e = min(uv, 1.0 - uv);
   return smoothstep(0.0, feather, min(e.x, e.y));
 }
 
+float detailHash(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+float detailNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(detailHash(i), detailHash(i + vec2(1.0, 0.0)), u.x),
+    mix(detailHash(i + vec2(0.0, 1.0)), detailHash(i + vec2(1.0, 1.0)), u.x),
+    u.y
+  );
+}
+
+// The imagery is Sentinel-2 (10 m), so seen from a few hundred metres it is one smooth blur. This adds fractal
+// brightness variation at 1–16 m, anchored to the ground, where a texel spans several pixels; each octave fades
+// out before it could alias. Centred on 1, so it does not shift the imagery's mean colour. mpp: metres per pixel.
+float groundDetail(vec2 x, float mpp, float texel) {
+  float magnified = smoothstep(1.5, 4.0, texel / max(mpp, 1e-3));
+  if (magnified <= 0.0) return 1.0;
+  float sum = 0.0;
+  float wavelength = 16.0;
+  float amp = 0.5;
+  for (int k = 0; k < 4; k++) {
+    float visible = 1.0 - smoothstep(0.25, 0.5, mpp / wavelength);
+    sum += amp * visible * (detailNoise(x / wavelength + float(k) * 7.31) - 0.5);
+    wavelength *= 0.45;
+    amp *= 0.7;
+  }
+  return 1.0 + uGroundDetail * magnified * sum;
+}
+
 void main() {
   #include <logdepthbuf_fragment>
   vec3 n = normalize(vNormalW);
   vec3 v = normalize(vWorldPos - cameraPosition);
+  // Pixel footprint on the ground (its long axis), before any branch: derivatives need uniform control flow.
+  float mpp = max(length(dFdx(vGround)), length(dFdy(vGround)));
   SurfaceSample s = sampleGlobe(vUvGlobe);
   vec3 cWide = texture(uPatchWide, vUvWide).rgb * uSurface.x;
   vec3 cMid = texture(uPatchMid, vUvMid).rgb * uSurface.x;
@@ -153,6 +195,9 @@ void main() {
   float kPad = edgeWeight(vUvPad, 0.08) * fade;
   s.albedo = mix(mix(mix(s.albedo, cWide, kWide), cMid, kMid), cPad, kPad);
   s.water = mix(mix(mix(s.water, wWide, kWide), wMid, kMid), wPad, kPad);
+  // Land only: water has its own glint and reflections.
+  float texel = mix(mix(uPatchTexel.z, uPatchTexel.y, kMid), uPatchTexel.x, kPad);
+  s.albedo *= mix(groundDetail(vGround, mpp, texel), 1.0, s.water);
 
   vec3 ins;
   vec3 T;

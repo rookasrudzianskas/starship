@@ -46,6 +46,9 @@ const SUN_METER_WEIGHT = 0.03;
 /** From this camera altitude the globe imagery fills much of the view: worth the 8K day texture where affordable. */
 const DETAIL_ALTITUDE = 50_000;
 
+/** Component of uPatchTexel for each ground patch. */
+const PATCH_INDEX: Record<PatchId, number> = { pad: 0, mid: 1, wide: 2 };
+
 /** Sharpness order of the day textures. */
 const DAY_RANK: Record<DayLevel, number> = { preview: 0, low: 1, high: 2 };
 
@@ -68,6 +71,8 @@ export interface EarthDebug {
   readonly surface: THREE.Vector4;
   /** Sun glint strength (1 = physical). */
   readonly glint: { value: number };
+  /** Strength of the sub-texel detail on the ground around the pad (0 = off). */
+  readonly groundDetail: { value: number };
   readonly stats: { updateMs: number; envRefreshes: number; envMs: number; lastEnvAt: number };
   readonly manifest: () => EarthManifest | null;
   /** Which imagery is on the GPU: the day texture's level, and whether the city lights and water mask are in. */
@@ -278,6 +283,8 @@ export function createEarth(options: EarthOptions): EarthHandle {
    */
   const buildPatch = (m: EarthManifest) => {
     manifest = m;
+    const texel = patch.uniforms.uPatchTexel.value;
+    for (const p of m.patches) texel.setComponent(PATCH_INDEX[p.id], p.groundMetresPerPixel);
     const geometry = buildPatchGeometry(pad.lat, pad.lon, pad.groundAlt, m.patches, PATCH_LAYOUT);
     patchMesh = new THREE.Mesh(geometry, patch.material);
     patchMesh.name = 'earth-starbase-ground';
@@ -553,6 +560,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
       setAtmosphere,
       surface: shared.uSurface.value,
       glint: shared.uGlintStrength,
+      groundDetail: patch.uniforms.uGroundDetail,
       stats,
       manifest: () => manifest,
       imagery: () => ({

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-10-30T00:06:53.071Z",
+  "generated": "2026-10-30T00:07:40.480Z",
   "globe": {
     "projection": "Equirectangular (plate carrée) on WGS84 latitude/longitude, pixel-is-area: u = (lon + 180°) / 360°, v = (90° − lat) / 180° (first/top row at 90° N, first column at 180° W).",
     "bounds": {
@@ -56,7 +56,7 @@
     {
       "id": "pad",
       "file": "patch-pad.jpg",
-      "bytes": 156966,
+      "bytes": 154487,
       "width": 2048,
       "height": 2048,
       "zoom": 15,
@@ -79,11 +79,22 @@
         "lon": -97.15493202209474
       },
       "groundMetresPerPixel": 4.293963331294711,
-      "colourGain": [
-        0.7389669286388836,
-        0.6637294468930065,
-        0.3727858078264472
-      ],
+      "colourGain": {
+        "near": [
+          0.6658876483859232,
+          0.6658876483859232,
+          0.6658876483859232
+        ],
+        "far": [
+          0.7389669286388836,
+          0.6637294468930065,
+          0.3727858078264472
+        ],
+        "blendMetres": [
+          60000,
+          250000
+        ]
+      },
       "waterChannel": "r",
       "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
       "attribution": "s2cloudless-2016"
@@ -91,7 +102,7 @@
     {
       "id": "mid",
       "file": "patch-mid.jpg",
-      "bytes": 418262,
+      "bytes": 409076,
       "width": 2048,
       "height": 2048,
       "zoom": 12,
@@ -114,11 +125,22 @@
         "lon": -97.15484619140625
       },
       "groundMetresPerPixel": 38.64570804378228,
-      "colourGain": [
-        0.7389669286388836,
-        0.6637294468930065,
-        0.3727858078264472
-      ],
+      "colourGain": {
+        "near": [
+          0.6658876483859232,
+          0.6658876483859232,
+          0.6658876483859232
+        ],
+        "far": [
+          0.7389669286388836,
+          0.6637294468930065,
+          0.3727858078264472
+        ],
+        "blendMetres": [
+          60000,
+          250000
+        ]
+      },
       "waterChannel": "g",
       "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
       "attribution": "s2cloudless-2016"
@@ -126,7 +148,7 @@
     {
       "id": "wide",
       "file": "patch-wide.jpg",
-      "bytes": 653311,
+      "bytes": 651220,
       "width": 2560,
       "height": 2560,
       "zoom": 9,
@@ -149,11 +171,22 @@
         "lon": -97.15484619140625
       },
       "groundMetresPerPixel": 274.8160891483683,
-      "colourGain": [
-        0.7389669286388836,
-        0.6637294468930065,
-        0.3727858078264472
-      ],
+      "colourGain": {
+        "near": [
+          0.6658876483859232,
+          0.6658876483859232,
+          0.6658876483859232
+        ],
+        "far": [
+          0.7389669286388836,
+          0.6637294468930065,
+          0.3727858078264472
+        ],
+        "blendMetres": [
+          60000,
+          250000
+        ]
+      },
       "waterChannel": "b",
       "note": "Water pixels replaced with the Blue Marble water colour so patches blend into the globe.",
       "attribution": "s2cloudless-2016"
