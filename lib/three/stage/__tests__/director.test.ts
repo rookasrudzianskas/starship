@@ -15,6 +15,7 @@ const nominal: DirectorPlan = {
   shipEntry: 9590.3,
   shipLanding: 11254.6,
   shipTouchdown: 11285.4,
+  releases: [2114.9, 2182.7, 2250.6],
   shipEnd: 11293.2,
   shipLands: true,
   boosterLands: true,
@@ -34,6 +35,7 @@ const terminated: DirectorPlan = {
   shipEntry: Infinity,
   shipLanding: 216,
   shipTouchdown: null,
+  releases: [],
   shipEnd: 241,
   shipLands: false,
   boosterLands: false,
@@ -82,6 +84,17 @@ describe('autoShot', () => {
     expect(autoShot(151.5, nominal, 'ship')).toEqual({ id: 'ship-aft', vehicle: 'ship' });
     // Without hot staging the booster's camera comes up a few seconds before separation.
     expect(autoShot(nominal.sep! - 4.4, { ...nominal, hotStage: null }, 'both').id).toBe('booster-top');
+  });
+
+  it("watches each satellite leave the ship's payload door", () => {
+    for (const follow of ['both', 'ship'] as const) {
+      expect(autoShot(2110, nominal, follow).id).toBe('ship-aft');
+      expect(autoShot(2112, nominal, follow)).toEqual({ id: 'payload', vehicle: 'ship' });
+      expect(autoShot(2136, nominal, follow).id).toBe('payload');
+      expect(autoShot(2140, nominal, follow).id).toBe('ship-aft');
+      expect(autoShot(2250, nominal, follow).id).toBe('payload');
+    }
+    expect(pickedShot('payload', 2112, nominal, 'both')).toBe(autoShot(2112, nominal, 'both'));
   });
 
   it('stays on the tracker once a stack that never separated has broken up', () => {
@@ -142,6 +155,7 @@ describe('planDirector', () => {
     const r = {
       separationT: 161.7,
       events: [],
+      payload: [],
       booster: track(415.9, 'catch', [[0, Phase.Ascent], [161.7, Phase.Flip], [390.6, Phase.LandingBurn], [410.9, Phase.Caught]]),
       ship: track(476, 'lost', [[0, Phase.Ascent], [163, Phase.Ascent], [476, Phase.Destroyed]]),
     } as unknown as FlightResult;

@@ -453,6 +453,8 @@ export function createStage(): StageHandle {
   let sats: Satellite[] = [];
   /** The payload door is fully open from door[0] to door[1]. */
   let door: [number, number] | null = null;
+  /** The payload slot on the ship's hull (model frame), which the director's payload camera looks past. */
+  let doorSlot: { pos: THREE.Vector3; out: THREE.Vector3 } | null = null;
   let flightN = 0;
   /** Simulation time of the last model and pad update, and whether the next model update must snap (new models or result). */
   let modelT = 0;
@@ -583,6 +585,8 @@ export function createStage(): StageHandle {
     titles.booster = `Super Heavy ${flight.boosterId}`.trim();
     titles.ship = `Starship ${flight.shipId}`;
     plan = planDirector(result);
+    // The payload camera has nothing to show in the Earth's shadow: the director watches only the sunlit releases.
+    plan.releases = plan.releases.filter((t) => sunlit(result, t));
     catchTime = result.booster.endKind === 'catch' ? firstPhaseTime(result.booster, Phase.Caught) ?? result.booster.end : null;
     // Arms close just under the grid fins: base height above the pad at the catch + the catch point on the booster.
     catchArmsHeight = null;
@@ -652,8 +656,10 @@ export function createStage(): StageHandle {
   function placePayload(result: FlightResult) {
     sats = [];
     door = null;
+    doorSlot = null;
     if (result.payload.length === 0) return;
     const slot = ship.model ? payloadSlot(ship.model as ShipModel) : null;
+    doorSlot = slot;
     let length = 0;
     swarm?.object.traverse((o) => {
       const m = o as THREE.Mesh;
@@ -690,6 +696,16 @@ export function createStage(): StageHandle {
     const first = result.payload[0].t;
     const end = result.events.find((e) => e.key === 'payload-end')?.t ?? -Infinity;
     door = [first - DOOR_LEAD, Math.max(end, clearBy + DOOR_LEAD)];
+  }
+
+  /** The ship is in sunlight at t (outside the Earth's shadow, taken as a cylinder). */
+  function sunlit(result: FlightResult, t: number): boolean {
+    const probe = createSample();
+    sampleTrack(result.ship, t, probe);
+    sunDirectionEcef(result.launchUtc + t * 1000, v1);
+    const along = probe.pos[0] * v1.x + probe.pos[1] * v1.y + probe.pos[2] * v1.z;
+    const r2 = probe.pos[0] ** 2 + probe.pos[1] ** 2 + probe.pos[2] ** 2;
+    return along > 0 || r2 - along * along > EARTH_RADIUS * EARTH_RADIUS;
   }
 
   /**
@@ -1031,6 +1047,7 @@ export function createStage(): StageHandle {
   const LOCAL = new THREE.Vector3();
   const DIR = new THREE.Vector3();
   const UP = new THREE.Vector3();
+  const SIDE = new THREE.Vector3();
 
   /** What a shot of `vehicle` looks at: the stack until separation, and both vehicles for the director's staging shot. */
   function shotFocus(shot: Shot, t: number): Focus {
@@ -1065,7 +1082,8 @@ export function createStage(): StageHandle {
       }
       case 'tower': {
         offsetEnu(padEcef, -60, -120, 40, site);
-        trackerPose(site, f, 0.78 * band, 4, 70, out);
+        // A long lens: the booster coming home is a few kilometres out when the shot comes up.
+        trackerPose(site, f, 0.78 * band, 1.5, 70, out);
         return inSight(shot.vehicle, f);
       }
       case 'tracking': {
@@ -1142,6 +1160,17 @@ export function createStage(): StageHandle {
         DIR.set(0.1, -1, 0.35).normalize();
         UP.set(1, 0, 0);
         onboardPose(ship.base, ship.sample.quat, LOCAL, DIR, UP, 88, out);
+        return true;
+      }
+      case 'payload': {
+        if (!ship.visible || !doorSlot) return false;
+        // On the hull a few metres aft of the payload door and to one side, looking forward past it: each satellite
+        // slides out of the slot and drifts off into space above the hull.
+        SIDE.crossVectors(AXIS_Y, doorSlot.out);
+        LOCAL.copy(doorSlot.pos).addScaledVector(AXIS_Y, -9).addScaledVector(doorSlot.out, 1.2).addScaledVector(SIDE, 1.6);
+        DIR.copy(doorSlot.pos).addScaledVector(doorSlot.out, 4).sub(LOCAL).normalize();
+        UP.copy(doorSlot.out);
+        onboardPose(ship.base, ship.sample.quat, LOCAL, DIR, UP, 62, out);
         return true;
       }
     }

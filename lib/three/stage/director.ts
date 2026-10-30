@@ -4,15 +4,18 @@ import type { FollowMode } from '@/lib/store/replay';
 import { Phase } from '../../sim/types';
 import { firstPhaseTime } from './sample';
 
-/** 'separation' is the director's own: a long lens on both vehicles as they part (not in the camera menu). */
-export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-aft' | 'ship-nose' | 'buoy' | 'tower' | 'separation';
+/**
+ * 'separation' (a long lens on both vehicles as they part) and 'payload' (the ship's camera on its payload door)
+ * are the director's own, not in the camera menu.
+ */
+export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-aft' | 'ship-nose' | 'buoy' | 'tower' | 'separation' | 'payload';
 
 export interface Shot {
   readonly id: ShotId;
   readonly vehicle: VehicleId;
 }
 
-const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower', 'separation'];
+const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower', 'separation', 'payload'];
 
 function shotTable(vehicle: VehicleId): Record<ShotId, Shot> {
   const table = {} as Record<ShotId, Shot>;
@@ -50,6 +53,8 @@ export interface DirectorPlan {
   shipEntry: number;
   shipLanding: number;
   shipTouchdown: number | null;
+  /** When each satellite leaves the ship's payload door, in order. */
+  releases: readonly number[];
   shipEnd: number;
   shipLands: boolean;
   boosterLands: boolean;
@@ -78,6 +83,7 @@ export function planDirector(r: FlightResult): DirectorPlan {
     shipEntry: ev('entry') ?? firstPhaseTime(r.ship, Phase.Entry, sep ?? 0) ?? Infinity,
     shipLanding,
     shipTouchdown: firstPhaseTime(r.ship, Phase.Splashed),
+    releases: r.payload.map((p) => p.t).sort((a, b) => a - b),
     shipEnd: r.ship.end,
     shipLands: r.ship.endKind === 'splashdown',
     boosterLands: r.booster.endKind === 'splashdown' || r.booster.endKind === 'catch',
@@ -90,10 +96,11 @@ export function planDirector(r: FlightResult): DirectorPlan {
 const LANDING_LEAD = 12;
 /**
  * How long the director stays on a vehicle after its flight ends: a landed one floating or held by the tower, or
- * the debris of one that broke up (gone within seconds in thin air), before the other vehicle takes over.
+ * the debris of one that broke up (gone within seconds in thin air), before the other vehicle takes over. A replay
+ * runs on for 10 s after its last vehicle's end, so the other vehicle closes it rather than flashing up at the end.
  */
 const LANDED_HOLD = 20;
-const BREAKUP_HOLD = 8;
+const BREAKUP_HOLD = 5;
 
 /**
  * Staging, as the broadcast shows it: the booster's camera looking up at the ship from a little before the ship's
@@ -112,6 +119,18 @@ export const SEPARATION_TO = 12;
  * (see lib/three/effects/launchClouds.ts): a grey frame, so a tower camera picked then shows the director's shot.
  */
 const TOWER_STEAM: readonly [number, number] = [25, 160];
+
+/** A satellite leaving the payload door is shown from shortly before it starts to slide out until it has drifted off. */
+const RELEASE_SHOT: readonly [number, number] = [3, 22];
+
+/** A satellite is leaving the ship at t (see RELEASE_SHOT). */
+function releasing(t: number, p: DirectorPlan): boolean {
+  for (const r of p.releases) {
+    if (r - RELEASE_SHOT[0] > t) return false;
+    if (t <= r + RELEASE_SHOT[1]) return true;
+  }
+  return false;
+}
 
 /** When the booster's camera looking up at the ship comes on. */
 function stagingFrom(p: DirectorPlan): number {
@@ -132,6 +151,7 @@ function boosterShot(t: number, p: DirectorPlan): Shot {
 function shipShot(t: number, p: DirectorPlan): Shot {
   if (p.shipLands && t >= p.shipLanding - 25) return shot('buoy', 'ship');
   if (t >= p.shipEntry - 30) return shot('ship-nose', 'ship');
+  if (releasing(t, p)) return shot('payload', 'ship');
   return shot('ship-aft', 'ship');
 }
 
@@ -139,7 +159,7 @@ function shipShot(t: number, p: DirectorPlan): Shot {
  * The broadcast director: which camera is live at time t. Pure function of t, so scrubbing is stable.
  * Ascent alternates between the long-range tracker and the booster's engine camera; staging is seen from
  * the booster looking up, then from alongside as the two part; afterwards it follows whichever vehicle has
- * something happening.
+ * something happening, and watches each satellite the ship releases leave its payload door.
  */
 export function autoShot(t: number, p: DirectorPlan, follow: FollowMode): Shot {
   if (t < 11) return shot('pad', 'booster');
@@ -189,6 +209,7 @@ export function pickedShot(id: ShotId, t: number, p: DirectorPlan, follow: Follo
       // empty sea for hours while the booster climbs and lands.
       return shot(id, follow === 'booster' || (follow === 'both' && p.boosterLands && t <= p.boosterEnd + 20) ? 'booster' : 'ship');
     case 'separation':
+    case 'payload':
       // The director's own; not offered in the camera menu.
       return autoShot(t, p, follow);
   }
