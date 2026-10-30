@@ -8,13 +8,13 @@ import { simulateFlight } from '../simulate';
  * - Flight 8: the catalog loses four engines at T+330-336 s and the ship tumbles at T+345 s, yet lists
  *   a 20,464 km/h top speed and 146 km apogee that need roughly two more minutes of full thrust.
  * - Flights 4 and 8: booster apogee a few percent / seconds high (traded against boostback and landing timing).
- * - Flight 14: the 1,700 s glide from entry to landing is ~3% longer than this entry model flies at the
- *   angles of attack allowed, so the landing burn and splashdown come ~30-45 s early.
+ * - Flight 14: the 1,700 s glide from entry to landing is ~2% longer than this entry model flies at the
+ *   angles of attack allowed, so the landing burn comes ~35-40 s early (the splashdown ~25 s).
  */
 const KNOWN_LIMITS: Record<number, string[]> = {
   4: ['boosterApogee', 'boosterApogeeKm'],
   8: ['boosterApogeeKm', 'shipTopSpeedKmh', 'shipApogeeKm'],
-  14: ['shipLandingBurn', 'shipEnd'],
+  14: ['shipLandingBurn'],
 };
 
 describe.each(FLIGHTS)('Flight $n nominal (as flown)', (f) => {

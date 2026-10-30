@@ -575,7 +575,7 @@ function stageLanding(f: Flight, p: FlightParamOverrides): FlightParamOverrides 
   if (f.shipEnd !== 'splashdown' && tg.shipLandingBurn === undefined) return p;
   const zone = Float64Array.from(latLonAltToEcef(f.plan.ship.landing.lat, f.plan.ship.landing.lon, 0));
   const specs: ParamSpec[] = [
-    { key: 'azimuth', min: 92, max: 106, h: 0.05, sigma: 4 },
+    { key: 'azimuth', min: 92, max: 112, h: 0.05, sigma: 4 },
     { key: 'entryAoA', min: 52, max: 75, h: 0.5, sigma: 8 },
     { key: 'entryAim', min: -400_000, max: 400_000, h: 5_000, sigma: 300_000 },
     { key: 'flipMargin', min: 0.7, max: 1.15, h: 0.02, sigma: 0.3 },
