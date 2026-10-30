@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { IconShare } from '@/components/icons';
@@ -400,9 +401,10 @@ export function ReplayApp() {
             <span>{vehicles[0]}</span>
             <span>{vehicles[1]}</span>
           </div>
-          <a className={styles.credits} href="/about#credits">
+          {/* A client-side link: coming back finds the 3D view and the replay as they were left. */}
+          <Link className={styles.credits} href="/about#credits">
             Imagery NASA · Sentinel-2 cloudless 2016 by EOX (CC BY 4.0)
-          </a>
+          </Link>
           {/* Inside the stage: on phones the bar sits at the bottom of the 3D view, above the HUD. */}
           <div className={styles.topBar}>
             <div className={styles.topLabel}>
