@@ -1175,9 +1175,11 @@ kbd.key {
     overflow: visible;
     display: flex;
     flex-direction: column;
+    /* How roomy the HUD below the 3D view is, from 0px (tightest) to 1px (as designed): see the portrait rules. */
+    --fit: 1px;
   }
 
-  /* All the height the HUD leaves (a 360 x 780 phone fits too), and at least 40% of the screen. */
+  /* All the height the HUD leaves, and at least 40% of the screen (turned on its side, the page scrolls). */
   .stage {
     position: relative;
     flex: 1 0 40vh;
@@ -1244,14 +1246,15 @@ kbd.key {
     right: auto;
   }
 
+  /* The gaps, readouts, engine maps and clock below tighten with --fit. */
   .hud {
     position: relative;
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
       'booster ship'
       'center center';
-    gap: 18px 12px;
-    padding: 16px 14px calc(18px + env(safe-area-inset-bottom));
+    gap: calc(10px + 8 * var(--fit)) 12px;
+    padding: calc(10px + 6 * var(--fit)) 14px calc(10px + 8 * var(--fit) + env(safe-area-inset-bottom));
     background: #000;
   }
 
@@ -1265,11 +1268,16 @@ kbd.key {
 
   .center {
     grid-area: center;
+    gap: calc(5px + 3 * var(--fit));
+  }
+
+  .panel {
+    gap: calc(6px + 4 * var(--fit));
   }
 
   .readouts {
     flex-direction: column;
-    gap: 8px;
+    gap: calc(4px + 4 * var(--fit));
   }
 
   .panelRight .readouts {
@@ -1281,7 +1289,24 @@ kbd.key {
   }
 
   .readoutValue {
-    font-size: 26px;
+    font-size: calc(22px + 4 * var(--fit));
+  }
+
+  .engineBlock {
+    gap: calc(3px + 2 * var(--fit));
+  }
+
+  .engineMap {
+    width: calc(48px + 14 * var(--fit));
+    height: calc(48px + 14 * var(--fit));
+  }
+
+  .clockTime {
+    font-size: calc(30px + 8 * var(--fit));
+  }
+
+  .controls {
+    margin-top: calc(2px + 2 * var(--fit));
   }
 
   .instruments {
@@ -1308,6 +1333,30 @@ kbd.key {
 
   .callout {
     top: 28vh;
+  }
+}
+
+/*
+ * Held upright, a phone shows everything on one screen: from 812 px tall (--fit 1px, the layout as designed) down to
+ * 640 px (0px) the HUD tightens, and the 3D view takes the rest, down to 200 px. The height with the browser's bars
+ * shown decides, so nothing moves as they slide in and out.
+ */
+@media (max-width: 860px) and (orientation: portrait) {
+  .replay {
+    --fit: clamp(0px, (100vh - 640px) / 172, 1px);
+  }
+
+  .stage {
+    flex: 1 0 0px;
+    min-height: calc(200px + 80 * var(--fit));
+  }
+}
+
+@supports (height: 100svh) {
+  @media (max-width: 860px) and (orientation: portrait) {
+    .replay {
+      --fit: clamp(0px, (100svh - 640px) / 172, 1px);
+    }
   }
 }
 
@@ -1363,7 +1412,7 @@ kbd.key {
   }
 
   .readoutValue {
-    font-size: 22px;
+    font-size: calc(20px + 2 * var(--fit));
   }
 
   .derived {
