@@ -143,6 +143,8 @@ const DOOR_LEAD = 5;
 const SWARM_CAPACITY = 48;
 /** Highest eye adaptation while a lit plume fills the view: it is the brightest thing there, even at night. */
 const PLUME_EXPOSURE = 1.3;
+/** Pixels per CSS pixel a context without MSAA renders at least, before the resolution governor steps down. */
+const NO_MSAA_MIN_RATIO = 1.5;
 /** Picture-in-picture frame: at most this wide (CSS px), with this aspect. */
 const PIP_WIDTH = 320;
 const PIP_ASPECT = 0.62;
@@ -272,6 +274,10 @@ export function createStage(): StageHandle {
     powerPreference: 'high-performance',
     alpha: false,
   });
+  // MSAA is fixed with the context. Without it (made for a high-density screen), one pixel per CSS pixel would
+  // leave every edge jagged: low quality there, or the window moved to a standard-density screen, renders at
+  // NO_MSAA_MIN_RATIO instead.
+  const msaa = renderer.getContext().getContextAttributes()?.antialias ?? true;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1;
@@ -322,7 +328,8 @@ export function createStage(): StageHandle {
 
   const applySize = () => {
     dprSeen = window.devicePixelRatio || 1;
-    governor.setBase(Math.min(dprSeen, quality === 'high' ? 2 : 1));
+    const base = Math.min(dprSeen, quality === 'high' ? 2 : 1);
+    governor.setBase(msaa ? base : Math.max(base, NO_MSAA_MIN_RATIO));
     const rect = canvas.getBoundingClientRect();
     // Hidden or out of the page: keep the drawing buffer (and the last frame in it) as it is.
     if (rect.width < 1 || rect.height < 1) return;
