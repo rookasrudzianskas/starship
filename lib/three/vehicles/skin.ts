@@ -159,12 +159,16 @@ float skSoot = 0.0;
   float gw = 0.03;
   float grout = smoothstep(0.5 - gw - px, 0.5 - gw + px, d);
   grout = mix(grout, 0.11, far);
-  vec3 tileBase = vec3(0.021, 0.021, 0.023) * (0.7 + 0.6 * h1);
+  // Per-tile tone and gloss fade to their means once a tile is smaller than a pixel or two: sampled per pixel,
+  // they would turn the heat shield into salt-and-pepper speckle (a cork-like look) at a distance.
+  float hTone = mix(h1, 0.5, far);
+  float hGloss = mix(h2, 0.5, far);
+  vec3 tileBase = vec3(0.021, 0.021, 0.023) * (0.7 + 0.6 * hTone);
   // The odd replacement tile from a different batch reads slightly lighter.
-  tileBase *= h2 > 0.993 ? 1.7 : 1.0;
+  tileBase *= h2 > 0.993 ? mix(1.7, 1.0, far) : 1.0;
   vec3 tileCol = mix(tileBase, vec3(0.006), grout);
   // Matte ceramic: low gloss, so the tiles stay black under a low, warm sun instead of taking on its colour.
-  skTileRough = mix(0.64 + 0.2 * h2, 0.92, grout);
+  skTileRough = mix(0.64 + 0.2 * hGloss, 0.92, grout);
   skTileH = smoothstep(0.5 - gw, 0.31, d) * (1.0 - far) * 0.004;
   diffuseColor.rgb = mix(diffuseColor.rgb, tileCol, skTileMask);
 #endif
