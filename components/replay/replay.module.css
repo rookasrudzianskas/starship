@@ -582,8 +582,9 @@
   top: 11px;
 }
 
+/* Events already flown light up, as their ticks do. */
 .timelineLabel[data-past] {
-  color: var(--text-3);
+  color: var(--text);
 }
 
 .timelineLabel[data-user] {
