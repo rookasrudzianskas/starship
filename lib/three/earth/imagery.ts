@@ -75,20 +75,13 @@ export function followUpImages(m: EarthManifest): string[] {
 }
 
 let manifestRequest: Promise<EarthManifest> | null = null;
-let manifestLoaded: EarthManifest | null = null;
-
-/** The manifest if it has already arrived (say, through the prefetch), so the Earth can build on it synchronously. */
-export function loadedManifest(): EarthManifest | null {
-  return manifestLoaded;
-}
 
 /** The imagery manifest, fetched once per page (after a failure, the next call tries again). */
 export function loadManifest(): Promise<EarthManifest> {
   if (!manifestRequest) {
     const request = fetch(`${EARTH_ASSET_BASE}manifest.json`).then(async (res) => {
       if (!res.ok) throw new Error(`Earth manifest: HTTP ${res.status}`);
-      manifestLoaded = (await res.json()) as EarthManifest;
-      return manifestLoaded;
+      return (await res.json()) as EarthManifest;
     });
     manifestRequest = request;
     request.catch(() => {

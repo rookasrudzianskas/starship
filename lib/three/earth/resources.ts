@@ -30,13 +30,18 @@ function configure(tex: THREE.Texture, opts: ImageTextureOptions): void {
   tex.anisotropy = opts.anisotropy;
 }
 
-/** Pixels per band: 2 MB of RGBA, a fraction of a millisecond to crop and hand to the GPU on a desktop. */
-const BAND_PIXELS = 512 * 1024;
+/** Pixels per band: 1 MB of RGBA, a fraction of a millisecond to crop and hand over on a desktop. */
+const BAND_PIXELS = 256 * 1024;
 /**
- * Pixels per frame (32 MB of RGBA would fill the browser's transfer buffer and block on the GPU process; 8 MB a
- * frame keeps well under what it drains), and the time each frame may spend.
+ * Pixels per frame: least, first and most. The browser hands texture data to its GPU process through a buffer of
+ * limited size, and once more arrives than that process drains between frames the next upload call blocks until
+ * it catches up (10–20 ms on a desktop). So the budget adapts: it halves whenever an upload blocks, and grows by a
+ * band after each frame that used it all without blocking.
  */
-const SLICE_PIXELS = 2 * 1024 * 1024;
+const SLICE_PIXELS: [number, number, number] = [BAND_PIXELS, 4 * BAND_PIXELS, 8 * BAND_PIXELS];
+/** An upload call that takes longer than this (ms) was kept waiting by the GPU process. */
+const BLOCKED_MS = 3;
+/** Time each frame may spend (ms), within the idle time the browser reports. */
 const SLICE_MS: [number, number] = [2, 8];
 /** Without requestIdleCallback (Safari), work this long just after each frame. */
 const FALLBACK_SLICE_MS = 4;
@@ -64,6 +69,7 @@ export class TextureStreamer {
   private readonly at = new THREE.Vector2();
   private readonly region = new THREE.Box2();
   private cancelWait: (() => void) | null = null;
+  private slicePixels = SLICE_PIXELS[1];
   private running = false;
   private disposed = false;
 
@@ -111,10 +117,13 @@ export class TextureStreamer {
       if (this.disposed) break;
       const end = performance.now() + Math.min(Math.max(budget - 1, SLICE_MS[0]), SLICE_MS[1]);
       let pixels = 0;
+      let blocked = false;
       do {
         const job = this.jobs[0];
         try {
-          pixels += await this.step(job);
+          const moved = await this.step(job);
+          pixels += moved.pixels;
+          blocked = moved.blocked;
         } catch (err) {
           // A failed upload must not hold up the others.
           if (this.jobs[0] === job) this.jobs.shift();
@@ -122,7 +131,9 @@ export class TextureStreamer {
           job.texture.dispose();
           job.fail(err);
         }
-      } while (this.jobs.length && !this.disposed && pixels < SLICE_PIXELS && performance.now() < end);
+      } while (this.jobs.length && !this.disposed && !blocked && pixels < this.slicePixels && performance.now() < end);
+      if (blocked) this.slicePixels = Math.max(SLICE_PIXELS[0], this.slicePixels / 2);
+      else if (pixels >= this.slicePixels) this.slicePixels = Math.min(SLICE_PIXELS[2], this.slicePixels + BAND_PIXELS);
     }
     this.running = false;
   }
@@ -149,13 +160,14 @@ export class TextureStreamer {
     });
   }
 
-  /** Advance the first job by one band (or its allocation); returns the pixels moved. */
-  private async step(job: UploadJob): Promise<number> {
+  /** Advance the first job by one band (or its allocation): the pixels moved, and whether the GPU process lagged. */
+  private async step(job: UploadJob): Promise<{ pixels: number; blocked: boolean }> {
     if (job.y < 0) {
+      const t0 = performance.now();
       this.renderer.initTexture(job.texture);
       job.texture.generateMipmaps = false;
       job.y = 0;
-      return 0;
+      return { pixels: 0, blocked: performance.now() - t0 > BLOCKED_MS };
     }
     const { image } = job;
     const rows = Math.min(job.rows, image.height - job.y);
@@ -168,7 +180,7 @@ export class TextureStreamer {
     }
     if (this.disposed) {
       band?.close();
-      return 0;
+      return { pixels: 0, blocked: false };
     }
     const last = job.y + rows >= image.height;
     // The whole mip chain is generated once, with the last band.
@@ -178,7 +190,9 @@ export class TextureStreamer {
       this.region.min.set(0, job.y);
       this.region.max.set(image.width, job.y + rows);
     }
+    const t0 = performance.now();
     this.renderer.copyTextureToTexture(this.carrier, job.texture, band ? null : this.region, this.at.set(0, job.y));
+    const blocked = performance.now() - t0 > BLOCKED_MS;
     this.carrier.image = null;
     band?.close();
     job.y += rows;
@@ -187,7 +201,7 @@ export class TextureStreamer {
       releaseImage(image);
       job.finish(job.texture);
     }
-    return image.width * rows;
+    return { pixels: image.width * rows, blocked };
   }
 
   /** Drop every pending upload: their images are released and their promises resolve with null. */

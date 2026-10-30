@@ -10,7 +10,6 @@ import {
   type DayLevel,
   dayImage,
   type EarthManifest,
-  loadedManifest,
   loadImage,
   loadManifest,
   type PatchId,
@@ -61,6 +60,12 @@ function affords8k(renderer: THREE.WebGLRenderer): boolean {
   if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) return false;
   const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   return memory === undefined || memory > 4;
+}
+
+/** Run in a task of its own once the main thread is idle (requestIdleCallback is missing in Safari). */
+function whenIdle(fn: () => void): void {
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 200 });
+  else setTimeout(fn, 0);
 }
 
 export interface EarthDebug {
@@ -276,13 +281,8 @@ export function createEarth(options: EarthOptions): EarthHandle {
     );
   };
 
-  /**
-   * The ground patch mesh, built as soon as the manifest is known (synchronously when the prefetch already has it),
-   * so its shader compiles with the first frames instead of on the frame the imagery arrives. Until then it shows
-   * the same placeholder as the globe.
-   */
+  /** The ground patch mesh. It stays hidden until its imagery is in (see update), and the globe draws that ground. */
   const buildPatch = (m: EarthManifest) => {
-    manifest = m;
     const texel = patch.uniforms.uPatchTexel.value;
     for (const p of m.patches) texel.setComponent(PATCH_INDEX[p.id], p.groundMetresPerPixel);
     const geometry = buildPatchGeometry(pad.lat, pad.lon, pad.groundAlt, m.patches, PATCH_LAYOUT);
@@ -293,13 +293,16 @@ export function createEarth(options: EarthOptions): EarthHandle {
     patchMesh.visible = false;
     object.add(patchMesh);
   };
-  const known = loadedManifest();
-  if (known) buildPatch(known);
 
   const ready: Promise<void> = (async () => {
     const m = await loadManifest();
     if (disposed) return;
-    if (!patchMesh) buildPatch(m);
+    manifest = m;
+    // Its geometry takes from a few to tens of milliseconds: build it in a task of its own while the imagery
+    // streams in, rather than in the caller's frame or the one the imagery completes in.
+    whenIdle(() => {
+      if (!disposed && !patchMesh) buildPatch(m);
+    });
     const preview = dayImage(m, 'preview');
     const settled = await Promise.allSettled([
       loadTexture(preview.file, DAY),
@@ -314,6 +317,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     if (day) bindDay(preview.quality, day);
 
     // Ground patch imagery around the pad.
+    if (!patchMesh) buildPatch(m);
     const tp = textures.patches;
     m.patches.forEach((p, i) => {
       const t = patches[i];
@@ -426,11 +430,13 @@ export function createEarth(options: EarthOptions): EarthHandle {
       const dy = padEcef[1] - cam[1];
       const dz = padEcef[2] - cam[2];
       const fade = 1 - smoothstep(PATCH_FADE[0], PATCH_FADE[1], Math.hypot(dx, dy, dz));
-      patchMesh.visible = fade > 0;
+      // Only once its imagery is in: until then the globe draws the ground there.
+      const shown = fade > 0 && patch.uniforms.uPatchParams.value.w > 0;
+      patchMesh.visible = shown;
       patchMesh.position.set(dx, dy, dz);
       patch.uniforms.uPatchParams.value.x = fade;
-      globe.uniforms.uPatchDiscard.value.set(dx, dy, dz, fade > 0 ? PATCH_LAYOUT.discardRadius : -1);
-      globe.uniforms.uPatchBiasRadius.value = fade > 0 ? PATCH_LAYOUT.biasRadius : -1;
+      globe.uniforms.uPatchDiscard.value.set(dx, dy, dz, shown ? PATCH_LAYOUT.discardRadius : -1);
+      globe.uniforms.uPatchBiasRadius.value = shown ? PATCH_LAYOUT.biasRadius : -1;
     }
 
     // Stars: the celestial sphere turns with the sidereal angle. Exact from the UTC time when the stage
