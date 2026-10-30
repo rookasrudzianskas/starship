@@ -207,11 +207,12 @@ function payloadSlot(model: ShipModel): { pos: THREE.Vector3; out: THREE.Vector3
 
 export function createStage(): StageHandle {
   const canvas = document.createElement('canvas');
+  let quality: Quality = useReplay.getState().settings.quality === 'low' ? 'low' : 'high';
   const renderer = new THREE.WebGLRenderer({
     canvas,
-    // At two or more device pixels per CSS pixel edges are fine without MSAA, which costs a fifth to two fifths of
-    // the GPU time there.
-    antialias: (window.devicePixelRatio || 1) < 1.5,
+    // Rendering at two or more pixels per CSS pixel the edges are fine without MSAA, which costs a fifth to two
+    // fifths of the GPU time there. Low quality renders one pixel per CSS pixel, where MSAA is cheap and needed.
+    antialias: (window.devicePixelRatio || 1) < 1.5 || quality === 'low',
     logarithmicDepthBuffer: true,
     powerPreference: 'high-performance',
     alpha: false,
@@ -229,7 +230,6 @@ export function createStage(): StageHandle {
   const sideCamera = new THREE.PerspectiveCamera(40, 1, 0.3, 4e8);
   const overlay = new Overlay();
 
-  let quality: Quality = useReplay.getState().settings.quality === 'low' ? 'low' : 'high';
   let width = 1;
   let height = 1;
   let dprSeen = 0;
@@ -1032,7 +1032,8 @@ export function createStage(): StageHandle {
     announced = false;
     shown = null;
     console.error('3D view:', error);
-    callbacks?.onError(error);
+    const reason = error instanceof Error ? error.message : String(error);
+    callbacks?.onError(new Error(`The 3D view failed: ${reason}`, { cause: error }));
   }
 
   function frame(st: ReplayState, t: number, dt: number) {

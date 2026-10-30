@@ -91,7 +91,7 @@ export function Stage() {
         stageHandle.current = stage;
       })
       .catch((e: unknown) => {
-        if (active) setFailed(message(e));
+        if (active) setFailed(`The 3D view failed to load: ${message(e)}`);
       });
     return () => {
       active = false;
