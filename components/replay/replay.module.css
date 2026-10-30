@@ -1111,7 +1111,8 @@ kbd.key {
 
 /* ------------------------------------------------------------ responsive */
 
-@media (min-width: 1200px) {
+/* The outcome summary only where there is room for it: on a short screen it would squeeze the flight director. */
+@media (min-width: 1200px) and (min-height: 800px) {
   .outcome {
     display: block;
   }
