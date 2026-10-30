@@ -192,6 +192,10 @@ describe('ship', () => {
     }
     const all = run(14, { ...AS_FLOWN, shipMission: 'suborbital' });
     expect(all.payload).toHaveLength(26);
+    // Too heavy to climb as high: the deploy starts early and stops when the path drops below 150 km.
+    const heavy = run(10, { ...AS_FLOWN, payloadCount: 40 });
+    expect(heavy.payload.length).toBeGreaterThan(10);
+    expect(ev(heavy, 'payload-end')?.note).toBe(`${heavy.payload.length} of 40 satellites deployed`);
   });
 
   it('a ship that comes down on land is not a splashdown', () => {

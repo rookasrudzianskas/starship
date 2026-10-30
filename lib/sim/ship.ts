@@ -346,7 +346,9 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     // Last moment for a release: before the path drops below DEPLOY_ALT, and before the deorbit burn.
     payLatest = Math.min(t + timeToDescend(body.r, body.v, RE + DEPLOY_ALT) - 30, (orbital ? Math.min(tCap, deorbitBurn.t) : tCap) - 120);
     if (payStarted) return;
-    payStartT = Math.max(pay.start, t + 60);
+    // The planned start, brought forward (to a minute after the burn) when the coast is too short for every
+    // release after it at the closest spacing.
+    payStartT = Math.max(t + 60, Math.min(pay.start, payLatest - (pay.count + 1) * DEPLOY_MIN_SPACING));
     paySpacing = (pay.end - pay.start) / (pay.count + 1);
     const room = (payLatest - payStartT) / (pay.count + 1);
     if (room < paySpacing) paySpacing = Math.max(DEPLOY_MIN_SPACING, room);
