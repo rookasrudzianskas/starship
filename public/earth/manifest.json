@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-10-29T19:14:22.706Z",
+  "generated": "2026-10-30T00:06:53.071Z",
   "globe": {
     "projection": "Equirectangular (plate carrée) on WGS84 latitude/longitude, pixel-is-area: u = (lon + 180°) / 360°, v = (90° − lat) / 180° (first/top row at 90° N, first column at 180° W).",
     "bounds": {
@@ -10,6 +10,14 @@
       "north": 90
     },
     "day": [
+      {
+        "quality": "preview",
+        "file": "day-2k.jpg",
+        "bytes": 194981,
+        "width": 2048,
+        "height": 1024,
+        "attribution": "bmng"
+      },
       {
         "quality": "low",
         "file": "day-4k.jpg",
@@ -170,6 +178,7 @@
         "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74092/world.200407.3x21600x10800.jpg"
       ],
       "usedFor": [
+        "day-2k",
         "day-4k",
         "day-8k",
         "mask"

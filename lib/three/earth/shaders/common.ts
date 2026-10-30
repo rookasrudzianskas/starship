@@ -228,11 +228,17 @@ SurfaceSample sampleGlobe(vec2 uv) {
   return s;
 }
 
-SurfaceSample sampleGlobeLod(vec2 uv, float lod) {
+// Mip level at which a globe texture is 2^widthLog2 texels around: the same angular resolution whatever its size
+// (the preview, 4K and 8K day textures and the 4K masks).
+float globeLod(sampler2D t, float widthLog2) {
+  return max(log2(float(textureSize(t, 0).x)) - widthLog2, 0.0);
+}
+
+SurfaceSample sampleGlobeLod(vec2 uv, float widthLog2) {
   SurfaceSample s = SurfaceSample(
-    textureLod(uDayTex, uv, lod).rgb * uSurface.x,
-    textureLod(uWaterTex, uv, lod).r,
-    textureLod(uNightTex, uv, lod).r
+    textureLod(uDayTex, uv, globeLod(uDayTex, widthLog2)).rgb * uSurface.x,
+    textureLod(uWaterTex, uv, globeLod(uWaterTex, widthLog2)).r,
+    textureLod(uNightTex, uv, globeLod(uNightTex, widthLog2)).r
   );
   if (uTexReady < 0.5) s = placeholderSurface();
   return s;

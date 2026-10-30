@@ -113,7 +113,7 @@ ${VIEW_LUT_PARAM_GLSL}
 ${VIEW_LOOKUP_GLSL}
 ${SURFACE_GLSL}
 uniform vec3 uEarthCenter;
-uniform float uAlbedoLod;
+uniform float uAlbedoWidthLog2;  // the globe textures are read 2^this texels around (a blurred albedo is enough)
 
 in vec2 vUv;
 layout(location = 0) out vec4 oColour;
@@ -131,7 +131,7 @@ void main() {
   if (mu < 0.0 && discG >= 0.0) {
     float t = uCam.z / (-rmu + sqrt(discG));
     vec3 n = normalize(t * d - uEarthCenter);
-    SurfaceSample s = sampleGlobeLod(globeUvNoGrad(n), uAlbedoLod);
+    SurfaceSample s = sampleGlobeLod(globeUvNoGrad(n), uAlbedoWidthLog2);
     vec3 ls = shadeSurface(n, d, s, 1.0);
     atmosphereAlongRay(d, true, ins, T);
     colour = ls * T + ins;

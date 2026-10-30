@@ -125,7 +125,8 @@ export class EnvironmentProbe {
       glslVersion: THREE.GLSL3,
       vertexShader: FULLSCREEN_VERTEX,
       fragmentShader: ENV_FRAGMENT,
-      uniforms: { ...shared, uAlbedoLod: { value: 5 } },
+      // 128 texels around (level 5 of the 4K textures), whichever day texture is loaded.
+      uniforms: { ...shared, uAlbedoWidthLog2: { value: 7 } },
       depthTest: false,
       depthWrite: false,
     });

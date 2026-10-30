@@ -6,25 +6,26 @@ import { ATMOSPHERE_HEIGHT, AtmosphereModel, type AtmosphereParams, DEFAULT_ATMO
 import { greenwichSiderealTime } from './ephemeris';
 import { latLonToEcef, enuToEcefRotation } from './geo';
 import { buildPatchGeometry, createGlobeMesh, createPatchMaterial, createStars, GLOBE_RENDER_ORDER, PATCH_LAYOUT } from './layers';
-import { EnvironmentProbe, ViewLut } from './passes';
-import { computeTablesGpu } from './precompute';
 import {
-  createAtmosphereTextures,
-  EARTH_ASSET_BASE,
+  type DayLevel,
+  dayImage,
   type EarthManifest,
-  loadImageTexture,
+  loadedManifest,
+  loadImage,
   loadManifest,
   type PatchId,
-  placeholderTexture,
-  uploadAndRelease,
-} from './resources';
+  releaseImage,
+} from './imagery';
+import { EnvironmentProbe, ViewLut } from './passes';
+import { computeTablesGpu } from './precompute';
+import { createAtmosphereTextures, type ImageTextureOptions, placeholderTexture, TextureStreamer } from './resources';
 import { toneMapColour } from './tonemap';
 import { applyAtmosphereParams, createSharedUniforms } from './uniforms';
 
 export { sunDirectionEcef, greenwichSiderealTime } from './ephemeris';
 export { latLonToEcef, ecefToLatLon, enuBasis, enuToEcefRotation } from './geo';
 export { DEFAULT_ATMOSPHERE, type AtmosphereParams } from './atmosphere';
-export type { EarthManifest } from './resources';
+export type { EarthManifest } from './imagery';
 
 type RGB = [number, number, number];
 
@@ -42,6 +43,22 @@ const QUALITY = {
 const VIEW_LUT_SIZE: [number, number] = [48, 160];
 /** Weight of direct sunlight in the exposure meter: a 5.7° sun at sea level meters about 1.3×, not 3.8×. */
 const SUN_METER_WEIGHT = 0.03;
+/** From this camera altitude the globe imagery fills much of the view: worth the 8K day texture where affordable. */
+const DETAIL_ALTITUDE = 50_000;
+
+/** Sharpness order of the day textures. */
+const DAY_RANK: Record<DayLevel, number> = { preview: 0, low: 1, high: 2 };
+
+/**
+ * The 8K day texture takes 170 MB of video memory with its mips (the 4K 43 MB), so only desktops get it: never
+ * with a coarse (touch) primary pointer, 4 GB of memory or less, or a texture size limit below 8192.
+ */
+function affords8k(renderer: THREE.WebGLRenderer): boolean {
+  if (renderer.capabilities.maxTextureSize < 8192) return false;
+  if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) return false;
+  const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  return memory === undefined || memory > 4;
+}
 
 export interface EarthDebug {
   readonly params: AtmosphereParams;
@@ -53,6 +70,8 @@ export interface EarthDebug {
   readonly glint: { value: number };
   readonly stats: { updateMs: number; envRefreshes: number; envMs: number; lastEnvAt: number };
   readonly manifest: () => EarthManifest | null;
+  /** Which imagery is on the GPU: the day texture's level, and whether the city lights and water mask are in. */
+  readonly imagery: () => { day: DayLevel | null; night: boolean; water: boolean; patches: number };
   /** Force an environment-map refresh on the next update. */
   refreshEnvironment(): void;
   /** The CPU-side atmosphere model (tables shared with the shaders). */
@@ -155,72 +174,110 @@ export function createEarth(options: EarthOptions): EarthHandle {
   let disposed = false;
   const abort = new AbortController();
   const textures: {
-    day4k: THREE.Texture | null;
-    day8k: THREE.Texture | null;
+    day: { level: DayLevel; texture: THREE.Texture } | null;
     night: THREE.Texture | null;
     water: THREE.Texture | null;
     patches: Partial<Record<PatchId | 'water', THREE.Texture>>;
-  } = { day4k: null, day8k: null, night: null, water: null, patches: {} };
-  let loading8k: Promise<void> | null = null;
+  } = { day: null, night: null, water: null, patches: {} };
 
   // Imagery -------------------------------------------------------------------------------------------------
+  // The opening view (ground patches around the pad and a small globe) gates `ready`. The full-resolution globe
+  // streams in straight after, and the 8K day texture only once the camera is high enough to see the difference.
+  // Every texture is uploaded in bands under a per-frame budget (TextureStreamer), so loading never stalls a frame.
+  const streamer = new TextureStreamer(renderer);
   const aniso = Math.min(renderer.capabilities.getMaxAnisotropy(), 16);
-  const url = (file: string) => `${EARTH_ASSET_BASE}${file}`;
+  const DAY: ImageTextureOptions = { srgb: true, repeatS: true, anisotropy: aniso };
+  const MASK: ImageTextureOptions = { srgb: false, single: true, repeatS: true, anisotropy: aniso };
+  const PATCH: ImageTextureOptions = { srgb: true, anisotropy: aniso };
+  const PATCH_MASK: ImageTextureOptions = { srgb: false, anisotropy: aniso };
+  const can8k = affords8k(renderer);
+  /** The opening imagery has settled: the full-resolution globe may follow. */
+  let opened = false;
+  /** The camera has been above DETAIL_ALTITUDE (the 8K then stays, wherever it goes). */
+  let detailWanted = false;
+  let dayLoading = false;
+  const dayFailed = new Set<DayLevel>();
 
-  const applyDay = () => {
-    const day = (quality === 'high' && textures.day8k) || textures.day4k;
-    if (day) shared.uDayTex.value = day;
-  };
-
-  const load8k = () => {
-    if (loading8k || textures.day8k || !manifest) return;
-    const entry = manifest.globe.day.find((d) => d.quality === 'high');
-    if (!entry) return;
-    loading8k = loadImageTexture(url(entry.file), { srgb: true, repeatS: true, anisotropy: aniso }, abort.signal)
-      .then((tex) => {
-        if (disposed || quality !== 'high') {
-          tex.dispose();
-          return;
-        }
-        uploadAndRelease(renderer, tex);
-        textures.day8k = tex;
-        applyDay();
-        envState.force = true;
-      })
-      .catch((err: unknown) => {
-        if (!disposed) console.warn('Earth: 8K day texture failed to load', err);
-      })
-      .finally(() => {
-        loading8k = null;
-      });
-  };
-
-  const ready: Promise<void> = (async () => {
-    manifest = await loadManifest(abort.signal);
-    const m = manifest;
-    const day = m.globe.day.find((d) => d.quality === 'low') ?? m.globe.day[0];
-    const loads: Array<Promise<THREE.Texture>> = [
-      loadImageTexture(url(day.file), { srgb: true, repeatS: true, anisotropy: aniso }, abort.signal),
-      loadImageTexture(url(m.globe.night.file), { srgb: false, repeatS: true, anisotropy: aniso }, abort.signal),
-      loadImageTexture(url(m.globe.water.file), { srgb: false, repeatS: true, anisotropy: aniso }, abort.signal),
-      ...m.patches.map((p) => loadImageTexture(url(p.file), { srgb: true, anisotropy: aniso }, abort.signal)),
-    ];
-    if (m.patchWater) loads.push(loadImageTexture(url(m.patchWater.file), { srgb: false, anisotropy: aniso }, abort.signal));
-    const loaded = await Promise.all(loads);
+  /** Download, decode and stream one image to the GPU; null if the Earth is disposed meanwhile. */
+  const loadTexture = async (file: string, opts: ImageTextureOptions): Promise<THREE.Texture | null> => {
+    const image = await loadImage(file, abort.signal);
     if (disposed) {
-      loaded.forEach((t) => t.dispose());
-      return;
+      releaseImage(image);
+      return null;
     }
-    loaded.forEach((t) => uploadAndRelease(renderer, t));
-    [textures.day4k, textures.night, textures.water] = loaded;
-    m.patches.forEach((p, i) => (textures.patches[p.id] = loaded[3 + i]));
-    if (m.patchWater) textures.patches.water = loaded[3 + m.patches.length];
-    applyDay();
-    shared.uNightTex.value = textures.night ?? placeholder;
-    shared.uWaterTex.value = textures.water ?? placeholder;
-    shared.uTexReady.value = 1;
+    const tex = await streamer.upload(image, opts);
+    if (tex && disposed) {
+      tex.dispose();
+      return null;
+    }
+    return tex;
+  };
 
-    // Ground patch around the pad.
+  /** The day texture for the quality and the view (the manifest's best match). */
+  const dayGoal = (m: EarthManifest): DayLevel =>
+    dayImage(m, quality === 'high' && can8k && detailWanted ? 'high' : 'low').quality;
+
+  const bindDay = (level: DayLevel, texture: THREE.Texture) => {
+    const old = textures.day;
+    textures.day = { level, texture };
+    shared.uDayTex.value = texture;
+    shared.uTexReady.value = 1;
+    envState.force = true;
+    // Only one day texture stays on the GPU (the 8K replaces the 4K, and the other way round).
+    old?.texture.dispose();
+  };
+
+  /** Load the day texture the quality and view call for (one at a time), then drop the one it replaces. */
+  const syncDay = () => {
+    const m = manifest;
+    if (disposed || !m || !opened || dayLoading) return;
+    const level = dayGoal(m);
+    if (textures.day?.level === level || dayFailed.has(level)) return;
+    const { file } = dayImage(m, level);
+    dayLoading = true;
+    loadTexture(file, DAY).then(
+      (tex) => {
+        dayLoading = false;
+        if (!tex) return;
+        // Keep it if it is still the goal, or at least a step towards it from what is bound now.
+        const goal = dayGoal(m);
+        const bound = textures.day ? DAY_RANK[textures.day.level] : -1;
+        if (level === goal || (DAY_RANK[level] > bound && DAY_RANK[level] < DAY_RANK[goal])) bindDay(level, tex);
+        else tex.dispose();
+        syncDay();
+      },
+      (err: unknown) => {
+        dayLoading = false;
+        if (disposed) return;
+        dayFailed.add(level);
+        console.warn(`Earth: ${file} failed to load`, err);
+        syncDay();
+      },
+    );
+  };
+
+  /** City lights or the water mask (one channel each), after the opening view. */
+  const loadMask = (file: string, key: 'night' | 'water') => {
+    loadTexture(file, MASK).then(
+      (tex) => {
+        if (!tex) return;
+        textures[key] = tex;
+        (key === 'night' ? shared.uNightTex : shared.uWaterTex).value = tex;
+        envState.force = true;
+      },
+      (err: unknown) => {
+        if (!disposed) console.warn(`Earth: ${file} failed to load`, err);
+      },
+    );
+  };
+
+  /**
+   * The ground patch mesh, built as soon as the manifest is known (synchronously when the prefetch already has it),
+   * so its shader compiles with the first frames instead of on the frame the imagery arrives. Until then it shows
+   * the same placeholder as the globe.
+   */
+  const buildPatch = (m: EarthManifest) => {
+    manifest = m;
     const geometry = buildPatchGeometry(pad.lat, pad.lon, pad.groundAlt, m.patches, PATCH_LAYOUT);
     patchMesh = new THREE.Mesh(geometry, patch.material);
     patchMesh.name = 'earth-starbase-ground';
@@ -228,18 +285,56 @@ export function createEarth(options: EarthOptions): EarthHandle {
     patchMesh.quaternion.copy(padRotation);
     patchMesh.visible = false;
     object.add(patchMesh);
+  };
+  const known = loadedManifest();
+  if (known) buildPatch(known);
+
+  const ready: Promise<void> = (async () => {
+    const m = await loadManifest();
+    if (disposed) return;
+    if (!patchMesh) buildPatch(m);
+    const preview = dayImage(m, 'preview');
+    const settled = await Promise.allSettled([
+      loadTexture(preview.file, DAY),
+      m.patchWater ? loadTexture(m.patchWater.file, PATCH_MASK) : Promise.resolve(null),
+      ...m.patches.map((p) => loadTexture(p.file, PATCH)),
+    ]);
+    const [day, water, ...patches] = settled.map((r) => (r.status === 'fulfilled' ? r.value : null));
+    if (disposed) {
+      [day, water, ...patches].forEach((t) => t?.dispose());
+      return;
+    }
+    if (day) bindDay(preview.quality, day);
+
+    // Ground patch imagery around the pad.
     const tp = textures.patches;
+    m.patches.forEach((p, i) => {
+      const t = patches[i];
+      if (t) tp[p.id] = t;
+    });
+    if (water) tp.water = water;
     patch.uniforms.uPatchPad.value = tp.pad ?? placeholder;
     patch.uniforms.uPatchMid.value = tp.mid ?? placeholder;
     patch.uniforms.uPatchWide.value = tp.wide ?? placeholder;
     patch.uniforms.uPatchWater.value = tp.water ?? placeholder;
     patch.uniforms.uPatchParams.value.w = tp.pad && tp.mid && tp.wide ? 1 : 0;
     envState.force = true;
-    if (quality === 'high') load8k();
+    const failed = settled.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    if (failed) throw failed.reason;
   })();
   ready.catch((err: unknown) => {
-    if (!disposed) console.error('Earth: imagery failed to load; showing a plain globe.', err);
+    if (!disposed) console.error('Earth: imagery failed to load; showing the globe without it.', err);
   });
+  // Then the full-resolution globe, whatever became of the opening imagery.
+  ready
+    .catch(() => {})
+    .then(() => {
+      if (disposed || !manifest) return;
+      opened = true;
+      syncDay();
+      loadMask(manifest.globe.water.file, 'water');
+      loadMask(manifest.globe.night.file, 'night');
+    });
 
   // Per-frame update ------------------------------------------------------------------------------------------
   const refreshLighting = (h: number, mus: number) => {
@@ -293,6 +388,11 @@ export function createEarth(options: EarthOptions): EarthHandle {
     upVec.set(cam[0] / r, cam[1] / r, cam[2] / r);
     sunVec.copy(frame.sunDir).normalize();
     const mus = sunVec.dot(upVec);
+
+    if (!detailWanted && h > DETAIL_ALTITUDE) {
+      detailWanted = true;
+      syncDay();
+    }
 
     shared.uCam.value.set(rc, h, rho2, -Math.sqrt(rho2) / rc);
     shared.uCamInside.value = h < ATMOSPHERE_HEIGHT ? 1 : 0;
@@ -377,13 +477,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     viewLut.uniforms.uSteps.value = QUALITY[q].lutSteps;
     env.setResolution(QUALITY[q].envWidth);
     envState.force = true;
-    if (q === 'high') load8k();
-    else if (textures.day8k) {
-      shared.uDayTex.value = textures.day4k ?? placeholder;
-      textures.day8k.dispose();
-      textures.day8k = null;
-    }
-    applyDay();
+    syncDay();
   };
 
   const setAtmosphere = (p: Partial<AtmosphereParams>) => {
@@ -418,6 +512,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     if (disposed) return;
     disposed = true;
     abort.abort();
+    streamer.dispose();
     object.removeFromParent();
     sunLight.removeFromParent();
     skyLight.removeFromParent();
@@ -435,8 +530,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     if (scene.fog === fog) scene.fog = null;
     Object.values(luts).forEach((t) => t.dispose());
     placeholder.dispose();
-    textures.day4k?.dispose();
-    textures.day8k?.dispose();
+    textures.day?.texture.dispose();
     textures.night?.dispose();
     textures.water?.dispose();
     Object.values(textures.patches).forEach((t) => t?.dispose());
@@ -461,6 +555,12 @@ export function createEarth(options: EarthOptions): EarthHandle {
       glint: shared.uGlintStrength,
       stats,
       manifest: () => manifest,
+      imagery: () => ({
+        day: textures.day?.level ?? null,
+        night: textures.night !== null,
+        water: textures.water !== null,
+        patches: Object.keys(textures.patches).length,
+      }),
       refreshEnvironment: () => {
         envState.force = true;
       },

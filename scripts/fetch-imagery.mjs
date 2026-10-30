@@ -64,7 +64,7 @@ const ATTRIBUTION = [
     text: 'Blue Marble: Next Generation (July 2004, topography and bathymetry), NASA Earth Observatory / Reto Stöckli',
     licence: 'Public domain (NASA imagery; credit requested: "NASA Earth Observatory")',
     urls: [NASA.dayTopoBathy.url, NASA.dayPlain.url],
-    usedFor: ['day-4k', 'day-8k', 'mask'],
+    usedFor: ['day-2k', 'day-4k', 'day-8k', 'mask'],
   },
   {
     id: 'black-marble',
@@ -270,6 +270,11 @@ async function buildGlobe() {
     .resize(4096, 2048, { kernel: 'lanczos3', fit: 'fill' })
     .jpeg({ quality: 90, mozjpeg: true, chromaSubsampling: '4:2:0' })
     .toFile(path.join(OUT, 'day-4k.jpg'));
+  // Small enough to load with the ground patches before the first frame; the 4K replaces it straight after.
+  await sharp(day, { raw: { width: W, height: H, channels: 3 } })
+    .resize(2048, 1024, { kernel: 'lanczos3', fit: 'fill' })
+    .jpeg({ quality: 88, mozjpeg: true, chromaSubsampling: '4:2:0' })
+    .toFile(path.join(OUT, 'day-2k.jpg'));
   await sharp(mask, { raw: { width: W, height: H, channels: 1 } })
     .resize(4096, 2048, { kernel: 'cubic', fit: 'fill' })
     .png({ compressionLevel: 9, palette: false })
@@ -611,6 +616,7 @@ async function main() {
     projection: equirect,
     bounds: { west: -180, south: -90, east: 180, north: 90 },
     day: [
+      { quality: 'preview', ...(await fileInfo('day-2k.jpg')), width: 2048, height: 1024, attribution: 'bmng' },
       { quality: 'low', ...(await fileInfo('day-4k.jpg')), width: 4096, height: 2048, attribution: 'bmng' },
       { quality: 'high', ...(await fileInfo('day-8k.jpg')), width: 8192, height: 4096, attribution: 'bmng' },
     ],

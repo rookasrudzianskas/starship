@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EARTH_RADIUS } from '@/lib/sim/types';
 import { ecefToLatLon, enuBasis, latLonToEcef, mercatorX, mercatorY } from './geo';
-import type { PatchId, PatchManifest } from './resources';
+import type { PatchId, PatchManifest } from './imagery';
 import { fullscreenTriangle } from './passes';
 import {
   GLOBE_FRAGMENT,

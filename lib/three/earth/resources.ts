@@ -1,101 +1,26 @@
 import * as THREE from 'three';
-import type { Quality } from '@/lib/three/contracts';
 import { type AtmosphereModel, IRRADIANCE_SIZE, MS_SIZE, TRANSMITTANCE_SIZE } from './atmosphere';
+import { type DecodedImage, releaseImage } from './imagery';
 
-/** Public URL of the imagery written by scripts/fetch-imagery.mjs. */
-export const EARTH_ASSET_BASE = '/earth/';
-
-export type PatchId = 'pad' | 'mid' | 'wide';
-
-export interface ManifestImage {
-  file: string;
-  bytes: number;
-  width: number;
-  height: number;
-}
-
-export interface PatchManifest extends ManifestImage {
-  id: PatchId;
-  zoom: number;
-  /** EPSG:3857 bounds in metres. u = (x − xmin) / (xmax − xmin), v = (ymax − y) / (ymax − ymin). */
-  mercator: { xmin: number; ymin: number; xmax: number; ymax: number };
-  bounds: { west: number; south: number; east: number; north: number };
-  center: { lat: number; lon: number };
-  groundMetresPerPixel: number;
-}
-
-export interface AttributionEntry {
-  id: string;
-  short: string;
-  text: string;
-  licence: string;
-  urls: string[];
-}
-
-export interface EarthManifest {
-  version: number;
-  globe: {
-    projection: string;
-    day: Array<ManifestImage & { quality: Quality }>;
-    night: ManifestImage;
-    water: ManifestImage;
-  };
-  patches: PatchManifest[];
-  patchWater: ManifestImage | null;
-  attribution: AttributionEntry[];
-  creditLine: string;
-}
-
-export async function loadManifest(signal?: AbortSignal): Promise<EarthManifest> {
-  const res = await fetch(`${EARTH_ASSET_BASE}manifest.json`, { signal });
-  if (!res.ok) throw new Error(`Earth manifest: HTTP ${res.status}`);
-  return (await res.json()) as EarthManifest;
-}
-
-/** Decode off the main thread where possible; older engines reject the options or lack createImageBitmap. */
-async function decodeImage(blob: Blob): Promise<ImageBitmap | HTMLImageElement> {
-  if (typeof createImageBitmap === 'function') {
-    try {
-      return await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
-    } catch {
-      try {
-        return await createImageBitmap(blob);
-      } catch {
-        // fall through to an <img>
-      }
-    }
-  }
-  const src = URL.createObjectURL(blob);
-  try {
-    const img = new Image();
-    img.src = src;
-    await img.decode();
-    return img;
-  } finally {
-    URL.revokeObjectURL(src);
-  }
-}
+export { EARTH_ASSET_BASE } from './imagery';
+export type { AttributionEntry, EarthManifest, ManifestImage, PatchId, PatchManifest } from './imagery';
 
 export interface ImageTextureOptions {
+  /** sRGB-encoded colour (the GPU decodes it to linear); otherwise raw data. */
   srgb: boolean;
+  /** Greyscale data kept as one channel (R8): a quarter of the memory of RGBA. */
+  single?: boolean;
   repeatS?: boolean;
   anisotropy: number;
 }
 
 /**
- * Load an image as a texture (decoded off the main thread via createImageBitmap). Rows stay in file order
- * (flipY = false): v = 0 is the top row of the image, which every shader here assumes.
+ * Sampler and format set-up for imagery. Rows stay in file order (flipY = false): v = 0 is the top row of the
+ * image, which every shader here assumes.
  */
-export async function loadImageTexture(
-  url: string,
-  opts: ImageTextureOptions,
-  signal?: AbortSignal,
-): Promise<THREE.Texture> {
-  const res = await fetch(url, { signal });
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const blob = await res.blob();
-  const tex = new THREE.Texture(await decodeImage(blob));
+function configure(tex: THREE.Texture, opts: ImageTextureOptions): void {
   tex.flipY = false;
+  tex.format = opts.single ? THREE.RedFormat : THREE.RGBAFormat;
   tex.colorSpace = opts.srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   tex.wrapS = opts.repeatS ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
@@ -103,15 +28,179 @@ export async function loadImageTexture(
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = true;
   tex.anisotropy = opts.anisotropy;
-  tex.needsUpdate = true;
-  return tex;
 }
 
-/** Upload now (predictable hitch at load time instead of on first use) and drop the decoded copy. */
-export function uploadAndRelease(renderer: THREE.WebGLRenderer, tex: THREE.Texture): void {
-  renderer.initTexture(tex);
-  const image: unknown = tex.image;
-  if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) image.close();
+/** Pixels per band: 2 MB of RGBA, a fraction of a millisecond to crop and hand to the GPU on a desktop. */
+const BAND_PIXELS = 512 * 1024;
+/**
+ * Pixels per frame (32 MB of RGBA would fill the browser's transfer buffer and block on the GPU process; 8 MB a
+ * frame keeps well under what it drains), and the time each frame may spend.
+ */
+const SLICE_PIXELS = 2 * 1024 * 1024;
+const SLICE_MS: [number, number] = [2, 8];
+/** Without requestIdleCallback (Safari), work this long just after each frame. */
+const FALLBACK_SLICE_MS = 4;
+
+interface UploadJob {
+  image: ImageBitmap;
+  texture: THREE.Texture;
+  /** Next row to copy; -1 until the texture's storage is allocated. */
+  y: number;
+  rows: number;
+  finish(texture: THREE.Texture | null): void;
+  fail(err: unknown): void;
+}
+
+/**
+ * Uploads decoded images to the GPU in horizontal bands, a few per frame, so even the 8K day texture never stalls
+ * the main thread (in one go it blocks for ~0.2 s on a desktop and far longer on a phone). Each texture's storage
+ * is allocated up front with every mip level but no pixels; bands cropped from the image are copied in during idle
+ * time after a frame, and the last band generates the mip chain. A texture is only handed out once it is complete.
+ */
+export class TextureStreamer {
+  private readonly jobs: UploadJob[] = [];
+  /** Never uploaded itself: carries each band into copyTextureToTexture. */
+  private readonly carrier = new THREE.Texture();
+  private readonly at = new THREE.Vector2();
+  private readonly region = new THREE.Box2();
+  private cancelWait: (() => void) | null = null;
+  private running = false;
+  private disposed = false;
+
+  constructor(private readonly renderer: THREE.WebGLRenderer) {}
+
+  /**
+   * Resolves with the complete texture, or with null if the streamer was disposed first; rejects if the upload
+   * failed. The image is released in every case.
+   */
+  upload(image: DecodedImage, opts: ImageTextureOptions): Promise<THREE.Texture | null> {
+    if (this.disposed) {
+      releaseImage(image);
+      return Promise.resolve(null);
+    }
+    if (typeof ImageBitmap === 'undefined' || !(image instanceof ImageBitmap)) {
+      // An <img> (no createImageBitmap) cannot be cropped: upload it in one go.
+      const tex = new THREE.Texture(image);
+      configure(tex, opts);
+      tex.needsUpdate = true;
+      try {
+        this.renderer.initTexture(tex);
+      } catch (err) {
+        tex.dispose();
+        return Promise.reject(err);
+      }
+      return Promise.resolve(tex);
+    }
+    const texture = new THREE.Texture({ width: image.width, height: image.height });
+    configure(texture, opts);
+    // Allocate the storage on the first use, but transfer nothing: the bands are copied in afterwards.
+    texture.source.dataReady = false;
+    texture.needsUpdate = true;
+    return new Promise((finish, fail) => {
+      const rows = Math.max(1, Math.min(image.height, Math.floor(BAND_PIXELS / image.width)));
+      this.jobs.push({ image, texture, y: -1, rows, finish, fail });
+      void this.run();
+    });
+  }
+
+  private async run(): Promise<void> {
+    if (this.running) return;
+    this.running = true;
+    while (this.jobs.length && !this.disposed) {
+      const budget = await this.nextSlice();
+      if (this.disposed) break;
+      const end = performance.now() + Math.min(Math.max(budget - 1, SLICE_MS[0]), SLICE_MS[1]);
+      let pixels = 0;
+      do {
+        const job = this.jobs[0];
+        try {
+          pixels += await this.step(job);
+        } catch (err) {
+          // A failed upload must not hold up the others.
+          if (this.jobs[0] === job) this.jobs.shift();
+          releaseImage(job.image);
+          job.texture.dispose();
+          job.fail(err);
+        }
+      } while (this.jobs.length && !this.disposed && pixels < SLICE_PIXELS && performance.now() < end);
+    }
+    this.running = false;
+  }
+
+  /** Resolves with a time budget (ms) in the idle time after the next frame. */
+  private nextSlice(): Promise<number> {
+    return new Promise((resolve) => {
+      let idle = 0;
+      let timer = 0;
+      const frame = requestAnimationFrame(() => {
+        if (typeof requestIdleCallback === 'function') {
+          // The timeout keeps uploads going while frames leave no idle time.
+          idle = requestIdleCallback((deadline) => resolve(deadline.timeRemaining()), { timeout: 100 });
+        } else {
+          timer = window.setTimeout(() => resolve(FALLBACK_SLICE_MS), 0);
+        }
+      });
+      this.cancelWait = () => {
+        cancelAnimationFrame(frame);
+        if (idle) cancelIdleCallback(idle);
+        clearTimeout(timer);
+        resolve(0);
+      };
+    });
+  }
+
+  /** Advance the first job by one band (or its allocation); returns the pixels moved. */
+  private async step(job: UploadJob): Promise<number> {
+    if (job.y < 0) {
+      this.renderer.initTexture(job.texture);
+      job.texture.generateMipmaps = false;
+      job.y = 0;
+      return 0;
+    }
+    const { image } = job;
+    const rows = Math.min(job.rows, image.height - job.y);
+    let band: ImageBitmap | null = null;
+    try {
+      band = await createImageBitmap(image, 0, job.y, image.width, rows);
+    } catch {
+      // Cropping failed (memory pressure, say): copy the rows out of the whole image instead, which some engines
+      // do by converting the whole image every time.
+    }
+    if (this.disposed) {
+      band?.close();
+      return 0;
+    }
+    const last = job.y + rows >= image.height;
+    // The whole mip chain is generated once, with the last band.
+    job.texture.generateMipmaps = last;
+    this.carrier.image = band ?? image;
+    if (!band) {
+      this.region.min.set(0, job.y);
+      this.region.max.set(image.width, job.y + rows);
+    }
+    this.renderer.copyTextureToTexture(this.carrier, job.texture, band ? null : this.region, this.at.set(0, job.y));
+    this.carrier.image = null;
+    band?.close();
+    job.y += rows;
+    if (last) {
+      this.jobs.shift();
+      releaseImage(image);
+      job.finish(job.texture);
+    }
+    return image.width * rows;
+  }
+
+  /** Drop every pending upload: their images are released and their promises resolve with null. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.cancelWait?.();
+    for (const job of this.jobs.splice(0)) {
+      releaseImage(job.image);
+      job.texture.dispose();
+      job.finish(null);
+    }
+  }
 }
 
 /** Half-float RGBA data texture from an RGB float table (linear filtering works everywhere for half floats). */
