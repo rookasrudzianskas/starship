@@ -132,12 +132,25 @@ void main() {
   float n2 = texture2D(uNoise, vec2(zr * 0.017 - uTime * 1.3 + vP.z * 1.7, 0.37 + vP.z)).g;
   // In thick air the jet between the disks is translucent; the disks carry the brightness.
   float body = radial * axial * (0.62 + 0.5 * n + 0.3 * n2) / sqrt(max(rc, 1.0)) * mix(1.0, 0.42, sea);
+  float eddy = 1.0;
+  if (kind > 1.5) {
+    // Hot-staging gas forced out through the vents is violently turbulent: billowing eddies, finer near the vent
+    // and growing along the jet, carried outwards fast, with darker gaps between them and a ragged edge.
+    float grow = 1.0 / (1.0 + zr * 0.08);
+    float t1 = texture2D(uNoise, vec2(zr * 0.045 * grow - uTime * 1.6 + vP.z * 5.3, xr * 0.09 * grow + vP.z * 1.9)).b;
+    float t2 = texture2D(uNoise, vec2(zr * 0.11 * grow - uTime * 2.9 + vP.z * 2.1, xr * 0.2 * grow - uTime * 0.4)).a;
+    float turb = 0.65 * t1 + 0.35 * t2;
+    float edge = exp(-2.3 * xr * xr / (rc * rc * (0.6 + 0.8 * turb)));
+    eddy = smoothstep(0.3, 0.72, turb);
+    body = edge * axial * (0.4 + 1.2 * eddy) / sqrt(max(rc, 1.0));
+  }
   float I = vP.x * near * (body + disk * 3.6);
   vec3 hot = mix(vec3(0.9, 0.94, 1.0), vec3(0.86, 0.8, 1.0), sea);
   vec3 mid = mix(vec3(1.0, 0.56, 0.24), vec3(0.52, 0.38, 1.0), smoothstep(0.03, 0.28, alt));
   if (kind > 1.5) {
-    hot = vec3(1.0, 0.88, 0.66);
-    mid = vec3(1.0, 0.4, 0.1);
+    // Yellow in the hot eddies, deep orange to red in the cooler gas round them.
+    hot = mix(vec3(1.0, 0.45, 0.12), vec3(1.0, 0.85, 0.55), eddy);
+    mid = mix(vec3(0.75, 0.2, 0.05), vec3(1.0, 0.42, 0.1), eddy);
   }
   float tcol = clamp(xr / rc * 0.6 + zr / (decayR * 2.0), 0.0, 1.0);
   vec3 col = mix(hot, mid, tcol);
