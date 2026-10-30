@@ -9,6 +9,7 @@ import { formatDate } from '@/lib/format';
 import { runSimulation } from '@/lib/sim/client';
 import type { FlightEvent } from '@/lib/sim/types';
 import { AS_FLOWN, isModified, isSkipping, useReplay, type CameraMode } from '@/lib/store/replay';
+import { replayAddress, setReplayAddress } from '@/lib/store/replayAddress';
 import { encodeScenario, linkOf, readRunLink, runLinkSearch } from '@/lib/store/runLink';
 import { CameraBar, nextEventTime, PlaybackControls, previousEventTime, toggleFullscreen, WEBCAST_SHOTS } from './Controls';
 import { DirectorPanel } from './DirectorPanel';
@@ -26,8 +27,6 @@ const URL_WRITE_MS = 400;
 /** Keys a focused range input uses itself. */
 const SLIDER_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
 
-/** The replay URL last written to or read from the address bar; any other URL came from a navigation. */
-let knownUrl: string | null = null;
 /** The page the replay is on: the address bar is only ever written there. */
 let replayPath = '/';
 
@@ -52,13 +51,13 @@ function writeUrl(): void {
   if (window.location.pathname !== replayPath) return;
   const s = useReplay.getState();
   const next = replayPath + runLinkSearch(linkOf(s, !s.playing), false);
-  knownUrl = next;
+  setReplayAddress(next);
   if (next !== currentUrl()) window.history.replaceState(null, '', next);
 }
 
 /** Show what the address bar asks for. The run already shown keeps playing where it is; another one starts over. */
 function applyUrl(): void {
-  knownUrl = currentUrl();
+  setReplayAddress(currentUrl());
   const link = readRunLink(window.location.search);
   const st = useReplay.getState();
   const sameRun = link.flight === st.flight && encodeScenario(link.scenario) === encodeScenario(st.scenario);
@@ -75,7 +74,7 @@ function applyUrl(): void {
 function UrlSync() {
   const search = useSearchParams().toString();
   useEffect(() => {
-    if (currentUrl() === knownUrl || redirecting()) return;
+    if (currentUrl() === replayAddress() || redirecting()) return;
     applyUrl();
   }, [search]);
   return null;
@@ -110,7 +109,7 @@ export function ReplayApp() {
     }
     replayPath = window.location.pathname;
     useReplay.getState().hydrateSettings();
-    if (currentUrl() !== knownUrl) applyUrl();
+    if (currentUrl() !== replayAddress()) applyUrl();
   }, [router]);
 
   // The tab shows the flight. Next's metadata resets the title on every navigation, also within this
@@ -261,13 +260,15 @@ export function ReplayApp() {
   // Keyboard shortcuts.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // A key a control has already used (the timeline, the engine map) is not a shortcut as well.
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target instanceof Element ? e.target : null;
       const key = e.key;
-      // Text fields keep every key, sliders the keys that move them; menus and lists handle their own keys.
-      if (target?.closest('textarea, select, [contenteditable="true"], [role="menu"], [role="listbox"]')) return;
-      const input = target?.closest('input');
-      if (input && (input.type !== 'range' || SLIDER_KEYS.has(key))) return;
+      // Menus and lists handle their own keys. Text fields keep every key but Escape, which closes their
+      // panel; sliders keep the keys that move them.
+      if (target?.closest('[role="menu"], [role="listbox"]')) return;
+      const field = target?.closest('input, textarea, select, [contenteditable="true"]');
+      if (field && key !== 'Escape' && !(field instanceof HTMLInputElement && field.type === 'range' && !SLIDER_KEYS.has(key))) return;
       const st = useReplay.getState();
       // The keyboard help is modal: only closing it works while it is open.
       if (st.panel === 'help' && key !== 'Escape' && key !== '?') return;

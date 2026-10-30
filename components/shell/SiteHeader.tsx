@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconClose, IconGithub, IconMenu } from '@/components/icons';
+import { useReplayHref } from '@/lib/store/replayAddress';
 import styles from './shell.module.css';
 
 export type SiteSection = 'replay' | 'compare' | 'flights' | 'about';
@@ -28,6 +29,9 @@ interface Props {
 export function SiteHeader({ active, picker, actions }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  // "Replay" resumes the flight being watched in this visit; the brand always opens the latest flight.
+  const replayHref = useReplayHref();
+  const hrefOf = (n: (typeof NAV)[number]) => (n.id === 'replay' ? replayHref : n.href);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -62,7 +66,9 @@ export function SiteHeader({ active, picker, actions }: Props) {
         {NAV.map((n) => (
           <Link
             key={n.id}
-            href={n.href}
+            href={hrefOf(n)}
+            // The page you are on needs no prefetch (and the replay's own address changes as you watch).
+            prefetch={n.id === active ? false : undefined}
             className={styles.navLink}
             data-active={n.id === active || undefined}
             aria-current={n.id === active ? 'page' : undefined}
@@ -87,7 +93,8 @@ export function SiteHeader({ active, picker, actions }: Props) {
             {NAV.map((n) => (
               <Link
                 key={n.id}
-                href={n.href}
+                href={hrefOf(n)}
+                prefetch={n.id === active ? false : undefined}
                 role="menuitem"
                 className={styles.menuItem}
                 data-active={n.id === active || undefined}
