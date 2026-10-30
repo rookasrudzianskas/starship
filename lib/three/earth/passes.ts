@@ -40,7 +40,7 @@ export class FullscreenPass {
 }
 
 /**
- * The per-frame view table (see VIEW_LUT_PARAM_GLSL): three half-float colour attachments
+ * The view table (see VIEW_LUT_PARAM_GLSL): three half-float colour attachments
  * (Rayleigh, Mie, transmittance; alphas carry multiple scattering).
  */
 export class ViewLut {
@@ -80,6 +80,8 @@ export class ViewLut {
         uMsSize: shared.uMsSize,
         uCam: shared.uCam,
         uCamInside: shared.uCamInside,
+        uLutCam: shared.uLutCam,
+        uLutInside: shared.uLutInside,
         uViewLutSize: shared.uViewLutSize,
         ...this.uniforms,
       },

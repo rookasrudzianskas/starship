@@ -38,6 +38,9 @@ export function createSharedUniforms(params: AtmosphereParams, luts: AtmosphereT
     // Camera (VIEW_LUT_PARAM_GLSL / VIEW_LOOKUP_GLSL)
     uCam: { value: new THREE.Vector4(R_GROUND + 2, 2, 2 * (2 * R_GROUND + 2), 0) },
     uCamInside: { value: 1 },
+    // The camera the view table was made for (it is redrawn only once the camera has moved enough to matter).
+    uLutCam: { value: new THREE.Vector4(R_GROUND + 2, 2, 2 * (2 * R_GROUND + 2), 0) },
+    uLutInside: { value: 1 },
     uCamUp: { value: new THREE.Vector3(1, 0, 0) },
     uViewLutSize: { value: new THREE.Vector2(32, 128) },
     uViewLutR: { value: placeholder as THREE.Texture },

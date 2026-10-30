@@ -88,31 +88,35 @@ vec3 atmoMultipleScattering(float h, float mus) {
 export const VIEW_LUT_PARAM_GLSL = /* glsl */ `
 uniform vec4 uCam;            // r, h, ρ², μ_h
 uniform float uCamInside;     // 1 while the camera is inside the atmosphere
+// The same for the camera the view table was last made for: the table is only redrawn once the camera has moved
+// enough to matter, and its rows are found with the parameters it was made with.
+uniform vec4 uLutCam;
+uniform float uLutInside;
 uniform vec2 uViewLutSize;
 
 float viewLutX(float mu, bool ground) {
-  float rmu = uCam.x * mu;
+  float rmu = uLutCam.x * mu;
   if (ground) {
-    float mug = sqrt(max(rmu * rmu - uCam.z, 0.0)) / uAtmoRadii.x;
+    float mug = sqrt(max(rmu * rmu - uLutCam.z, 0.0)) / uAtmoRadii.x;
     return 1.0 - sqrt(clamp(mug, 0.0, 1.0));
   }
-  if (uCamInside > 0.5) return sqrt(clamp((mu - uCam.w) / (1.0 - uCam.w), 0.0, 1.0));
-  float p2mR2 = uCam.z - rmu * rmu; // p² − R² for the ray's closest approach p
+  if (uLutInside > 0.5) return sqrt(clamp((mu - uLutCam.w) / (1.0 - uLutCam.w), 0.0, 1.0));
+  float p2mR2 = uLutCam.z - rmu * rmu; // p² − R² for the ray's closest approach p
   float pmR = p2mR2 / (sqrt(max(p2mR2 + uAtmoRadii.x * uAtmoRadii.x, 0.0)) + uAtmoRadii.x);
   return clamp(pmR / (uAtmoRadii.y - uAtmoRadii.x), 0.0, 1.0);
 }
 
 float viewLutMu(float x, bool ground) {
-  float r = uCam.x;
+  float r = uLutCam.x;
   float R = uAtmoRadii.x;
   if (ground) {
     float mug = (1.0 - x) * (1.0 - x);
-    return -sqrt(R * R * mug * mug + uCam.z) / r;
+    return -sqrt(R * R * mug * mug + uLutCam.z) / r;
   }
-  if (uCamInside > 0.5) return uCam.w + x * x * (1.0 - uCam.w);
+  if (uLutInside > 0.5) return uLutCam.w + x * x * (1.0 - uLutCam.w);
   float pmR = x * (uAtmoRadii.y - R);
   float p = R + pmR;
-  return -sqrt(max((uCam.y - pmR) * (r + p), 0.0)) / r; // r² − p² = (r − p)(r + p)
+  return -sqrt(max((uLutCam.y - pmR) * (r + p), 0.0)) / r; // r² − p² = (r − p)(r + p)
 }
 
 vec2 viewLutTexcoord(float x, float u, bool ground) {

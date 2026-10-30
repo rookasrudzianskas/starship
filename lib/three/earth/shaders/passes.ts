@@ -37,8 +37,8 @@ void main() {
   float mu = clamp(viewLutMu(x, ground), -1.0, 1.0);
 
   float R = uAtmoRadii.x;
-  float r = uCam.x;
-  float rho2 = uCam.z;
+  float r = uLutCam.x;
+  float rho2 = uLutCam.z;
   float rmu = r * mu;
   float mus = uMusCam;
   float nu = sqrt(max(1.0 - mu * mu, 0.0)) * sqrt(max(1.0 - mus * mus, 0.0)) * cos(phi) + mu * mus;
@@ -51,7 +51,7 @@ void main() {
   float discTop = rmu * rmu + uAtmoRadii.w - rho2;
   if (discTop > 0.0) {
     float sq = sqrt(discTop);
-    float t0 = uCamInside > 0.5 ? 0.0 : max(-rmu - sq, 0.0);
+    float t0 = uLutInside > 0.5 ? 0.0 : max(-rmu - sq, 0.0);
     float t1 = -rmu + sq;
     if (ground) t1 = min(t1, rho2 / max(-rmu + sqrt(max(rmu * rmu - rho2, 0.0)), 1e-3));
     if (t1 > t0) {

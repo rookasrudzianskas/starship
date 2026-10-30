@@ -43,6 +43,14 @@ const QUALITY = {
 } as const;
 
 const VIEW_LUT_SIZE: [number, number] = [48, 160];
+/**
+ * The view table only depends on the camera's altitude and the Sun's height above its horizon: it is redrawn once
+ * one of them has moved by more than this (0.5 m plus a thousandth of the altitude; a cosine), or the camera
+ * crossed the top of the atmosphere. Changes this small are invisible (the air's density changes by 0.1 % or less),
+ * and a camera that is not climbing or descending fast (the globe, an orbit, a paused view) skips most of the redraws,
+ * which were half of the Earth's GPU time in the globe view, whatever the size of the canvas.
+ */
+const VIEW_LUT_TOLERANCE = { metres: 0.5, altitude: 1e-3, mus: 2e-4 };
 /** Weight of direct sunlight in the exposure meter: a 5.7° sun at sea level meters about 1.3×, not 3.8×. */
 const SUN_METER_WEIGHT = 0.03;
 /** From this camera altitude the globe imagery fills much of the view: worth the 8K day texture where affordable. */
@@ -188,6 +196,8 @@ export function createEarth(options: EarthOptions): EarthHandle {
   const forward = new THREE.Vector3();
   const starRot = new THREE.Matrix3();
   const envState = { last: -Infinity, h: NaN, sun: new THREE.Vector3(), up: new THREE.Vector3(), force: true };
+  /** What the view table was last drawn for (see VIEW_LUT_TOLERANCE). */
+  const lutState = { h: NaN, mus: NaN, inside: -1, force: true };
   const stats = { updateMs: 0, envRefreshes: 0, envMs: 0, lastEnvAt: 0 };
   let manifest: EarthManifest | null = null;
   let exposureHint = 1;
@@ -439,8 +449,22 @@ export function createEarth(options: EarthOptions): EarthHandle {
     shared.uSun.value.set(sunVec.x, sunVec.y, sunVec.z, params.sunIlluminance);
     shared.uEarthCenter.value.set(-cam[0], -cam[1], -cam[2]);
 
-    viewLut.uniforms.uMusCam.value = mus;
-    viewLut.render(renderer);
+    const inside = shared.uCamInside.value;
+    if (
+      lutState.force ||
+      inside !== lutState.inside ||
+      !(Math.abs(h - lutState.h) <= VIEW_LUT_TOLERANCE.metres + VIEW_LUT_TOLERANCE.altitude * h) ||
+      !(Math.abs(mus - lutState.mus) <= VIEW_LUT_TOLERANCE.mus)
+    ) {
+      viewLut.uniforms.uMusCam.value = mus;
+      shared.uLutCam.value.copy(shared.uCam.value);
+      shared.uLutInside.value = inside;
+      viewLut.render(renderer);
+      lutState.h = h;
+      lutState.mus = mus;
+      lutState.inside = inside;
+      lutState.force = false;
+    }
 
     // Sunlight at the camera.
     model.sunTransmittanceAt(h, mus, tmp.sunT);
@@ -519,6 +543,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     viewLut.uniforms.uSteps.value = QUALITY[q].lutSteps;
     env.setResolution(QUALITY[q].envWidth);
     envState.force = true;
+    lutState.force = true;
     syncDay();
   };
 
@@ -533,6 +558,7 @@ export function createEarth(options: EarthOptions): EarthHandle {
     Object.values(old).forEach((t) => t.dispose());
     applyAtmosphereParams(shared, params);
     envState.force = true;
+    lutState.force = true;
   };
 
   // Both pads share the imagery; only the patch mesh is centred on the pad.
