@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { FbmLattice, dataTexture, generatedOnce, seededRandom } from '@/lib/three/vehicles/procedural';
+import { dataTexture, generatedOnce } from '@/lib/three/vehicles/procedural';
+import { PUFF_ATLAS_KEY, puffAtlasPixels } from '@/lib/three/vehicles/pixels';
 
 /**
  * Shared billboard particle machinery for the effects: lumpy "puff" sprites (fire, smoke, steam, spray)
@@ -13,93 +14,11 @@ import { FbmLattice, dataTexture, generatedOnce, seededRandom } from '@/lib/thre
  * at render time, so it matches the vehicles under any sun colour.
  */
 
-// ---------------------------------------------------------------------------
-// Puff atlas: 2×2 billowy puff variants, 256² each.
-// R = density, G/B = view-plane normal x/y (encoded 0..1), A = turbulent detail (fire tongues, erosion).
-// ---------------------------------------------------------------------------
+export { PUFF_ATLAS_KEY } from '@/lib/three/vehicles/pixels';
 
-export const PUFF_ATLAS_KEY = 'fx:puffAtlas';
-
-function puffAtlasPixels(): Uint8Array {
-  const cell = 256;
-  const size = cell * 2;
-  const data = new Uint8Array(size * size * 4);
-  const field = new Float32Array(cell * cell);
-  for (let v = 0; v < 4; v++) {
-    const rnd = seededRandom(9001 + v * 131);
-    // Gaussian metaballs around a dense core; their sum is a smooth, lumpy "cauliflower" field.
-    const blobs: Array<{ x: number; y: number; k: number }> = [{ x: 0, y: 0, k: 1 / (0.36 * 0.36) }];
-    const nb = 14 + Math.floor(rnd() * 6);
-    for (let k = 0; k < nb; k++) {
-      const r = 0.12 + rnd() * 0.2;
-      const ang = rnd() * Math.PI * 2;
-      const off = Math.sqrt(rnd()) * Math.min(0.78 - r, 0.5);
-      blobs.push({ x: Math.cos(ang) * off, y: Math.sin(ang) * off, k: 1 / (r * r) });
-    }
-    // Noise lattices over exactly the coordinate ranges sampled below (same values as tileFbm).
-    const warpX = new FbmLattice(-3 + v * 5.1, -3, 3 + v * 5.1, 3, 64, 64, 3, 100 + v);
-    const warpY = new FbmLattice(-3, -3 + v * 2.3, 3, 3 + v * 2.3, 64, 64, 3, 200 + v);
-    const fineN = new FbmLattice(-7 + v * 1.7, -7 - v * 2.9, 7 + v * 1.7, 7 - v * 2.9, 64, 64, 4, 500 + v);
-    const turbN = new FbmLattice(-5 + v * 4.1, -5 + v * 6.7, 5 + v * 4.1, 5 + v * 6.7, 64, 64, 5, 700 + v);
-    for (let j = 0; j < cell; j++) {
-      for (let i = 0; i < cell; i++) {
-        const x0 = ((i + 0.5) / cell) * 2 - 1;
-        const y0 = ((j + 0.5) / cell) * 2 - 1;
-        // Domain warp so outlines are ragged rather than circular.
-        const x = x0 + (warpX.sample(x0 * 3 + v * 5.1, y0 * 3) - 0.5) * 0.16;
-        const y = y0 + (warpY.sample(x0 * 3, y0 * 3 + v * 2.3) - 0.5) * 0.16;
-        let f = 0;
-        for (const b of blobs) {
-          const dx = x - b.x;
-          const dy = y - b.y;
-          const e = (dx * dx + dy * dy) * b.k;
-          // Beyond e = 14 a blob adds less than 1e-6: skip the exp.
-          if (e < 14) f += Math.exp(-e);
-        }
-        field[j * cell + i] = f;
-      }
-    }
-    const ox = (v % 2) * cell;
-    const oy = Math.floor(v / 2) * cell;
-    const pix = 2 / cell;
-    for (let j = 0; j < cell; j++) {
-      for (let i = 0; i < cell; i++) {
-        const x = ((i + 0.5) / cell) * 2 - 1;
-        const y = ((j + 0.5) / cell) * 2 - 1;
-        const r = Math.sqrt(x * x + y * y);
-        const f = field[j * cell + i];
-        const fx0 = field[j * cell + Math.max(i - 2, 0)];
-        const fx1 = field[j * cell + Math.min(i + 2, cell - 1)];
-        const fy0 = field[Math.max(j - 2, 0) * cell + i];
-        const fy1 = field[Math.min(j + 2, cell - 1) * cell + i];
-        // Normal of the field treated as a height map (bumps face outwards at the rim).
-        const k = 0.22;
-        let gx = ((fx1 - fx0) / (4 * pix)) * k;
-        let gy = ((fy1 - fy0) / (4 * pix)) * k;
-        // Add a radial bulge so the whole puff reads as a rounded volume.
-        gx -= x * 1.1;
-        gy -= y * 1.1;
-        const inv = 1 / Math.sqrt(gx * gx + gy * gy + 1);
-        const nx = -gx * inv;
-        const ny = -gy * inv;
-        const fine = fineN.sample(x * 7 + v * 1.7, y * 7 - v * 2.9);
-        const window = 1 - Math.min(Math.max((r - 0.8) / 0.18, 0), 1);
-        const t = Math.min(Math.max((f - 0.16) / 1.25, 0), 1);
-        const dens = t * t * (3 - 2 * t) * (0.55 + 0.45 * fine) * window;
-        // Ridged turbulence for fire tongues and wispy erosion.
-        const turb = turbN.sample(x * 5 + v * 4.1, y * 5 + v * 6.7);
-        const ridged = 1 - Math.abs(turb * 2 - 1);
-        const detail = Math.min(Math.max(0.1 + ridged * 0.85 + (fine - 0.5) * 0.5, 0), 1);
-        const o = ((oy + j) * size + ox + i) * 4;
-        data[o] = Math.round(Math.min(Math.max(dens, 0), 1) * 255);
-        data[o + 1] = Math.round((Math.min(Math.max(nx, -1), 1) * 0.5 + 0.5) * 255);
-        data[o + 2] = Math.round((Math.min(Math.max(ny, -1), 1) * 0.5 + 0.5) * 255);
-        data[o + 3] = Math.round(detail * 255);
-      }
-    }
-  }
-  return data;
-}
+// ---------------------------------------------------------------------------
+// Puff atlas: 2×2 billowy puff variants, 256² each (see puffAtlasPixels in vehicles/pixels.ts).
+// ---------------------------------------------------------------------------
 
 export function makePuffAtlas(): THREE.DataTexture {
   const tex = dataTexture(generatedOnce(PUFF_ATLAS_KEY, puffAtlasPixels), 512, 512, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });

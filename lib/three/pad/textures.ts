@@ -1,10 +1,10 @@
 import * as THREE from 'three';
-import { canvasTexture, context2d, hash3i, makeCanvas, seededRandom, tileFbm } from '@/lib/three/vehicles/procedural';
+import { canvasTexture, context2d, generatedOnce, hash3i, makeCanvas, seededRandom, tileFbm } from '@/lib/three/vehicles/procedural';
 
 /**
  * Canvas-generated pad textures. All of them tile and are mapped with metre UVs, so `repeat` encodes
  * the patch size in metres. They are created through a SharedScope (see materials.ts) and shared by
- * every pad instance.
+ * every pad instance; the canvases are drawn once per session (generatedOnce).
  */
 
 export const CONCRETE_KEY = 'pad:concrete';
@@ -14,6 +14,10 @@ export const CAST_KEY = 'pad:castConcrete';
 
 /** Concrete patch size in metres (four 6 m slabs each way). */
 const CONCRETE_M = 24;
+/** Patch sizes in metres of the deflector plate, tank steel and cast concrete textures. */
+const PLATE_M = 4;
+const RING_STEEL_M = 7.2;
+const CAST_M = 4.8;
 
 /** Upsamples a tileable fbm field drawn at `n`² into the target canvas (smooth large-scale variation). */
 function drawFbmBase(
@@ -47,14 +51,16 @@ function drawFbmBase(
 /** Adds per-pixel grain (and sparse dark pebbles) to the whole canvas. */
 function addGrain(ctx: CanvasRenderingContext2D, w: number, h: number, amp: number, seed: number, pebbles = 0): void {
   const img = ctx.getImageData(0, 0, w, h);
+  // A Uint8ClampedArray clamps (and rounds) on assignment, so no explicit clamping is needed.
   const d = img.data;
   const rnd = seededRandom(seed);
+  const pebbly = pebbles > 0;
   for (let i = 0; i < d.length; i += 4) {
     let k = (rnd() - 0.5) * 2 * amp;
-    if (pebbles > 0 && rnd() < pebbles) k -= 25 + rnd() * 30;
-    d[i] = Math.max(0, Math.min(255, d[i] + k));
-    d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + k));
-    d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + k * 0.95));
+    if (pebbly && rnd() < pebbles) k -= 25 + rnd() * 30;
+    d[i] += k;
+    d[i + 1] += k;
+    d[i + 2] += k * 0.95;
   }
   ctx.putImageData(img, 0, 0);
 }
@@ -70,7 +76,7 @@ function stain(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, r
 }
 
 /** Light grey broom-finished concrete with 6 m slabs, saw cuts, stains and tyre tracks. 1024² = 24 m. */
-export function makeConcreteTexture(): THREE.CanvasTexture {
+function drawConcrete(): HTMLCanvasElement {
   const N = 1024;
   const pxPerM = N / CONCRETE_M;
   const c = makeCanvas(N, N);
@@ -133,15 +139,19 @@ export function makeConcreteTexture(): THREE.CanvasTexture {
     ctx.fillRect(p - 1, 0, 2, N);
     ctx.fillRect(0, p - 1, N, 2);
   }
-  const t = canvasTexture(c, { srgb: true, repeat: true, anisotropy: 8 });
+  return c;
+}
+
+export function makeConcreteTexture(): THREE.CanvasTexture {
+  const t = canvasTexture(generatedOnce(CONCRETE_KEY, drawConcrete), { srgb: true, repeat: true, anisotropy: 8 });
   t.repeat.set(1 / CONCRETE_M, 1 / CONCRETE_M);
   return t;
 }
 
 /** Water-cooled steel deflector plate: dark steel with staggered water holes and heat tint. 512² = 4 m. */
-export function makePlateTexture(): THREE.CanvasTexture {
+function drawPlate(): HTMLCanvasElement {
   const N = 512;
-  const M = 4;
+  const M = PLATE_M;
   const c = makeCanvas(N, N);
   const ctx = context2d(c);
   drawFbmBase(ctx, N, 64, 4, 211, (v) => {
@@ -178,17 +188,20 @@ export function makePlateTexture(): THREE.CanvasTexture {
     ctx.fillRect(p - 1.5, 0, 3, N);
     ctx.fillRect(0, p - 1.5, N, 3);
   }
-  const t = canvasTexture(c, { srgb: true, repeat: true, anisotropy: 8 });
-  t.repeat.set(1 / M, 1 / M);
+  return c;
+}
+
+export function makePlateTexture(): THREE.CanvasTexture {
+  const t = canvasTexture(generatedOnce(PLATE_KEY, drawPlate), { srgb: true, repeat: true, anisotropy: 8 });
+  t.repeat.set(1 / PLATE_M, 1 / PLATE_M);
   return t;
 }
 
 /** Stainless tank shell built from 1.8 m rings: brushed streaks, ring welds and one seam per ring. */
-export function makeRingSteelTexture(): THREE.CanvasTexture {
+function drawRingSteel(): HTMLCanvasElement {
   const W = 512;
   const H = 512;
-  const MW = 7.2;
-  const MH = 7.2;
+  const MH = RING_STEEL_M;
   const c = makeCanvas(W, H);
   const ctx = context2d(c);
   ctx.fillStyle = 'rgb(196,198,201)';
@@ -224,8 +237,12 @@ export function makeRingSteelTexture(): THREE.CanvasTexture {
     ctx.fillRect(x - 0.75, r * ringPx, 1.5, ringPx);
   }
   addGrain(ctx, W, H, 6, 3);
-  const t = canvasTexture(c, { srgb: true, repeat: true, anisotropy: 8 });
-  t.repeat.set(1 / MW, 1 / MH);
+  return c;
+}
+
+export function makeRingSteelTexture(): THREE.CanvasTexture {
+  const t = canvasTexture(generatedOnce(RING_STEEL_KEY, drawRingSteel), { srgb: true, repeat: true, anisotropy: 8 });
+  t.repeat.set(1 / RING_STEEL_M, 1 / RING_STEEL_M);
   return t;
 }
 
@@ -233,9 +250,9 @@ export function makeRingSteelTexture(): THREE.CanvasTexture {
  * Cast-in-place concrete for walls, legs and footings: smooth, with faint 2.4 m formwork panel seams,
  * form-tie holes and soft weathering. 512² = 4.8 m.
  */
-export function makeCastConcreteTexture(): THREE.CanvasTexture {
+function drawCastConcrete(): HTMLCanvasElement {
   const N = 512;
-  const M = 4.8;
+  const M = CAST_M;
   const pxPerM = N / M;
   const c = makeCanvas(N, N);
   const ctx = context2d(c);
@@ -263,7 +280,11 @@ export function makeCastConcreteTexture(): THREE.CanvasTexture {
       ctx.fill();
     }
   }
-  const t = canvasTexture(c, { srgb: true, repeat: true, anisotropy: 8 });
-  t.repeat.set(1 / M, 1 / M);
+  return c;
+}
+
+export function makeCastConcreteTexture(): THREE.CanvasTexture {
+  const t = canvasTexture(generatedOnce(CAST_KEY, drawCastConcrete), { srgb: true, repeat: true, anisotropy: 8 });
+  t.repeat.set(1 / CAST_M, 1 / CAST_M);
   return t;
 }

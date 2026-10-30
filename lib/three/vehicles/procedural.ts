@@ -1,151 +1,25 @@
 import * as THREE from 'three';
+import { NOISE_KEY, SOFT_SPRITE_KEY, noisePixels, pixelJobs, softSpritePixels, type PixelResult } from './pixels';
+import type { Quality } from '@/lib/three/contracts';
 
 /**
  * Small procedural toolkit shared by the vehicle, pad and effects modules: deterministic hashing and
- * random numbers, tileable value noise, canvas/data texture helpers and a reference-counted cache so
- * generated textures (and other heavy resources) are built once and shared by every instance.
+ * random numbers, tileable value noise (both in pixels.ts), canvas/data texture helpers and a
+ * reference-counted cache so generated textures (and other heavy resources) are built once and shared by
+ * every instance. The heaviest pixels can be made in a worker ahead of time (prefetchGenerated).
  * Nothing here touches the DOM at import time, so it is safe to import from server components.
  */
 
-// ---------------------------------------------------------------------------
-// Hashing and random numbers
-// ---------------------------------------------------------------------------
-
-/** Integer hash of up to three integers, returned as a float in [0, 1). */
-export function hash3i(x: number, y: number, z = 0): number {
-  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1) ^ Math.imul(z | 0, 0x2f2b4f8d);
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
-  h ^= h >>> 13;
-  h = Math.imul(h, 0xc2b2ae35);
-  h ^= h >>> 16;
-  return (h >>> 0) / 4294967296;
-}
-
-/** Deterministic PRNG (32-bit state, xorshift-multiply mix). Returns floats in [0, 1). */
-export function seededRandom(seed: number): () => number {
-  let s = (seed | 0) ^ 0x5bd1e995;
-  return () => {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), s | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tileable value noise
-// ---------------------------------------------------------------------------
-
-/**
- * 2D value noise that tiles with period (px, py) lattice cells. Smoothstep interpolation, range [0, 1].
- */
-export function tileNoise(x: number, y: number, px: number, py: number, seed = 0): number {
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const xf = x - xi;
-  const yf = y - yi;
-  const u = xf * xf * (3 - 2 * xf);
-  const v = yf * yf * (3 - 2 * yf);
-  const x0 = ((xi % px) + px) % px;
-  const y0 = ((yi % py) + py) % py;
-  const x1 = (x0 + 1) % px;
-  const y1 = (y0 + 1) % py;
-  const a = hash3i(x0, y0, seed);
-  const b = hash3i(x1, y0, seed);
-  const c = hash3i(x0, y1, seed);
-  const d = hash3i(x1, y1, seed);
-  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-}
-
-/** Fractal sum of tileNoise octaves; tiles with the base period (px, py). Range about [0, 1]. */
-export function tileFbm(x: number, y: number, px: number, py: number, octaves: number, seed = 0, gain = 0.5): number {
-  let sum = 0;
-  let amp = 1;
-  let norm = 0;
-  let f = 1;
-  for (let o = 0; o < octaves; o++) {
-    sum += amp * tileNoise(x * f, y * f, px * f, py * f, seed + o * 17);
-    norm += amp;
-    amp *= gain;
-    f *= 2;
-  }
-  return sum / norm;
-}
-
-function wrap(i: number, p: number): number {
-  const m = i % p;
-  return m < 0 ? m + p : m;
-}
-
-/**
- * tileNoise for bulk texture generation: the lattice hashes over a window of cells are computed once, after
- * which sample() returns exactly tileNoise(x, y, px, py, seed) for any point with x0 <= x <= x1, y0 <= y <= y1
- * (several times faster than hashing four corners per sample).
- */
-export class NoiseLattice {
-  private readonly v: Float64Array;
-  private readonly ox: number;
-  private readonly oy: number;
-  private readonly w: number;
-
-  constructor(x0: number, y0: number, x1: number, y1: number, px: number, py: number, seed: number) {
-    this.ox = Math.floor(x0);
-    this.oy = Math.floor(y0);
-    this.w = Math.floor(x1) - this.ox + 2;
-    const h = Math.floor(y1) - this.oy + 2;
-    this.v = new Float64Array(this.w * h);
-    for (let j = 0; j < h; j++) {
-      const yy = wrap(this.oy + j, py);
-      for (let i = 0; i < this.w; i++) this.v[j * this.w + i] = hash3i(wrap(this.ox + i, px), yy, seed);
-    }
-  }
-
-  sample(x: number, y: number): number {
-    const xi = Math.floor(x);
-    const yi = Math.floor(y);
-    const xf = x - xi;
-    const yf = y - yi;
-    const u = xf * xf * (3 - 2 * xf);
-    const v = yf * yf * (3 - 2 * yf);
-    const k = (yi - this.oy) * this.w + (xi - this.ox);
-    const a = this.v[k];
-    const b = this.v[k + 1];
-    const c = this.v[k + this.w];
-    const d = this.v[k + this.w + 1];
-    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
-  }
-}
-
-/** tileFbm over a window (see NoiseLattice): sample() equals tileFbm(x, y, px, py, octaves, seed, gain). */
-export class FbmLattice {
-  private readonly octaves: NoiseLattice[] = [];
-  private readonly amps: number[] = [];
-  private readonly norm: number;
-
-  constructor(x0: number, y0: number, x1: number, y1: number, px: number, py: number, octaves: number, seed = 0, gain = 0.5) {
-    let amp = 1;
-    let norm = 0;
-    let f = 1;
-    for (let o = 0; o < octaves; o++) {
-      this.octaves.push(new NoiseLattice(x0 * f, y0 * f, x1 * f, y1 * f, px * f, py * f, seed + o * 17));
-      this.amps.push(amp);
-      norm += amp;
-      amp *= gain;
-      f *= 2;
-    }
-    this.norm = norm;
-  }
-
-  sample(x: number, y: number): number {
-    let sum = 0;
-    let f = 1;
-    for (let o = 0; o < this.octaves.length; o++) {
-      sum += this.amps[o] * this.octaves[o].sample(x * f, y * f);
-      f *= 2;
-    }
-    return sum / this.norm;
-  }
-}
+export {
+  FbmLattice,
+  NOISE_KEY,
+  NoiseLattice,
+  SOFT_SPRITE_KEY,
+  hash3i,
+  seededRandom,
+  tileFbm,
+  tileNoise,
+} from './pixels';
 
 export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -306,6 +180,63 @@ export class SharedScope {
 }
 
 // ---------------------------------------------------------------------------
+// Pixels made ahead of time in a worker
+// ---------------------------------------------------------------------------
+
+let pixelWorker: Worker | null | undefined;
+let prefetched: Promise<void> | null = null;
+
+/**
+ * Starts making the pixels of the large shared textures (noise, smoke puffs and, given the quality, the
+ * steel maps) in a worker, so that building the first models only uploads them. The promise resolves
+ * when they are cached (at once if there is nothing to do, or if workers are unavailable); anything
+ * still missing when a model needs it is made on the spot by generatedOnce, and the late copy is dropped.
+ */
+export function prefetchGenerated(quality?: Quality): Promise<void> {
+  const jobs = Object.entries(pixelJobs(quality)).filter(([key]) => !generated.has(key));
+  if (jobs.length === 0) return prefetched ?? Promise.resolve();
+  if (pixelWorker === undefined) {
+    try {
+      pixelWorker = typeof Worker === 'undefined' ? null : new Worker(new URL('./pixels.worker.ts', import.meta.url), { type: 'module' });
+    } catch {
+      pixelWorker = null;
+    }
+  }
+  const w = pixelWorker;
+  if (!w) return Promise.resolve();
+  const before = prefetched ?? Promise.resolve();
+  const batch = new Promise<void>((resolve) => {
+    let left = jobs.length;
+    const done = () => {
+      left--;
+      if (left <= 0) {
+        w.removeEventListener('message', onMessage);
+        w.removeEventListener('error', onError);
+        resolve();
+      }
+    };
+    const keys = new Set(jobs.map(([key]) => key));
+    const onMessage = (e: MessageEvent<{ key: string; pixels: PixelResult }>) => {
+      if (!keys.delete(e.data.key)) return;
+      if (!generated.has(e.data.key)) generated.set(e.data.key, e.data.pixels);
+      done();
+    };
+    // A worker that fails to load or crashes: everything is made on the main thread instead.
+    const onError = () => {
+      pixelWorker = null;
+      w.terminate();
+      left = 1;
+      done();
+    };
+    w.addEventListener('message', onMessage);
+    w.addEventListener('error', onError);
+    for (const [key, job] of jobs) w.postMessage({ key, job });
+  });
+  prefetched = Promise.all([before, batch]).then(() => undefined);
+  return prefetched;
+}
+
+// ---------------------------------------------------------------------------
 // Common generated textures
 // ---------------------------------------------------------------------------
 
@@ -313,56 +244,11 @@ export class SharedScope {
  * 256² tileable noise texture, four independent fbm channels (linear, RepeatWrapping). Useful for
  * flicker, soot, frost and smoke in shaders. Acquire through a SharedScope with key NOISE_KEY.
  */
-export const NOISE_KEY = 'proc:noise256';
-
-function noisePixels(): Uint8Array {
-  const n = 256;
-  const data = new Uint8Array(n * n * 4);
-  const cells = 8;
-  const r = new FbmLattice(0, 0, cells, cells, cells, cells, 5, 11);
-  const g = new FbmLattice(0, 0, cells, cells, cells, cells, 5, 23);
-  const b = new FbmLattice(0, 0, cells * 2, cells * 2, cells * 2, cells * 2, 4, 37);
-  const a = new NoiseLattice(0, 0, cells * 4, cells * 4, cells * 4, cells * 4, 51);
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const u = (x / n) * cells;
-      const v = (y / n) * cells;
-      const i = (y * n + x) * 4;
-      data[i] = Math.round(r.sample(u, v) * 255);
-      data[i + 1] = Math.round(g.sample(u, v) * 255);
-      data[i + 2] = Math.round(b.sample(u * 2, v * 2) * 255);
-      data[i + 3] = Math.round(a.sample(u * 4, v * 4) * 255);
-    }
-  }
-  return data;
-}
-
 export function makeNoiseTexture(): THREE.DataTexture {
   return dataTexture(generatedOnce(NOISE_KEY, noisePixels), 256, 256, { srgb: false, repeat: true, mipmaps: true, anisotropy: 1 });
 }
 
 /** Soft round sprite (white, alpha falloff), 128². Key SOFT_SPRITE_KEY. */
-export const SOFT_SPRITE_KEY = 'proc:softSprite';
-
-function softSpritePixels(): Uint8Array {
-  const n = 128;
-  const data = new Uint8Array(n * n * 4);
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const dx = (x + 0.5) / n - 0.5;
-      const dy = (y + 0.5) / n - 0.5;
-      const r = Math.sqrt(dx * dx + dy * dy) * 2;
-      const a = r >= 1 ? 0 : Math.pow(1 - r * r, 2.2);
-      const i = (y * n + x) * 4;
-      data[i] = 255;
-      data[i + 1] = 255;
-      data[i + 2] = 255;
-      data[i + 3] = Math.round(a * 255);
-    }
-  }
-  return data;
-}
-
 export function makeSoftSprite(): THREE.DataTexture {
   return dataTexture(generatedOnce(SOFT_SPRITE_KEY, softSpritePixels), 128, 128, { srgb: false, repeat: false, mipmaps: true, anisotropy: 1 });
 }
