@@ -6,7 +6,7 @@ import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry'
 import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
 import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
-import { boosterCatchHeight, createBooster, createShip } from '@/lib/three/vehicles';
+import { boosterCatchHeight, createBooster, createShip, prefetchProceduralTextures } from '@/lib/three/vehicles';
 import type { EarthFrame, Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
 import { blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, type CameraPose, type DragInput, type Focus } from './cameras';
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
@@ -126,6 +126,8 @@ const KEEPALIVE_MS = 1000;
 const BUILD_BUDGET_MS = 8;
 /** If shader compilation never reports back (a lost context), draw anyway after this long. */
 const WARM_TIMEOUT_MS = 5000;
+/** If the worker's textures haven't arrived after this long, build anyway (whatever is missing is made on the spot). */
+const PIXELS_WAIT_MS = 2500;
 /** The payload door opens over this many seconds, fully open DOOR_LEAD s before the first release. */
 const DOOR_TRAVEL = 25;
 const DOOR_LEAD = 5;
@@ -346,17 +348,38 @@ export function createStage(): StageHandle {
   }
 
   /**
+   * The noise, smoke and steel textures of the pad, vehicles and clouds are made in a worker (see
+   * lib/three/vehicles), asked for as soon as the quality is known and again when it changes. Those models are
+   * built once the textures are in (the Earth's imagery takes longer anyway), rather than making them a second
+   * time here, which would stall the page for a few hundred milliseconds.
+   */
+  let pixelsReady = false;
+  let pixelsToken = 0;
+  function prefetchPixels(q: Quality) {
+    const token = ++pixelsToken;
+    pixelsReady = false;
+    const done = () => {
+      if (token === pixelsToken) pixelsReady = true;
+    };
+    prefetchProceduralTextures(q).then(done, done);
+    window.setTimeout(done, PIXELS_WAIT_MS);
+  }
+  prefetchPixels(quality);
+
+  /**
    * Builds one missing piece for a flight. Each takes from a few to tens of milliseconds (geometry, generated
-   * textures), so pieces are spread over frames instead of stalling one. Returns true when all are there.
+   * textures), so pieces are spread over frames instead of stalling one. Returns false when there is nothing to
+   * build now: all pieces are there, or the rest waits for the worker's textures.
    */
   function buildStep(flight: Flight): boolean {
     if (!earth) createEarthFor(flight.pad);
+    else if (!pixelsReady) return false;
     else if (!padModels.has(flight.pad)) padModels.set(flight.pad, createPad(flight.pad, quality));
     else if (!boosterModels.has(flight.generation)) boosterModels.set(flight.generation, createBooster(flight.generation, quality));
     else if (!shipModels.has(flight.generation)) shipModels.set(flight.generation, createShip(flight.generation, quality));
     else if (!clouds) clouds = createLaunchClouds(quality);
-    else return true;
-    return false;
+    else return false;
+    return true;
   }
 
   function built(flight: Flight): boolean {
@@ -649,9 +672,13 @@ export function createStage(): StageHandle {
   canvas.addEventListener('webglcontextlost', onLost);
   canvas.addEventListener('webglcontextrestored', onRestored);
 
-  function lengths(): { booster: number; ship: number } {
+  /** Vehicle lengths (m), asked for many times a frame: one object, refreshed on each call. */
+  const vehicleLengths = { booster: 0, ship: 0 };
+  function lengths(): { readonly booster: number; readonly ship: number } {
     const fallback = LENGTH[generation ?? 'v3'];
-    return { booster: booster.model?.length ?? fallback.booster, ship: ship.model?.length ?? fallback.ship };
+    vehicleLengths.booster = booster.model?.length ?? fallback.booster;
+    vehicleLengths.ship = ship.model?.length ?? fallback.ship;
+    return vehicleLengths;
   }
 
   function focusSize(follow: string): number {
@@ -1051,7 +1078,7 @@ export function createStage(): StageHandle {
     const want = getFlight(result?.flight ?? st.flight);
     if (!built(want)) {
       const start = performance.now();
-      while (!buildStep(want) && performance.now() - start < BUILD_BUDGET_MS);
+      while (buildStep(want) && performance.now() - start < BUILD_BUDGET_MS);
       blank();
       return;
     }
@@ -1312,6 +1339,8 @@ export function createStage(): StageHandle {
 
   function setQuality(q: Quality) {
     quality = q;
+    // Built models keep their textures; models built from now on use this quality's.
+    prefetchPixels(q);
     governor.restart();
     applySize();
     earth?.setQuality(q);
