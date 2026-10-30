@@ -12,7 +12,8 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, mix,
  *    100 m/s (like propellant vented in orbit), sunlit and brightest at their rims, that dilute away within
  *    about two seconds, with faint clumps of vapour in them; glowing fragments fly in straight lines. No
  *    fireball, no buoyant smoke.
- *  - in between: both models evaluated and blended by w = ratio^0.3.
+ *  - in between: both models evaluated and blended by w = ratio^0.3, except the fire: it needs air, so the gas
+ *    cools as in vacuum below about a tenth of sea-level density.
  * Buoyancy and gravity act along the local vertical: the scene's HemisphereLight direction if there is
  * one, converted into the object's frame; otherwise the object's +Y (orient the object with +Y = up).
  */
@@ -280,28 +281,36 @@ export function createExplosion(): Explosion {
       const vx = d.dir.x * reach;
       const vy = d.dir.y * reach;
       const vz = d.dir.z * reach;
-      // In thin air (between the models) the clumps grow with the cloud so it stays continuous.
-      const sizeV = S * (0.6 * d.s0 + 0.02 * tau) + reach * (0.16 + 0.6 * w);
+      // In thin air (between the models) the clumps grow with the cloud, enough to overlap, so it stays one
+      // continuous cloud rather than a cluster of separate balls.
+      const sizeV = S * (0.6 * d.s0 + 0.02 * tau) + reach * (0.16 + 0.6 * smooth(0, 0.5, w));
       const tempV = 1.15 * Math.exp(-tau / (0.12 * d.cool));
       const opV = smooth(0, 0.04, tau) * (0.1 / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.2, 2.6, tau));
       const erV = 0.25 + 0.5 * smooth(0.1, 2, tau);
 
       const op = mix(opV, opA, w);
-      const temp = mix(tempV, tempA, w);
+      // Burning needs air: below about a tenth of sea-level density the burst cools as fast as in vacuum (a slow,
+      // dull-red fireball there would only tint its sunlit vapour pink).
+      const temp = mix(tempV, tempA, smooth(0.35, 0.9, w));
       if (op < 0.004 && temp < 0.08) continue;
       rec.x = mix(vx, ax, w);
       rec.y = mix(vy, ay, w);
       rec.z = mix(vz, az, w);
       rec.size = mix(sizeV, sizeA, w);
-      // Soot is brown-black, propellant vapour and ice are white; vacuum clouds are all vapour.
+      // Soot is brown-black, propellant vapour and ice are white; vacuum clouds are all vapour. Burning gas scatters
+      // little sunlight (its own glow is what shows): the white of steam and the brown of smoke come as it cools.
       const sootK = d.soot ? w : 0;
-      const base = d.shade;
+      const base = d.shade * (1 - 0.85 * smooth(0.4, 0.9, temp));
       rec.r = mix(0.78 * base, 0.1 * base, sootK);
       rec.g = mix(0.78 * base, 0.083 * base, sootK);
       rec.b = mix(0.8 * base, 0.068 * base, sootK);
-      // Hot gas is partly transparent glow; it becomes opaque smoke as it cools.
-      rec.opacity = op * (1 - 0.55 * smooth(0.35, 0.9, temp));
-      rec.er = rec.eg = rec.eb = 1;
+      // A fireball this size is optically thick: only its outer layer shows. Each puff's glow is tone mapped on its
+      // own and the glow of the ones behind adds up through it, so a young fireball of see-through, full-strength
+      // puffs saturated into a flat white blob. Opaque while hot, and with the white-hot glow held back (as a camera
+      // stopped down for it would), it shows a hot core with yellow and orange round it; it thins to the smoke's
+      // opacity as it cools.
+      rec.opacity = Math.min(1, op * (1 + 0.4 * smooth(0.3, 0.8, temp)));
+      rec.er = rec.eg = rec.eb = 0.55 * (1 - 0.55 * smooth(0.55, 1.0, temp));
       rec.temp = temp;
       rec.m0 = d.rot + d.spin * tau;
       rec.m1 = d.cell;

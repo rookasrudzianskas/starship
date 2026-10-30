@@ -328,8 +328,9 @@ void main() {
 
   vec3 emission;
   if (vMode < 0.5) {
-    // Incandescence: hotter in the core and in the turbulent tongues of the texture.
-    float T = vEmit.a * (0.5 + 0.75 * detail) * (1.2 - 0.55 * r2);
+    // Incandescence: hotter in the core and in the turbulent tongues of the texture, cooler where the gas thins
+    // out at the edge (an orange rim round a white-hot core rather than a white cut-out).
+    float T = vEmit.a * (0.5 + 0.75 * detail) * (1.2 - 0.55 * r2) * mix(0.62, 1.0, smoothstep(0.05, 0.55, dens));
     emission = vEmit.rgb * fireRamp(T) * smoothstep(0.02, 0.4, dens) * vNear;
   } else {
     emission = vEmit.rgb * dens * (0.35 + 0.65 * vUv.y) * vNear;
