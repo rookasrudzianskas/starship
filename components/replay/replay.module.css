@@ -237,6 +237,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* As tall as a badge, so the panel does not grow when one appears. */
+  min-height: 17px;
 }
 
 .panelRight .panelHead {
@@ -1164,11 +1166,11 @@ kbd.key {
     flex-direction: column;
   }
 
+  /* All the height the HUD leaves (a 360 x 780 phone fits too), and at least 40% of the screen. */
   .stage {
     position: relative;
-    height: 43vh;
+    flex: 1 0 40vh;
     min-height: 280px;
-    flex: 0 0 auto;
     border-bottom: 1px solid var(--line);
   }
 
@@ -1370,5 +1372,16 @@ kbd.key {
   .controls {
     gap: 4px;
     flex-wrap: wrap;
+  }
+}
+
+/* The narrowest phones (360 px): the controls stay on one row at every speed, 100× included. */
+@media (max-width: 370px) {
+  .controls {
+    gap: 3px;
+  }
+
+  .ctlText {
+    padding: 0 6px;
   }
 }
