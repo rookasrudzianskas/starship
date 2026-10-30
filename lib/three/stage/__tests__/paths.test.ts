@@ -3,7 +3,7 @@ import type { InterleavedBufferAttribute } from 'three';
 import type { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import type { FlightResult, Track } from '../../../sim/types';
 import { createCoastPrediction, predictCoast } from '../coast';
-import { TrajectoryLines } from '../paths';
+import { impactFade, TrajectoryLines } from '../paths';
 
 const R = 6_371_000;
 
@@ -91,5 +91,16 @@ describe('TrajectoryLines', () => {
     expect(lines.coast.booster.line.visible).toBe(false);
     lines.setCoast('booster', p);
     expect(lines.coast.booster.line.visible).toBe(true);
+  });
+});
+
+describe('impactFade', () => {
+  it('hides the impact ring from cameras close to it and shows it in full from afar', () => {
+    expect(impactFade(300)).toBe(0);
+    expect(impactFade(1999)).toBe(0);
+    expect(impactFade(5000)).toBeGreaterThan(0.3);
+    expect(impactFade(5000)).toBeLessThan(0.7);
+    expect(impactFade(9000)).toBe(1);
+    expect(impactFade(5e6)).toBe(1);
   });
 });

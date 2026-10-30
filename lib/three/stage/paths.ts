@@ -279,6 +279,15 @@ export class EventGates {
 // --------------------------------------------------------------- set
 
 type Pair<T> = { booster: T; ship: T };
+
+/** Camera distances (m) over which a coast prediction's impact ring fades in. */
+const IMPACT_FADE: readonly [number, number] = [2_000, 8_000];
+
+/** How much of an impact ring shows to a camera `d` m from it: 0 close by, 1 from afar. */
+export function impactFade(d: number): number {
+  const k = Math.min(Math.max((d - IMPACT_FADE[0]) / (IMPACT_FADE[1] - IMPACT_FADE[0]), 0), 1);
+  return k * k * (3 - 2 * k);
+}
 const VEHICLES = ['booster', 'ship'] as const;
 
 /** All trajectory lines for one result. */
@@ -291,6 +300,8 @@ export class TrajectoryLines {
   readonly coast: Pair<PathLine>;
   readonly impact: Pair<THREE.Mesh>;
   private readonly impactEcef: Pair<V3> = { booster: [0, 0, 0], ship: [0, 0, 0] };
+  /** The prediction meets the ground: its impact ring is drawn (in the views far enough from it). */
+  private readonly impacts: Pair<boolean> = { booster: false, ship: false };
   private readonly tip: Pair<V3> = { booster: [0, 0, 0], ship: [0, 0, 0] };
   private realShown = false;
 
@@ -343,12 +354,14 @@ export class TrajectoryLines {
     if (!prediction || prediction.n < 2) {
       line.line.visible = false;
       m.visible = false;
+      this.impacts[which] = false;
       return;
     }
     line.setPath(prediction.points, prediction.n, this.origin);
     line.line.visible = true;
     const impact = prediction.impact;
     m.visible = impact !== null;
+    this.impacts[which] = impact !== null;
     if (impact) {
       const p = this.impactEcef[which];
       p[0] = impact[0];
@@ -382,11 +395,15 @@ export class TrajectoryLines {
         this.impact[v].visible = false;
       }
       const m = this.impact[v];
-      if (m.visible) {
+      if (show.coast && this.impacts[v]) {
         const p = this.impactEcef[v];
         m.position.set(p[0] - this.origin[0], p[1] - this.origin[1], p[2] - this.origin[2]);
         const d = Math.hypot(p[0] - cameraEcef[0], p[1] - cameraEcef[1], p[2] - cameraEcef[2]);
         m.scale.setScalar(Math.max(30, d * 0.012));
+        // A marker for views from afar: up close it would lie on the ground as a large stray ring.
+        const fade = impactFade(d);
+        (m.material as THREE.MeshBasicMaterial).opacity = 0.9 * fade;
+        m.visible = fade > 0;
       }
     }
   }

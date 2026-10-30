@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { getFlight, PADS, type Flight } from '@/lib/flights/catalog';
 import { EARTH_RADIUS, ENGINE_LIT, ENGINE_OFF, Phase, type FlightResult, type Generation, type PadId, type Track, type VehicleId } from '@/lib/sim/types';
-import { useReplay, type ReplayState } from '@/lib/store/replay';
+import { COAST_RATE, useReplay, type ReplayState } from '@/lib/store/replay';
 import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry';
 import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
@@ -145,6 +145,16 @@ const SWARM_CAPACITY = 48;
 const PLUME_EXPOSURE = 1.3;
 /** How far the eye adaptation stops down right by the blazing hot-staging vents (a share of the exposure). */
 const VENT_STOP = 0.4;
+/**
+ * After a jump in time (a seek) the eye adaptation follows the Earth's metering at once, for this long (wall-clock
+ * ms, enough for the Earth to meter the new view at either quality): the view arrives already adapted.
+ */
+const ADAPTED_MS = 1200;
+/**
+ * Camera changes blend only between views this close (m) whose straight path stays above the ground; views farther
+ * apart (another vehicle, half a world away) are cut to.
+ */
+const BLEND_REACH = 30_000;
 /** Pixels per CSS pixel a context without MSAA renders at least, before the resolution governor steps down. */
 const NO_MSAA_MIN_RATIO = 1.5;
 /** Picture-in-picture frame: at most this wide (CSS px), with this aspect. */
@@ -227,6 +237,16 @@ function hiddenByEarth(a: V3, b: V3): boolean {
   const cy = a[1] + dy * tc;
   const cz = a[2] + dz * tc;
   return cx * cx + cy * cy + cz * cz < 6_368_000 * 6_368_000;
+}
+
+/** Lowest altitude (m above the sea) on the straight line from a to b. */
+function segmentAltitude(a: V3, b: V3): number {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const dz = b[2] - a[2];
+  const len2 = dx * dx + dy * dy + dz * dz;
+  const tc = len2 < 1 ? 0 : Math.min(1, Math.max(0, -(a[0] * dx + a[1] * dy + a[2] * dz) / len2));
+  return Math.hypot(a[0] + dx * tc, a[1] + dy * tc, a[2] + dz * tc) - EARTH_RADIUS;
 }
 
 /** The track ends in a breakup (the explosion effect plays where it ends). */
@@ -382,6 +402,9 @@ export function createStage(): StageHandle {
   // vehicle generation. Switching flights only swaps what is in the scene, so nothing is rebuilt or recompiled.
   let earth: EarthHandle | null = null;
   let exposure = 1;
+  /** Simulation time of the last frame, and until when (wall clock) the exposure follows its goal at once. */
+  let frameT = NaN;
+  let adaptedUntil = -Infinity;
   let earthReady = false;
   const padModels = new Map<PadId, PadModel>();
   const boosterModels = new Map<Generation, VehicleModel>();
@@ -1328,7 +1351,10 @@ export function createStage(): StageHandle {
     coastWall = now;
     for (const rig of rigs) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
-      const alive = t > 1 && t < track.end && rig.sample.alt > 50 && !(rig.id === 'ship' && isStacked(result, t));
+      // Not once the vehicle is landing: an engines-off path would only mark the water under its landing burn.
+      const phase = rig.sample.phase;
+      const landing = phase === Phase.LandingBurn || phase === Phase.ShipFlip || phase === Phase.Caught || phase === Phase.Splashed;
+      const alive = t > 1 && t < track.end && rig.sample.alt > 50 && !landing && !(rig.id === 'ship' && isStacked(result, t));
       lines?.setCoast(rig.id, alive ? predictCoast(rig.sample.pos, rig.sample.vel, COAST_SECONDS, rig.coast) : null);
     }
   }
@@ -1515,15 +1541,18 @@ export function createStage(): StageHandle {
       lastShot = shot;
     }
 
-    // Smooth transitions between camera modes; webcast cuts are instant like the broadcast.
+    // Smooth transitions between camera modes; webcast cuts are instant like the broadcast, and so is a change to a
+    // view far away (another vehicle, half a world away), which a straight blend would cut through the Earth to reach.
     if (key !== viewKey) {
       const isCut = key.startsWith('webcast') && viewKey.startsWith('webcast');
-      if (viewKey && !isCut && !st.settings.reduceMotion) {
+      const toGlobe = key === 'globe' || viewKey === 'globe';
+      const near = dist3(lastPose.pos, target.pos) < BLEND_REACH && segmentAltitude(lastPose.pos, target.pos) > 1;
+      if (viewKey && !isCut && !st.settings.reduceMotion && (toGlobe || near)) {
         copyPose(lastPose, fromPose);
         // The view being left keeps moving with what it followed, so a blend never falls behind a fast vehicle.
         fromFocus = viewFocus;
         copy3(viewFocusAt, fromAnchor);
-        blendGlobe = key === 'globe' || viewKey === 'globe';
+        blendGlobe = toGlobe;
         blendT = 0;
         blendDur = blendGlobe ? 1.6 : 0.9;
       } else blendT = 1;
@@ -1562,13 +1591,19 @@ export function createStage(): StageHandle {
     const pipFocus = st.camera === 'globe' && !sep ? focusStack : pip?.id === 'booster' ? focusB : focusS;
     if (pip) chasePip.pose(pipFocus, pipPose);
 
+    // A jump in time (a seek, or starting over) is not a cut: the view arrives adapted to its light, so a paused
+    // view is drawn as it settles straight away instead of brightening or darkening for seconds.
+    const playedOn = st.playing && t >= frameT && t - frameT <= dt * Math.max(st.rate, COAST_RATE) + 0.5;
+    if (t !== frameT && !playedOn) adaptedUntil = now + ADAPTED_MS;
+    frameT = t;
+
     // Eye adaptation: brighten towards the Earth's suggestion in twilight and at night, but meter for a lit plume
     // that fills the view (the brightest thing in it), so night launches and landings don't blow out.
     let adapting = false;
     if (earth) {
       const metered = Math.min(4, Math.max(1, earth.exposureHint));
       const goal = (metered + (Math.min(metered, PLUME_EXPOSURE) - metered) * plumeInView(pose)) * (1 - VENT_STOP * ventsInView(pose));
-      exposure += (goal - exposure) * damp(1, dt);
+      exposure = now < adaptedUntil ? goal : exposure + (goal - exposure) * damp(1, dt);
       // The last percent is invisible; settling there lets a paused view stop redrawing.
       if (Math.abs(goal - exposure) < 0.01 * goal) exposure = goal;
       adapting = exposure !== renderer.toneMappingExposure;
