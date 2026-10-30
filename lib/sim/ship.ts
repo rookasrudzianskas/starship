@@ -1,9 +1,10 @@
 import { slew as slewFn, spin as spinFn } from './attitude';
 import { bodyPointEcef, eventState, landingTargetEcef, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
-import { engineName, pickFailingEngines } from './engines';
+import { engineName, MIN_THROTTLE, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
 import { enuAt as enuAtFn, inertialToEcef } from './geo';
 import { entryAoA, predictEntry, type EntryPrediction } from './guidance/entry';
+import { landingThrust, landingTiltCap } from './guidance/landing';
 import { newPeg, pegStep } from './guidance/peg';
 import { planeHeading } from './guidance/plane';
 import { isLand } from './land';
@@ -30,6 +31,25 @@ const qLook = qLookFn;
 
 /** Planned net deceleration of the ship's landing burn after the flip, m/s². */
 const SHIP_LANDING_DECEL = 4;
+/** Landing flip: angular rate and acceleration limits, deg/s and deg/s² (a quarter turn in about 3.3 s). */
+const FLIP_RATE = 40;
+const FLIP_ACCEL = 40;
+/**
+ * The flip's engines idle at minimum throttle until the ship is within this angle of the vertical, rad: their push,
+ * towards the nose while the ship is still flat, would otherwise throw it sideways.
+ */
+const FLIP_IDLE_TILT = 20 * DEG;
+/** Throttle of the landing engines for the rest of the flip. */
+const FLIP_THROTTLE = 0.7;
+/**
+ * Lean the landing burn may use to stop the drift the flip leaves: up to SHIP_LANDING_TILT, closing smoothly to
+ * SHIP_LANDING_TILT_FINAL at the water over the last SHIP_LANDING_TILT_SPAN metres (the ship comes down upright).
+ */
+const SHIP_LANDING_TILT = 25 * DEG;
+const SHIP_LANDING_TILT_FINAL = 3 * DEG;
+const SHIP_LANDING_TILT_SPAN = 400;
+/** Rate at which the landing burn takes out the horizontal drift, 1/s. */
+const SHIP_DRIFT_GAIN = 0.4;
 /** Satellites only leave the bay above this altitude, coasting, before entry, m. */
 const DEPLOY_ALT = 150_000;
 /** Closest spacing between two satellite releases when a larger load has to fit a shorter coast, s. */
@@ -160,7 +180,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
 
   const up = v3(), east = v3(), north = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
   const hp = v3();
-  const vn = v3(), tmp = v3(), tmp2 = v3(), rE = v3(), vE = v3();
+  const vn = v3(), tmp = v3(), tmp2 = v3(), rE = v3(), vE = v3(), latA = v3();
   const qT = new Float64Array(4);
   const stepOpts = { extra: null };
 
@@ -628,8 +648,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         qLook(qT, thr, zr);
         slew(body, qT, 4 * D, 2 * D, adt);
       }
-      // Throttle: hold the acceleration limit.
-      const fmax = part.maxThrust(air.pressure);
+      // Throttle: hold the acceleration limit (any user ceiling caps the command).
+      const fmax = part.fullThrust(air.pressure);
       part.throttle = fmax > 0 ? (p.shipGLimit * GEE * body.mass) / fmax : 1;
       // Cut-off: orbital energy reached (allowing for the speed the engines still add while they spool
       // down), or the ascent propellant is gone.
@@ -759,23 +779,26 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       vn[0] = body.v[0] + OMEGA * body.r[1] - vr * up[0];
       vn[1] = body.v[1] - OMEGA * body.r[0] - vr * up[1];
       vn[2] = body.v[2] - vr * up[2];
-      // Kill horizontal drift with a small tilt; track a constant-braking descent to the surface (feed-forward
-      // scaled by the actual descent rate, so a ship that slows early keeps coming down instead of hovering).
+      // Track a constant-braking descent to the surface (feed-forward scaled by the actual descent rate, so a ship
+      // that slows early keeps coming down instead of hovering), and lean back against the horizontal drift as far
+      // as the height allows, so the last stretch comes down upright.
       const vDes = Math.sqrt(2 * SHIP_LANDING_DECEL * h) + 1;
       const aReq = SHIP_LANDING_DECEL * clamp(vd / vDes, 0, 1.5) + 1.2 * (vd - vDes);
       const m = body.mass;
       const fUp = air.aero[0] * up[0] + air.aero[1] * up[1] + air.aero[2] * up[2];
       const tV = Math.max(0.05 * m * GEE, m * (GEE + aReq) - fUp);
-      // Drift damping, bounded by the vertical thrust (tilt ≤ ~17°) so it can never take over.
-      const vnL = Math.sqrt(vn[0] * vn[0] + vn[1] * vn[1] + vn[2] * vn[2]);
-      const kLat = vnL > 1e-6 ? Math.min(0.4 * m, (0.3 * tV) / vnL) : 0;
-      for (let i = 0; i < 3; i++) thr[i] = -kLat * vn[i] + tV * up[i];
+      for (let i = 0; i < 3; i++) latA[i] = -SHIP_DRIFT_GAIN * vn[i];
+      const pot = part.litThrustPotential(air.pressure);
+      const cap = landingTiltCap(h, SHIP_LANDING_TILT, SHIP_LANDING_TILT_FINAL, SHIP_LANDING_TILT_SPAN);
+      const need = landingThrust(thr, up, latA, m, tV, MIN_THROTTLE * pot, pot * Math.min(1, part.ceiling), cap);
       if (mode === 'flip') {
+        // The engines swing the ship upright, idling until it is nearly there.
         for (let i = 0; i < 3; i++) thr[i] = up[i];
-        part.throttle = 0.7;
-      } else part.throttleTo(Math.sqrt(thr[0] ** 2 + thr[1] ** 2 + thr[2] ** 2), air.pressure, t, landingSet, vd < 3);
+        qAxis(yAx, body.q, 1);
+        part.throttle = yAx[0] * up[0] + yAx[1] * up[1] + yAx[2] * up[2] < Math.cos(FLIP_IDLE_TILT) ? MIN_THROTTLE : FLIP_THROTTLE;
+      } else part.throttleTo(need, air.pressure, t, landingSet, vd < 3);
       qLook(qT, thr, zAx);
-      const err = slew(body, qT, 25 * D, 20 * D, dt);
+      const err = mode === 'flip' ? slew(body, qT, FLIP_RATE * D, FLIP_ACCEL * D, dt) : slew(body, qT, 25 * D, 20 * D, dt);
       if (mode === 'flip' && err < 12 * D) {
         mode = 'landing';
         phase = Phase.LandingBurn;
@@ -784,6 +807,10 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       aero[0] = aero[1] = 80;
       aero[2] = aero[3] = 15;
       if (mode === 'landing' && (h < 1 || (vd < 1 && h < 4))) cutT = t;
+    } else if (mode === 'free' && landingStarted) {
+      // Engines cut just above the water: the ship drops the last metres upright.
+      qLook(qT, up, zAx);
+      slew(body, qT, 8 * D, 4 * D, dt);
     } else if (mode === 'free') {
       spin(body, dt);
     }

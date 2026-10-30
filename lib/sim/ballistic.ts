@@ -1,6 +1,6 @@
 import { atmosphereInto, type AtmosphereState } from './atmosphere';
 import { inertialToEcef } from './geo';
-import { gravityAccel } from './physics';
+import { gravityAccel, jetStream } from './physics';
 import { EARTH_OMEGA, EARTH_RADIUS } from './types';
 import { machLookup, type MachTable } from './vehicles';
 import { readVec3, type Vec3Like } from './vec';
@@ -41,6 +41,8 @@ export interface DragTable {
   table: MachTable;
   scale: number;
   areaOverMass: number;
+  /** Peak of the jet stream the drag sees (see jetStream), m/s; 0 or omitted for still air. */
+  windPeak?: number;
 }
 
 let dragTable: DragTable | null = null;
@@ -57,8 +59,15 @@ function deriv(s: Float64Array, out: Float64Array, beta: number, j2: boolean): v
     const alt = Math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]) - RE;
     if (alt < 150_000) {
       const rho = atmInto(alt, atm).density;
-      // Air co-rotates with the Earth.
-      const ax = s[3] + EARTH_OMEGA * s[1], ay = s[4] - EARTH_OMEGA * s[0], az = s[5];
+      // Air co-rotates with the Earth, less the eastward jet stream (as airVelocity in physics.ts).
+      let ax = s[3] + EARTH_OMEGA * s[1], ay = s[4] - EARTH_OMEGA * s[0];
+      const az = s[5];
+      const w = dragTable?.windPeak ? jetStream(alt, dragTable.windPeak) : 0;
+      const h = w !== 0 ? Math.sqrt(s[0] * s[0] + s[1] * s[1]) : 0;
+      if (h > 1) {
+        ax += (w * s[1]) / h;
+        ay -= (w * s[0]) / h;
+      }
       const V = Math.sqrt(ax * ax + ay * ay + az * az);
       const k = dragTable
         ? -0.5 * rho * V * mach(dragTable.table, V / atm.speedOfSound) * dragTable.scale * dragTable.areaOverMass

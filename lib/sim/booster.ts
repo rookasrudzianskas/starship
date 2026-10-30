@@ -2,9 +2,10 @@ import { slew as slewFn, spin as spinFn } from './attitude';
 import { airDensity } from './atmosphere';
 import { flyBallistic, type DragTable, type FlightOut } from './ballistic';
 import { eventState, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
-import { engineName, pickFailingEngines, selectBoosterEngines } from './engines';
+import { engineName, MIN_THROTTLE, pickFailingEngines, selectBoosterEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
 import { ecefToInertial as ecefToInertialFn, enuAt as enuAtFn, inertialToEcef } from './geo';
+import { landingThrust, landingTiltCap } from './guidance/landing';
 import { isLand } from './land';
 import { lossKind } from './outcome';
 import type { Body, VehicleRt } from './runtime';
@@ -44,12 +45,39 @@ const CATCH_TILT = 3 * DEG; // from the vertical
 /** Height above the catch point where the descent pauses until the booster is lined up within 1.5 m, m. */
 const CATCH_HOLD = 4;
 /**
- * Below this height above the catch point the booster holds its position over the arms (a critically
- * damped 2 s position loop) while its tilt allowance closes to the catch limit, m.
+ * Landing-burn divert: the burn steers the booster onto a gate above the aim, with its sideways motion braked to a
+ * stop there, and the rest of the descent settles nearly straight down. The gate is where the first, many-engine set
+ * hands over (with a 15% margin; the divert needs its thrust), and never lower than DIVERT_GATE, m.
  */
-const CATCH_ALIGN = 15;
+const DIVERT_GATE = 150;
+const DIVERT_GATE_MARGIN = 1.15;
+/**
+ * Share of the time to the gate that the sideways motion keeps the speed it had at ignition: an even braking would
+ * be 1/2; 0.4 front-loads it (from 1.6 times to 0.4 times the even rate), so the braking fades as the allowed lean
+ * closes. The descent aims the booster for the same share (see predict()).
+ */
+const DIVERT_SHARE = 0.4;
+/** Shortest time-to-go of the divert, s (keeps its gains bounded as it reaches the gate). */
+const DIVERT_TGO_MIN = 3;
+/**
+ * Lean allowed in the landing burn: up to LANDING_TILT for the divert, closing smoothly to LANDING_TILT_FINAL at
+ * the aim over the last LANDING_TILT_SPAN metres, so the final stretch comes down nearly upright as on real catches.
+ */
+const LANDING_TILT = 20 * DEG;
+const LANDING_TILT_FINAL = 3 * DEG;
+const LANDING_TILT_SPAN = 500;
+/** Steady grid-fin authority the descent counts on to reach its aim, m/s²: a splashdown aim further off is let go. */
+const FIN_ACCEL = 2;
+/** Below the gate, a splashdown holds its position only within this distance of the aim, m (further out it just nulls its drift). */
+const SETTLE_REACH = 20;
 /** Longest boostback burn, s (a guard: the guidance normally cuts off on the predicted impact). */
 const BOOSTBACK_MAX = 120;
+/**
+ * Highest thrust acceleration of the boostback, g: the engines throttle back to it as the booster gets light. The
+ * 13-engine boostbacks peak near 6 g; the 31-33-engine V3 boostbacks reverse some 1.8 km/s in under 25 s, which
+ * takes over 7 g on average.
+ */
+const BOOSTBACK_G = 8;
 /** Propellant kept for the landing burn, as a fraction of the dry mass: the boostback never burns into it. */
 const LANDING_RESERVE = 0.3;
 /** Typical landing-burn ignition height above the aim point, m (used to aim the descent). */
@@ -120,6 +148,10 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   let lastPred = -Infinity;
   let predE = NaN;
   let predT = 0;
+  /** Landing-burn ignition time of the last prediction (see predict()). */
+  let predIgnT = 0;
+  /** Height of the divert's gate above the aim (set with the landing reference), m. */
+  let divertGate = DIVERT_GATE;
   let descentPredT = -Infinity;
   let cutT = Infinity;
   let splashT = 0;
@@ -141,7 +173,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   const pred: FlightOut = { impact: new Float64Array(3), impactVel: new Float64Array(3), impactT: 0, hit: false, apoAlt: 0 };
   let haveDir = false;
   const finLift = v3();
-  const predDrag: DragTable = { table: part.spec.aero.caTail, scale: p.descentDrag, areaOverMass: 0 };
+  const predDrag: DragTable = { table: part.spec.aero.caTail, scale: p.descentDrag, areaOverMass: 0, windPeak: ctx.windPeak };
   const stepOpts = { extra: extra as Float64Array | null };
 
   const ev = () => eventState(body, 0, t);
@@ -183,9 +215,10 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   };
 
   /**
-   * Engines-off prediction (with drag) of where the booster ends up: down to about the landing-burn
-   * height, then a straight line to the aim height (the landing burn brakes along the velocity
-   * vector, so the path stays straight while it slows).
+   * Engines-off prediction (with drag and the jet stream) of where the booster ends up: down to about the
+   * landing-burn height, on at that speed to the ignition height, then the landing burn, whose divert keeps the
+   * sideways motion going for DIVERT_SHARE of its time to the gate and stops it there, over the aim. Also sets
+   * predIgnT, the ignition time.
    */
   const predict = () => {
     const beta = body.mass / (tailCd * part.spec.aero.refArea);
@@ -193,15 +226,19 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     const hTop = Math.min(LB_HEIGHT, Math.max(0, air.alt - aimAlt - 50));
     predDrag.areaOverMass = part.spec.aero.refArea / body.mass;
     flyBallistic(body.r, body.v, t, 900, beta, Math.max(0, aimAlt + hTop), true, pred, 0, undefined, predDrag);
+    predIgnT = pred.impactT;
     if (hTop > 0 && pred.hit) {
       const im = pred.impact, iv = pred.impactVel;
       const rl = Math.sqrt(im[0] * im[0] + im[1] * im[1] + im[2] * im[2]);
       const vdn = Math.max(30, -(iv[0] * im[0] + iv[1] * im[1] + iv[2] * im[2]) / rl);
       const hIgn = segAcc.length > 0 ? Math.min(hTop, heightForSpeed(vdn)) : hTop;
-      const drift = hTop / vdn;
+      const hGate = Math.min(hIgn, divertGate);
+      const tDivert = segAcc.length > 0 ? tRef(hIgn) - tRef(hGate) : (2 * (hIgn - hGate)) / vdn;
+      const drift = (hTop - hIgn) / vdn + DIVERT_SHARE * tDivert;
       for (let i = 0; i < 3; i++) im[i] += (iv[i] + (vdn * im[i]) / rl) * drift;
       const k = (aimAlt + RE) / Math.sqrt(im[0] * im[0] + im[1] * im[1] + im[2] * im[2]);
       for (let i = 0; i < 3; i++) im[i] *= k;
+      predIgnT = pred.impactT + (hTop - hIgn) / vdn;
       pred.impactT += (hTop - hIgn) / vdn + (segAcc.length > 0 ? tRef(hIgn) : (2 * hIgn) / vdn);
     }
     return pred;
@@ -215,21 +252,29 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   const planLanding = () => {
     const m = body.mass;
     const fEng = engineThrustSl();
+    // Planned throttle of the engine sets, within any throttle limit the user has set.
+    const thrPlan = Math.min(p.lbThrottle, part.ceiling);
     const aimAlt = Math.sqrt(target[0] * target[0] + target[1] * target[1] + target[2] * target[2]) - RE + baseH() + part.com();
     let usable = 0;
     for (let i = 0; i < part.n; i++) if (part.usable(i)) usable++;
     segAcc.length = 0;
     segSwitch.length = 0;
     segN.length = 0;
+    // Into the arms, or under a user throttle limit, the last set is planned within what it can do (as the descent
+    // limit in the burn): an overshoot misses the catch, where a splashdown at full thrust only comes down harder.
+    const aLast =
+      recovery === 'catch' || part.ceiling < 1
+        ? Math.min(p.lbFinalAccel, Math.max(0.5, 0.6 * ((finalCount() * fEng * Math.min(1, part.ceiling)) / m - GEE)))
+        : p.lbFinalAccel;
     for (let j = 0; j < seq.length; j++) {
       const last = j === seq.length - 1;
       // A heavy booster (staged early, propellant left) lights more engines: enough for at least half the
       // braking the set gives at the usual landing mass (about twice the dry mass). The last set is sized
       // when it takes over (see finalCount).
-      const aWant = Math.max(3, 0.5 * ((seq[j] * fEng * p.lbThrottle) / (2 * part.dry) - GEE));
-      const n = last ? seq[j] : Math.max(seq[j], Math.min(usable, Math.ceil((m * (GEE + aWant)) / (fEng * p.lbThrottle))));
+      const aWant = Math.max(3, 0.5 * ((seq[j] * fEng * thrPlan) / (2 * part.dry) - GEE));
+      const n = last ? seq[j] : Math.max(seq[j], Math.min(usable, Math.ceil((m * (GEE + aWant)) / (fEng * thrPlan))));
       segN.push(n);
-      segAcc.push(last ? p.lbFinalAccel : Math.max(3, (n * fEng * p.lbThrottle) / m - GEE));
+      segAcc.push(last ? aLast : Math.max(3, (n * fEng * thrPlan) / m - GEE));
       // Hand-over speeds: the last set takes over at lbSwitch, a middle set at 1.8 × lbSwitch.
       if (!last) segSwitch.push(j === seq.length - 2 ? p.lbSwitch : 1.8 * p.lbSwitch);
     }
@@ -246,6 +291,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     // Time left along the reference from each height down to the aim point.
     refT[0] = 0;
     for (let k = 1; k < REF_N; k++) refT[k] = refT[k - 1] + REF_DH / Math.max(0.3, 0.5 * (refV[k] + refV[k - 1]));
+    divertGate = Math.max(DIVERT_GATE, segSwitch.length > 0 ? DIVERT_GATE_MARGIN * heightForSpeed(segSwitch[0]) : 0);
   };
 
   /** Sea-level thrust of one booster engine at full throttle, N. */
@@ -254,8 +300,20 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     return s0.fVac - 101_325 * s0.exitArea;
   };
 
-  /** Engines for the last landing set: the plan's, or enough to hold the booster's current weight with margin. */
-  const finalCount = () => Math.max(seq[seq.length - 1], Math.ceil((1.2 * body.mass * GEE) / engineThrustSl()));
+  /**
+   * Engines for the last landing set: the plan's, or enough to hold the booster's current weight with margin. Under
+   * a throttle limit the user has set, enough within it, but not so many that minimum throttle could no longer
+   * let the booster down (unless that leaves too few to stop it).
+   */
+  const finalCount = () => {
+    const w = (body.mass * GEE) / engineThrustSl(); // weight, in engines at full thrust
+    const ceil = Math.min(1, part.ceiling);
+    const n = Math.max(seq[seq.length - 1], Math.ceil((1.2 * w) / ceil));
+    if (ceil >= 1) return n;
+    const nDown = Math.floor((0.85 * w) / MIN_THROTTLE);
+    const nStop = Math.ceil((1.05 * w) / ceil);
+    return n <= nDown ? n : Math.max(nStop, Math.min(n, nDown));
+  };
 
   /** Time remaining along the landing reference from height h. */
   const tRef = (h: number) => {
@@ -308,6 +366,8 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
         case 'throttle':
           part.ceiling = clamp(iv.value, 0.4, 1);
           ctx.events.push(makeInterventionEvent('booster', at, ev(), `Throttle limited to ${Math.round(part.ceiling * 100)}%`, 'THROTTLE'));
+          // A landing still to come is planned again within the new limit (it lights earlier, or more engines).
+          if (segAcc.length > 0 && !landingStarted) planLanding();
           break;
         case 'terminate':
           ctx.events.push(makeInterventionEvent('booster', at, ev(), 'Flight termination commanded', 'TERMINATE'));
@@ -491,9 +551,9 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     const vaL = Math.sqrt(va[0] * va[0] + va[1] * va[1] + va[2] * va[2]);
     for (let i = 0; i < 3; i++) vAirN[i] = vaL > 1 ? va[i] / vaL : -up[i];
     extra[0] = extra[1] = extra[2] = 0;
-    if ((mode === 'coast' || mode === 'free') && landingPlanned) extra.set(finLift);
+    if (mode === 'coast' && landingPlanned) extra.set(finLift);
     else finLift.fill(0);
-    if (mode !== 'coast' && mode !== 'free') aero[0] = aero[1] = aero[2] = aero[3] = 0;
+    if (mode !== 'coast') aero[0] = aero[1] = aero[2] = aero[3] = 0;
 
     if (mode === 'hotstage') {
       // The ship's plume pushes the booster back as the stages part.
@@ -539,9 +599,26 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
       qLook(qT, thr, zAx);
       const rate = p.flipRate * D;
       const errAng = slew(body, qT, rate, rate * 0.6, dt);
-      // Boostback engines idle at minimum throttle until the flip is nearly complete.
-      if (mode === 'boostback') part.throttle = errAng > 25 * D ? 0.4 : p.bbThrottle;
-    } else if ((mode === 'coast' || mode === 'free') && (attAcc += dt) >= 0.1 - 1e-9) {
+      if (mode === 'boostback') {
+        // The engines idle at minimum throttle until the flip is nearly complete. As the booster gets light they
+        // throttle back to hold BOOSTBACK_G; once even the minimum is too much, the outer ring shuts down, then the
+        // inner ring.
+        let pot = part.litThrustPotential(air.pressure);
+        let lit = part.litTotal();
+        while (lit > 3 && pot * MIN_THROTTLE > BOOSTBACK_G * GEE * body.mass) {
+          part.setEngines(selectBoosterEngines(lit > 13 ? 13 : 3, (i) => part.isLit(i)), t);
+          pot = part.litThrustPotential(air.pressure);
+          lit = part.litTotal();
+        }
+        const gThrottle = pot > 0 ? (BOOSTBACK_G * GEE * body.mass) / pot : 1;
+        part.throttle = errAng > 25 * D ? MIN_THROTTLE : Math.min(p.bbThrottle, gThrottle);
+      }
+    } else if (mode === 'free') {
+      // Engines cut over the water or the arms: the booster drops the last few metres upright.
+      qLook(qT, up, zAx);
+      slew(body, qT, 8 * D, 4 * D, dt);
+      phase = Phase.Descent;
+    } else if (mode === 'coast' && (attAcc += dt) >= 0.1 - 1e-9) {
       // Engines first for the descent; grid fins steer the impact point onto the target (10 Hz).
       const adt = attAcc;
       attAcc = 0;
@@ -555,8 +632,14 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
           for (let i = 0; i < 3; i++) tmp[i] = pred.impact[i] - target[i];
           ecefToInertial(lat, tmp, t);
           const k = lat[0] * up[0] + lat[1] * up[1] + lat[2] * up[2];
-          const tgo = Math.max(5, pred.impactT - t);
-          for (let i = 0; i < 3; i++) lat[i] = (-4 * (lat[i] - k * up[i])) / (tgo * tgo);
+          for (let i = 0; i < 3; i++) lat[i] -= k * up[i];
+          // Zero-effort-miss steering over the time the fins have left (the landing burn takes over at ignition). A
+          // splashdown aim further off than the fins can bring the booster (a short boostback) is let go: it comes
+          // down where it falls instead of stretching for the aim.
+          const tgo = Math.max(3, predIgnT - t);
+          const miss = Math.sqrt(lat[0] * lat[0] + lat[1] * lat[1] + lat[2] * lat[2]);
+          const gain = recovery === 'catch' ? 1 : clamp(2 - miss / (0.5 * FIN_ACCEL * tgo * tgo), 0, 1);
+          for (let i = 0; i < 3; i++) lat[i] *= (-3 * gain) / (tgo * tgo);
         }
         // Grid-fin lift: a lateral force across the airflow, at most ~0.2 of the drag (L/D of the fins).
         const kv = lat[0] * vAirN[0] + lat[1] * vAirN[1] + lat[2] * vAirN[2];
@@ -586,7 +669,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
       else for (let i = 0; i < 3; i++) thr[i] = -vAirN[i];
       qLook(qT, thr, zAx);
       slew(body, qT, 8 * D, 4 * D, adt);
-      phase = mode === 'free' ? Phase.Descent : air.alt < 80_000 && vr < 0 ? Phase.Descent : Phase.Coast;
+      phase = air.alt < 80_000 && vr < 0 ? Phase.Descent : Phase.Coast;
       // Landing-burn ignition from the stopping profile.
       if (landingPlanned && mode === 'coast' && vr < -50 && air.alt < 24_000) {
         if (segAcc.length === 0) planLanding();
@@ -646,56 +729,53 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
         const aStop = Math.max(0.5, 0.6 * ((part.litThrustPotential(air.pressure) * Math.min(1, part.ceiling)) / body.mass - GEE));
         vDes = Math.min(vDes, Math.sqrt(2 * aStop * Math.max(0, hAbove)) + 0.5);
       }
-      // Catch: outside a cone above the arms, slow the descent so it pauses a few metres above them until
+      // Catch: settling outside a cone above the arms, slow the descent so it pauses a few metres above them until
       // lined up.
       const hHold = hAbove - CATCH_HOLD;
-      if (recovery === 'catch' && lateral > 1.5 + 0.4 * Math.max(0, hHold)) vDes = Math.min(vDes, 0.15 * Math.max(0, hHold));
+      if (recovery === 'catch' && hAbove < divertGate && lateral > 1.5 + 0.4 * Math.max(0, hHold)) vDes = Math.min(vDes, 0.15 * Math.max(0, hHold));
       const aCmd = (segAcc[lbSeg] ?? p.lbFinalAccel) * clamp(vd / Math.max(vDes, 0.5), 0, 1.5) + 1.2 * (vd - vDes);
-      // Horizontal: zero-effort-miss / zero-effort-velocity guidance onto the aim point. The time-to-go
-      // floor keeps the final approach a well-damped position/velocity loop.
-      const tgo = Math.max(6, tRef(Math.max(0, hAbove)));
-      const kv = hv[0] * up[0] + hv[1] * up[1] + hv[2] * up[2];
-      // Splashdown: position error clamped to what the lateral authority can still cover, so an unreachable
-      // aim point never stops the burn from nulling the horizontal velocity.
-      const reach = Math.max(5, 0.3 * 0.25 * GEE * tgo * tgo);
-      const posK = recovery !== 'catch' && lateral > reach ? reach / lateral : 1;
-      // Vertical thrust after drag (never pointing down), then a lateral part bounded by it.
+      // Vertical thrust after drag (never pointing down).
       const m = body.mass;
       const fa = air.aero;
       const fUp = fa[0] * up[0] + fa[1] * up[1] + fa[2] * up[2];
       const tV = Math.max(0.05 * m * GEE, m * (GEE + aCmd) - fUp);
-      // Vertical first: the divert only gets the thrust left over (and at most a ~20° tilt).
-      const tAvail = 0.95 * part.litThrustPotential(air.pressure) * Math.min(1, part.ceiling);
-      const tLat = Math.min(0.35 * tV, Math.sqrt(Math.max(0, tAvail * tAvail - tV * tV)));
-      // Into the arms upright: the tilt allowed for the divert closes to the catch limit over the last 15 m.
-      const tiltMax = recovery === 'catch' ? clamp(CATCH_TILT + ((hAbove - 1) / (CATCH_ALIGN - 1)) * (20 * D - CATCH_TILT), CATCH_TILT, 20 * D) : 20 * D;
-      const ahMax = Math.min(15, tLat / m, (Math.tan(tiltMax) * tV) / m);
-      if (hAbove > 400) {
-        for (let i = 0; i < 3; i++) lat[i] = (6 * posK * (tmp[i] - kt * up[i]) - 4 * (hv[i] - kv * up[i]) * tgo) / (tgo * tgo);
-      } else if (recovery === 'catch' && hAbove < CATCH_ALIGN) {
-        // Lining up over the arms: a well-damped position loop, gentle enough for the attitude to follow.
-        for (let i = 0; i < 3; i++) lat[i] = 0.25 * (tmp[i] - kt * up[i]) - (hv[i] - kv * up[i]);
-      } else {
-        // Final approach: fly a lateral speed that brakes to a stop over the aim point (no overshoot).
-        const vMax = recovery === 'catch' ? Math.min(15, Math.sqrt(2 * 0.5 * 2.5 * lateral)) : 0;
-        for (let i = 0; i < 3; i++) {
-          const dirI = lateral > 0.5 ? (tmp[i] - kt * up[i]) / lateral : 0;
-          lat[i] = 0.8 * (vMax * dirI - (hv[i] - kv * up[i]));
+      // Horizontal parts of the offset to the aim (tmp) and of the velocity (hv).
+      const kv = hv[0] * up[0] + hv[1] * up[1] + hv[2] * up[2];
+      for (let i = 0; i < 3; i++) {
+        tmp[i] -= kt * up[i];
+        hv[i] -= kv * up[i];
+      }
+      const pot = part.litThrustPotential(air.pressure);
+      const cap = landingTiltCap(hAbove, LANDING_TILT, LANDING_TILT_FINAL, LANDING_TILT_SPAN);
+      if (hAbove > divertGate) {
+        // Divert: zero-effort-miss / zero-effort-velocity guidance onto the gate above the aim, reached as the
+        // reference gets there.
+        const tgo = Math.max(DIVERT_TGO_MIN, tRef(hAbove) - tRef(divertGate));
+        if (recovery !== 'catch') {
+          // A splashdown aim far from where the usual braking stops the booster (a short boostback) is let go: the
+          // burn takes up an offset of up to a quarter of what its lean could cover, and fades out further off.
+          let off = 0;
+          for (let i = 0; i < 3; i++) off += (tmp[i] - DIVERT_SHARE * tgo * hv[i]) ** 2;
+          const reach = 0.5 * 0.25 * (pot / m) * Math.sin(LANDING_TILT) * tgo * tgo;
+          const k = clamp(2 - Math.sqrt(off) / reach, 0, 1);
+          for (let i = 0; i < 3; i++) tmp[i] = DIVERT_SHARE * tgo * hv[i] + k * (tmp[i] - DIVERT_SHARE * tgo * hv[i]);
         }
+        for (let i = 0; i < 3; i++) lat[i] = (6 * tmp[i] - 4 * hv[i] * tgo) / (tgo * tgo);
+      } else {
+        // Settling: fly a sideways speed towards the aim that half the lean allowed can still brake to a stop (near
+        // the aim a critically damped 2 s position loop). A splashdown holds its position only near the aim.
+        const aBrake = (tV / m) * Math.tan(cap);
+        const e = recovery === 'catch' ? lateral : lateral * clamp(2 - lateral / SETTLE_REACH, 0, 1);
+        const vCmd = Math.min(0.25 * e, Math.sqrt(2 * 0.5 * aBrake * e));
+        for (let i = 0; i < 3; i++) lat[i] = (lateral > 1e-6 ? (vCmd * tmp[i]) / lateral : 0) - hv[i];
       }
-      const ahL = Math.sqrt(lat[0] * lat[0] + lat[1] * lat[1] + lat[2] * lat[2]);
-      if (ahL > ahMax) for (let i = 0; i < 3; i++) lat[i] *= ahMax / ahL;
-      for (let i = 0; i < 3; i++) thr[i] = m * lat[i] + tV * up[i];
-      const need = Math.sqrt(thr[0] * thr[0] + thr[1] * thr[1] + thr[2] * thr[2]);
+      const need = landingThrust(thr, up, lat, m, tV, MIN_THROTTLE * pot, pot * Math.min(1, part.ceiling), cap);
       if (lbSeg === segSwitch.length) part.throttleTo(need, air.pressure, t, finalSet, vd < 6);
-      else {
-        const fmax = part.litThrustPotential(air.pressure) * Math.min(1, part.ceiling);
-        part.throttle = fmax > 0 ? need / fmax : 1;
-      }
+      else part.throttle = pot > 0 ? need / pot : 1;
       qLook(qT, thr, zAx);
-      slew(body, qT, 15 * D, 15 * D, dt);
+      slew(body, qT, 15 * D, 25 * D, dt);
       if (recovery === 'catch') {
-        const vH = Math.sqrt(Math.max(0, hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2] - kv * kv));
+        const vH = Math.sqrt(hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2]);
         const tilt = Math.acos(clamp(yAx[0] * up[0] + yAx[1] * up[1] + yAx[2] * up[2], -1, 1));
         if (hAbove < 1.2 && vd < CATCH_SPEED_V && vH < CATCH_SPEED_H && lateral < CATCH_LATERAL && tilt < CATCH_TILT) {
           // In the arms: engines off, and the arms take the weight and square the booster up.

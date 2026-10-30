@@ -209,10 +209,13 @@ export class VehicleRt {
     return Math.max(0, this.effThrottle() * (this.sumF - p * this.sumA));
   }
 
-  /** Thrust available at full throttle (spooled engines only), N. */
-  maxThrust(p: number): number {
+  /**
+   * Thrust of the spooled engines at a throttle of 1, before the user ceiling, N: a throttle command for a thrust is
+   * its share of this (the ceiling then caps the command, see effThrottle).
+   */
+  fullThrust(p: number): number {
     this.refresh();
-    return Math.max(0, Math.min(1, this.ceiling) * (this.sumF - p * this.sumA));
+    return Math.max(0, this.sumF - p * this.sumA);
   }
 
   /** Full-thrust sum over lit engines as if fully spooled (for guidance planning). */
@@ -238,13 +241,13 @@ export class VehicleRt {
         lastLit = i;
       }
     }
-    const ceil = Math.min(1, this.ceiling);
-    const potential = this.litThrustPotential(p) * ceil;
+    const full = this.litThrustPotential(p);
+    const potential = full * Math.min(1, this.ceiling);
     // Hysteresis: shed only well below the minimum, relight a spare only near full throttle.
     if (
       mayShed &&
       litCount > 1 &&
-      need < MINT * potential * 0.8 &&
+      need < MINT * full * 0.8 &&
       (potential * (litCount - 1)) / litCount >= HOLD_MARGIN * this.mass * GEE &&
       t >= this.nextEngineChange
     ) {
@@ -260,7 +263,8 @@ export class VehicleRt {
         }
       }
     }
-    const pot = this.litThrustPotential(p) * ceil;
+    // A share of the full thrust: the ceiling caps the command (see effThrottle), it does not scale it.
+    const pot = this.litThrustPotential(p);
     this.throttle = pot > 0 ? need / pot : 1;
   }
 

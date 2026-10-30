@@ -5,6 +5,8 @@
  *   npx tsx scripts/calibrate.ts            calibrate all flights and print the table
  *   npx tsx scripts/calibrate.ts 5 10       calibrate only these flights (others keep their values)
  *   npx tsx scripts/calibrate.ts --report   print the table for the current calibration only
+ *   npx tsx scripts/calibrate.ts --stage booster,landing 5 7 [--write]
+ *                                           refit only these stages of these flights (--write saves them)
  *
  * Plans that went elsewhere than the flight did (PLAN_LANDING) also get the cut-off of their plan fitted,
  * stored under `plans` and used by runs with asFlown = false, next to plan values the flight cannot tell
@@ -404,9 +406,10 @@ function stageStack(f: Flight, p: FlightParamOverrides): FlightParamOverrides {
   return optimise(f, p, specs, res, { skipBooster: true, skipShip: true }, 14);
 }
 
-function stageBooster(f: Flight, p: FlightParamOverrides): FlightParamOverrides {
+/** `keys` limits the fit to these parameters (the others keep their values), e.g. only the landing burn's. */
+function stageBooster(f: Flight, p: FlightParamOverrides, keys?: readonly NumKey[]): FlightParamOverrides {
   const tg = f.targets;
-  const specs: ParamSpec[] = [
+  const all: ParamSpec[] = [
     { key: 'bbPitch', min: -20, max: 35, h: 1 },
     { key: 'flipRate', min: 10, max: 20, h: 0.5, sigma: 4 },
     { key: 'descentDrag', min: 0.8, max: 3.2, h: 0.05, sigma: 0.8 },
@@ -414,6 +417,7 @@ function stageBooster(f: Flight, p: FlightParamOverrides): FlightParamOverrides 
     { key: 'lbSwitch', min: 15, max: 160, h: 3, sigma: 60 },
     { key: 'lbFinalAccel', min: 0.8, max: 15, h: 0.25, sigma: 6 },
   ];
+  const specs = keys ? all.filter((s) => keys.includes(s.key)) : all;
   const res: ResidualFn = (r, m) => [
     ...rt(m.values.boostbackEnd, tg.boostbackEnd, 1.5),
     ...rt(m.values.boosterApogee, tg.boosterApogee, 3),
@@ -700,15 +704,20 @@ if (isMain && process.argv.includes('--report')) {
 }
 
 if (isMain && process.argv.includes('--stage')) {
+  // --stage booster,landing 5 7 [--write] [--params lbSwitch,lbFinalAccel]: refit only these stages of these
+  // flights (--write saves the result; --params limits the booster stage to those parameters).
   const which = process.argv[process.argv.indexOf('--stage') + 1];
   const only = process.argv.slice(2).filter((a) => /^\d+$/.test(a)).map(Number);
+  const write = process.argv.includes('--write');
+  const keys = process.argv.includes('--params') ? (process.argv[process.argv.indexOf('--params') + 1].split(',') as NumKey[]) : undefined;
+  const file: CalibrationFile = { flights: { ...calibration.flights }, ...(calibration.plans ? { plans: { ...calibration.plans } } : {}) };
   for (const n of only) {
     const f = getFlight(n);
-    const base = { ...(calibration.flights[String(n)] ?? {}) };
+    const base = { ...(file.flights[String(n)] ?? {}) };
     const t0 = performance.now();
     const stages: Record<string, (f: Flight, p: FlightParamOverrides) => FlightParamOverrides> = {
       stack: stageStack,
-      booster: stageBooster,
+      booster: (g, q) => stageBooster(g, q, keys),
       ship: stageShip,
       landing: stageLanding,
     };
@@ -717,6 +726,10 @@ if (isMain && process.argv.includes('--stage')) {
     console.log(`Flight ${n} stage ${which} ${(performance.now() - t0).toFixed(0)} ms`, JSON.stringify(out));
     const r = run(f, out);
     console.log(report(f, r).lines.join('\n'));
+    if (write) {
+      file.flights[String(n)] = out;
+      writeCalibration(file);
+    }
   }
 }
 

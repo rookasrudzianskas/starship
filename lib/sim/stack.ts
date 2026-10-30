@@ -382,7 +382,7 @@ export function runStack(ctx: SimContext): StackOutcome {
       // Engine-out compensation: the engines still running throttle up to restore the planned thrust.
       const lit = booster.litTotal();
       if (lit > 0 && lit < booster.n) thr *= booster.n / lit;
-      const fmax = booster.maxThrust(air.pressure);
+      const fmax = booster.fullThrust(air.pressure);
       if (fmax > 0) thr = Math.min(thr, (p.stackGLimit * GEE * body.mass) / fmax);
       booster.throttle = thr;
     }
