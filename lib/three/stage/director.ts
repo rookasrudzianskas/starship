@@ -131,6 +131,8 @@ export function pickedShot(id: ShotId, t: number, p: DirectorPlan, follow: Follo
       // The tower watches the booster come home.
       return shot(id, 'booster');
     case 'buoy':
-      return shot(id, follow === 'booster' ? 'booster' : 'ship');
+      // Following both, it watches whichever comes down next: the ship's buoy, half a world away, would show an
+      // empty sea for hours while the booster climbs and lands.
+      return shot(id, follow === 'booster' || (follow === 'both' && p.boosterLands && t <= p.boosterEnd + 20) ? 'booster' : 'ship');
   }
 }

@@ -92,8 +92,10 @@ export function Stage() {
   useEffect(() => {
     const host = hostRef.current;
     if (!enabled || !host) return;
-    // The imagery starts downloading before the stage's code has even arrived.
-    prefetchEarthImagery();
+    // The imagery starts downloading before the stage's code has even arrived. A stage kept from an earlier visit
+    // has its imagery already: fetching and decoding it again would only hold tens of megabytes of pixels for
+    // nothing until the prefetch expires.
+    if (!live) prefetchEarthImagery();
     let active = true;
     let stage: StageHandle | null = null;
     let insetsObserver: ResizeObserver | null = null;

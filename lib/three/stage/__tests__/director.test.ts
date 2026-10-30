@@ -43,6 +43,16 @@ describe('autoShot', () => {
   });
 });
 
+describe('pickedShot', () => {
+  it('points the splashdown buoy at the vehicle that comes down next when following both', () => {
+    expect(pickedShot('buoy', 60, nominal, 'both').vehicle).toBe('booster');
+    expect(pickedShot('buoy', nominal.boosterEnd + 30, nominal, 'both').vehicle).toBe('ship');
+    expect(pickedShot('buoy', 60, { ...nominal, boosterLands: false }, 'both').vehicle).toBe('ship');
+    expect(pickedShot('buoy', 60, nominal, 'ship').vehicle).toBe('ship');
+    expect(pickedShot('buoy', nominal.boosterEnd + 30, nominal, 'booster').vehicle).toBe('booster');
+  });
+});
+
 describe('planDirector', () => {
   /** A track whose phases change at the given times. */
   function track(end: number, endKind: Track['endKind'], phases: [number, number][]): Track {
