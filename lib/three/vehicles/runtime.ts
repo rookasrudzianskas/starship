@@ -86,12 +86,13 @@ uniform vec3 uPlumeLightColor;
 
 const PLUME_LIGHT_TERM = /* glsl */ `
 {
-  // Exhaust glow below the nozzles: a soft warm source (5 m radius keeps the falloff finite close in).
+  // Exhaust glow below the nozzles: a soft warm source about as large as the glowing exhaust (8 m radius),
+  // which also keeps the falloff finite on the bells and the skirt right next to it.
   vec3 plumeLv = (viewMatrix * vec4(uPlumeLight, 1.0)).xyz - geometryPosition;
   float plumeD2 = dot(plumeLv, plumeLv);
   IncidentLight plumeLight;
   plumeLight.direction = plumeLv * inversesqrt(max(plumeD2, 1e-4));
-  plumeLight.color = uPlumeLightColor / (plumeD2 + 25.0);
+  plumeLight.color = uPlumeLightColor / (plumeD2 + 64.0);
   plumeLight.visible = true;
   RE_Direct(plumeLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight);
 }
