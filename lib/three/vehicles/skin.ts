@@ -10,7 +10,7 @@ import { TILE_WIDTH } from './geometry';
  *   grout lines, a slight pillow bevel via a screen-space bump, an irregular hex-stepped boundary,
  *   all antialiased with the pixel footprint,
  * - frost bands over the propellant tanks, soot near the base and scorch at the top,
- * - a faint red glow of the windward tiles during entry heating.
+ * - a red-orange glow of the windward tiles during entry heating.
  */
 
 export interface SkinUniforms {
@@ -235,7 +235,12 @@ const FRAG_NORMAL = /* glsl */ `
 const FRAG_EMISSIVE = /* glsl */ `
 {
   float ww = max(dot(normalize(vObjN), -uAirflow), 0.0);
-  totalEmissiveRadiance += vec3(1.0, 0.28, 0.06) * (uHeat * uHeat * ww * ww * skTileMask * 1.6);
+  // Self-luminous like the plasma round it, so metered the same way (see plasma.ts): / sqrt(exposure).
+  float skMeter = 1.0;
+  #ifdef TONE_MAPPING
+    skMeter = inversesqrt(max(toneMappingExposure, 1e-3));
+  #endif
+  totalEmissiveRadiance += vec3(1.0, 0.28, 0.06) * (uHeat * uHeat * ww * ww * skTileMask * 1.6 * skMeter);
 }
 `;
 

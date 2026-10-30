@@ -9,7 +9,7 @@ import { createEngineMaterial, engineGeometry } from './engines';
 import { engineSlots } from './engines-layout';
 import { gridFinGeometry } from './parts';
 import { PlumeCores, PlumeGlow, PlumeVolume, altitudeFactor, clusterShape, newVolumeShape } from './plumes';
-import { Plasma } from './plasma';
+import { Plasma, plasmaGlow } from './plasma';
 import { EngineSmoother, PlumeLight, applyEnvFallback, flicker } from './runtime';
 
 /**
@@ -320,6 +320,8 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
     steps: quality === 'high' ? 10 : 5,
   });
   object.add(plasma.group);
+  for (const m of envMats) plasma.light.apply(m);
+  const worldQuat = new THREE.Quaternion();
 
   // ---------------------------------------------------------------- state
   const smoother = new EngineSmoother(slots.length);
@@ -373,7 +375,7 @@ export function createBooster(gen: Generation, quality: Quality): VehicleModel {
       interior.emissiveIntensity = hs * 3.5;
 
       setFins(state.aero);
-      plasma.update(state.heating * 0.6, state.airflowBody, t, camera);
+      plasma.update(plasmaGlow(state.heating * 0.6, state.mach), state.airflowBody, object.getWorldQuaternion(worldQuat), t, camera);
     },
     setCamera(camera: THREE.Camera) {
       volume.updateCamera(camera);

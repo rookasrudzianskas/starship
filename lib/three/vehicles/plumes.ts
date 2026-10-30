@@ -270,6 +270,7 @@ uniform int uSteps;
 uniform float uGain;  // < 1 while the camera is inside the plume
 uniform vec2 uNear;   // samples closer to the camera than x (m) are dropped, beyond y they count in full
 uniform float uInside; // 1: the camera is inside the proxy, march from its back faces
+uniform float uMeter;  // 1: self-luminous gas a camera meters for (the entry plasma): divided by sqrt(exposure)
 uniform sampler2D uNoise;
 varying vec3 vLocal;
 
@@ -359,6 +360,9 @@ void main() {
   float L = dot(col, vec3(0.3, 0.5, 0.2));
   float Lc = uSat * (1.0 - exp(-L / uSat));
   col *= Lc / max(L, 1e-4);
+  #ifdef TONE_MAPPING
+    col *= mix(1.0, inversesqrt(max(toneMappingExposure, 1e-3)), uMeter);
+  #endif
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -402,6 +406,7 @@ export class PlumeVolume {
     uGain: { value: number };
     uNear: { value: THREE.Vector2 };
     uInside: { value: number };
+    uMeter: { value: number };
     uNoise: { value: THREE.Texture };
   };
   private readonly geo: THREE.CylinderGeometry;
@@ -437,6 +442,7 @@ export class PlumeVolume {
       uGain: { value: 1 },
       uNear: { value: new THREE.Vector2(0, 1e-3) },
       uInside: { value: 0 },
+      uMeter: { value: 0 },
       uNoise: { value: noise },
     };
     this.mat = new THREE.ShaderMaterial({
@@ -515,14 +521,15 @@ const GLOW_VERT = /* glsl */ `
 #include <logdepthbuf_pars_vertex>
 uniform vec3 uPos;
 uniform float uSize;
+uniform float uPull;
 varying vec2 vQ;
 varying float vFade;
 void main() {
   vec4 mv = modelViewMatrix * vec4(uPos, 1.0);
   // Bloom belongs to a view of the engines from outside: a camera at the nozzles would sit inside the sprite.
   vFade = smoothstep(0.6 * uSize, 2.2 * uSize, length(mv.xyz));
-  // Pull the sprite slightly towards the camera so it is not swallowed by the nozzle geometry.
-  mv.xyz += normalize(-mv.xyz) * uSize * 0.15;
+  // Pull the sprite towards the camera (by uPull sizes) so it is not swallowed by the geometry round its centre.
+  mv.xyz += normalize(-mv.xyz) * uSize * uPull;
   mv.xy += position.xy * uSize;
   vQ = position.xy;
   gl_Position = projectionMatrix * mv;
@@ -534,6 +541,7 @@ const GLOW_FRAG = /* glsl */ `
 #include <logdepthbuf_pars_fragment>
 uniform vec3 uColor;
 uniform float uIntensity;
+uniform float uMeter; // 1: the bloom of self-luminous gas a camera meters for (the entry plasma), / sqrt(exposure)
 varying vec2 vQ;
 varying float vFade;
 void main() {
@@ -543,6 +551,9 @@ void main() {
   // Window so the quad's edges never show.
   float win = max(0.0, 1.0 - r2);
   float I = (exp(-r2 * 10.0) + 0.25 * exp(-r2 * 3.5)) * win * win;
+  #ifdef TONE_MAPPING
+    I *= mix(1.0, inversesqrt(max(toneMappingExposure, 1e-3)), uMeter);
+  #endif
   gl_FragColor = vec4(uColor * I * uIntensity * vFade, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -553,8 +564,11 @@ export class PlumeGlow {
   readonly uniforms: {
     uPos: { value: THREE.Vector3 };
     uSize: { value: number };
+    /** How far the sprite is pulled towards the camera, in sizes. */
+    uPull: { value: number };
     uColor: { value: THREE.Color };
     uIntensity: { value: number };
+    uMeter: { value: number };
   };
   private readonly geo: THREE.PlaneGeometry;
   private readonly mat: THREE.ShaderMaterial;
@@ -564,8 +578,10 @@ export class PlumeGlow {
     this.uniforms = {
       uPos: { value: new THREE.Vector3() },
       uSize: { value: 5 },
+      uPull: { value: 0.15 },
       uColor: { value: new THREE.Color(1, 0.9, 0.8) },
       uIntensity: { value: 0 },
+      uMeter: { value: 0 },
     };
     this.mat = new THREE.ShaderMaterial({
       uniforms: this.uniforms,

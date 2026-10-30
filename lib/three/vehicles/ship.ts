@@ -9,7 +9,7 @@ import { createEngineMaterial, engineGeometry, type EngineKind } from './engines
 import { engineSlots } from './engines-layout';
 import { flapGeometry, flapPivot, type FlapPlanform } from './parts';
 import { PlumeCores, PlumeGlow, PlumeVolume, altitudeFactor, clusterShape, newVolumeShape } from './plumes';
-import { Plasma } from './plasma';
+import { Plasma, plasmaGlow } from './plasma';
 import { EngineSmoother, PlumeLight, applyEnvFallback } from './runtime';
 
 /**
@@ -304,6 +304,10 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
     steps: quality === 'high' ? 10 : 5,
   });
   object.add(plasma.group);
+  // The flaps stand out of the flow: their edges carry the brightest plasma.
+  for (const f of flaps) plasma.wrap(f);
+  for (const m of envMats) plasma.light.apply(m);
+  const worldQuat = new THREE.Quaternion();
 
   // ---------------------------------------------------------------- state
   const smoother = new EngineSmoother(6);
@@ -370,12 +374,12 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
         flaps[i].rotation.y = right ? -d : d;
       }
 
-      // Entry heating: plasma plus a faint glow of the windward tiles.
+      // Entry heating: plasma, its light on the hull and the glow of the windward tiles.
       skin.uniforms.uHeat.value = state.heating;
       flapSkin.uniforms.uHeat.value = state.heating;
       skin.uniforms.uAirflow.value.copy(state.airflowBody);
       flapSkin.uniforms.uAirflow.value.copy(state.airflowBody);
-      plasma.update(state.heating, state.airflowBody, t, camera);
+      plasma.update(plasmaGlow(state.heating, state.mach), state.airflowBody, object.getWorldQuaternion(worldQuat), t, camera);
     },
     setCamera(camera: THREE.Camera) {
       volume.updateCamera(camera);
