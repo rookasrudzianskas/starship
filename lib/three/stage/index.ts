@@ -147,6 +147,15 @@ const PLUME_EXPOSURE = 1.3;
 const PIP_WIDTH = 320;
 const PIP_ASPECT = 0.62;
 const PIP_HEIGHT = Math.round(PIP_WIDTH * PIP_ASPECT);
+/**
+ * Where the booster's onboard cameras can sit: azimuths round its body (radians from +Z towards +X) halfway between
+ * its grid fins, per generation (see lib/three/vehicles/booster.ts).
+ */
+const BOOSTER_MOUNTS: Record<Generation, readonly number[]> = {
+  b1: [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2],
+  b2: [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2],
+  v3: [0, (2 * Math.PI) / 3, (4 * Math.PI) / 3],
+};
 /** Size of a vehicle's breakup (the explosion's scale, m): cameras widen out to its debris cloud. */
 const BREAKUP_SCALE: Record<VehicleId, number> = { booster: 70, ship: 50 };
 /** Size of the body making a splash (the effect's scale, m), and how much wider cameras frame while its spray is up. */
@@ -350,6 +359,8 @@ export function createStage(): StageHandle {
   let plan: DirectorPlan | null = null;
   let current: FlightResult | null = null;
   let currentBaseline: FlightResult | null = null;
+  /** Side of the booster its onboard cameras are on (see sunlitMount). */
+  let boosterMount = 0;
   let catchTime: number | null = null;
   let catchArmsHeight: number | null = null;
   let sats: Satellite[] = [];
@@ -481,6 +492,7 @@ export function createStage(): StageHandle {
     overlay.clearGates();
     gates.setResult(result);
 
+    boosterMount = sunlitMount(result, flight.generation);
     titles.booster = `Super Heavy ${flight.boosterId}`.trim();
     titles.ship = `Starship ${flight.shipId}`;
     plan = planDirector(result);
@@ -592,6 +604,31 @@ export function createStage(): StageHandle {
     const first = result.payload[0].t;
     const end = result.events.find((e) => e.key === 'payload-end')?.t ?? -Infinity;
     door = [first - DOOR_LEAD, Math.max(end, clearBy + DOOR_LEAD)];
+  }
+
+  /**
+   * The booster's onboard cameras are mounted on a side the Sun lights at staging, when they are on most, so they
+   * look along shaded, sunlit steel rather than a black silhouette: the side lit most nearly from 75 degrees off its
+   * face (lit more squarely, the polished steel glares white, the more so as the cameras look up towards the Sun),
+   * or failing that the least dark one. Azimuth round the body, radians.
+   */
+  function sunlitMount(result: FlightResult, gen: Generation): number {
+    const t = (result.separationT ?? 63) - 3;
+    const probe = createSample();
+    sampleTrack(result.booster, t, probe);
+    sunDirectionEcef(result.launchUtc + t * 1000, v1).applyQuaternion(qInv.copy(probe.quat).invert());
+    let best = 0;
+    let bestScore = -Infinity;
+    for (const az of BOOSTER_MOUNTS[gen]) {
+      // Cosine of the Sun's angle from the side's outward normal.
+      const lit = Math.sin(az) * v1.x + Math.cos(az) * v1.z;
+      const score = lit > 0.08 ? 2 - Math.abs(lit - 0.25) : lit;
+      if (score > bestScore) {
+        bestScore = score;
+        best = az;
+      }
+    }
+    return best;
   }
 
   /** Payload door opening at t: 0 closed .. 1 open. */
@@ -941,20 +978,20 @@ export function createStage(): StageHandle {
       }
       case 'booster-top': {
         if (!booster.visible) return false;
-        // On the +Z side between the grid fins, well below the vents and off the hull: looking up the booster at
-        // the interstage and the ship's engines, a fin either side, with the hull along the bottom of the frame.
-        LOCAL.set(0, L.booster - 14, 6.5);
-        DIR.set(0, 18, -6.5).normalize();
-        UP.set(0, 0, 1);
+        // Between two grid fins, well below the vents and off the hull: looking up the booster at the interstage and
+        // the ship's engines, a fin either side, with the hull along the bottom of the frame.
+        LOCAL.set(0, L.booster - 14, 6.5).applyAxisAngle(AXIS_Y, boosterMount);
+        DIR.set(0, 18, -6.5).normalize().applyAxisAngle(AXIS_Y, boosterMount);
+        UP.set(0, 0, 1).applyAxisAngle(AXIS_Y, boosterMount);
         onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 60, out);
         return true;
       }
       case 'booster-aft': {
         if (!booster.visible) return false;
-        // Below the grid fins on the +Z side (between them on every generation), looking down the hull at the engines.
-        LOCAL.set(0, L.booster - 10, 5.1);
-        DIR.set(0, -1, 0.16).normalize();
-        UP.set(0, 0, 1);
+        // Below the grid fins on the same side, looking down the hull at the engines.
+        LOCAL.set(0, L.booster - 10, 5.1).applyAxisAngle(AXIS_Y, boosterMount);
+        DIR.set(0, -1, 0.16).normalize().applyAxisAngle(AXIS_Y, boosterMount);
+        UP.set(0, 0, 1).applyAxisAngle(AXIS_Y, boosterMount);
         onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 74, out);
         return true;
       }
