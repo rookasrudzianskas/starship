@@ -265,7 +265,7 @@ uniform vec3 uCol2;
 uniform vec4 uMisc;   // fade-in length, noise strength, flicker speed, radial sharpness
 uniform float uTime;
 uniform float uSat;
-uniform vec2 uSpread;
+uniform vec2 uSpread;  // x: emission falloff exponent with the plume radius, y: brightness of the jet boundary
 uniform int uSteps;
 uniform float uGain;  // < 1 while the camera is inside the plume
 uniform vec2 uNear;   // samples closer to the camera than x (m) are dropped, beyond y they count in full
@@ -345,8 +345,10 @@ void main() {
     float R = uPlume.x + uPlume.y * s;
     float rr = length(p.xz) / R;
     // Emission per volume falls as the exhaust spreads; uSpread.x < 2 keeps the far plume visible
-    // as a large faint glow in near-vacuum.
-    float dens = exp(-s / uPlume.z) * pow(uPlume.x / R, uSpread.x) * exp(-uMisc.w * rr * rr);
+    // as a large faint glow in near-vacuum. An under-expanded plume in thin air glows most along its
+    // boundary (the barrel shock and the mixing layer round the core), which shows as a brighter rim.
+    float rim = rr - 0.78;
+    float dens = exp(-s / uPlume.z) * pow(uPlume.x / R, uSpread.x) * (exp(-uMisc.w * rr * rr) + uSpread.y * exp(-25.0 * rim * rim));
     dens *= smoothstep(0.0, uMisc.x, s) * smoothstep(uNear.x, uNear.y, t);
     float n = texture2D(uNoise, vec2(s * 0.019 - uTime * uMisc.z, atan(p.z, p.x) * 0.3183 + s * 0.004)).r;
     dens *= 1.0 - uMisc.y + uMisc.y * 2.0 * n;
@@ -371,6 +373,8 @@ void main() {
 export interface VolumeShape {
   /** Exponent of the (R0/R) emission falloff with plume radius (2 = conserve flux per area). */
   falloff: number;
+  /** Extra brightness of the jet boundary (0 = a plain Gaussian column; an under-expanded plume has a bright rim). */
+  rim: number;
   /** Luminance the soft saturation approaches on long sight lines. */
   saturation: number;
   y0: number;
@@ -476,12 +480,12 @@ export class PlumeVolume {
     this.uniforms.uCol0.value.copy(s.col0);
     this.uniforms.uCol1.value.copy(s.col1);
     this.uniforms.uCol2.value.copy(s.col2);
-    this.uniforms.uSpread.value.set(s.falloff, 0);
+    this.uniforms.uSpread.value.set(s.falloff, s.rim);
     this.uniforms.uSat.value = s.saturation;
     this.uniforms.uNear.value.set(0.2 * s.near, Math.max(s.near, 1e-3));
-    // Long sight lines through a wide fan need more samples to stay smooth.
-    const wide = Math.min(1, Math.max(0, (s.tanA - 0.2) / 0.8));
-    this.uniforms.uSteps.value = Math.round(this.baseSteps * (1 + wide));
+    // The shader adds samples on long sight lines through a narrow column (see the step count there); a wide fan is
+    // smooth and faint, and covers much of the view, so it gets no more than the base count.
+    this.uniforms.uSteps.value = this.baseSteps;
     this.mesh.visible = s.intensity > 0.001;
   }
 
@@ -626,10 +630,15 @@ function smooth(e0: number, e1: number, x: number): number {
 export function clusterShape(out: VolumeShape, alt: number, r0: number, y0: number, power: number, scale: number): VolumeShape {
   out.y0 = y0;
   out.r0 = r0;
-  out.tanA = 0.04 + 0.25 * alt + 0.75 * Math.pow(alt, 4);
-  // Falloff 1 makes the column brightness roughly constant across the expanding vacuum fan, so it reads
-  // as a huge faint glow rather than a blob at the nozzles.
-  out.falloff = 2 - 1.0 * smooth(0.3, 0.9, alt);
+  // Under-expansion: once the ambient pressure is well below the nozzles' exit pressure the exhaust turns outwards
+  // round the lips of the nozzles (by some 40° at 30 km, more higher up), so the merged plume swells from a narrow
+  // column at sea level to a translucent bell several times the vehicle's width by 40 km (alt 0.4), wider still in
+  // near-vacuum.
+  out.tanA = 0.04 + 0.75 * smooth(0.12, 0.6, alt) + 0.45 * smooth(0.5, 0.95, alt);
+  out.rim = 0.55 * smooth(0.15, 0.5, alt) * (1 - 0.5 * smooth(0.7, 1.0, alt));
+  // A falloff below 2 keeps some brightness out across the expanding vacuum fan, so it reads as a huge faint glow
+  // rather than a blob at the nozzles; above 1, the wider the fan, the fainter it is (translucent, not a white wedge).
+  out.falloff = 2 - 0.7 * smooth(0.3, 0.9, alt);
   out.decay = r0 * (6.5 + 42 * Math.pow(alt, 1.35)) * scale;
   // Near vacuum the exhaust glow is huge but faint. In thick air it is held back a little so the merged
   // column keeps its colour instead of saturating to a flat white block.
@@ -658,6 +667,7 @@ export function clusterShape(out: VolumeShape, alt: number, r0: number, y0: numb
 export function newVolumeShape(): VolumeShape {
   return {
     falloff: 2,
+    rim: 0,
     saturation: 2.4,
     y0: 0,
     r0: 1,
