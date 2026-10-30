@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { simulateFlight } from '../sim/simulate';
 import { ENGINE_FAILED, ENGINE_LIT, ENGINE_OFF, Phase, type EngineTimeline, type FlightResult, type VehicleId } from '../sim/types';
 import { formatAltitude, formatClock, formatDate, formatEventTime, formatSpeed, formatVerticalSpeed } from '../format';
-import { emptyReading, engineChangesBy, engineStates, engineStatesAfter, readVehicle } from '../telemetry';
+import { emptyReading, engineChangesBy, engineStates, engineStatesAfter, readVehicle, sideBySide } from '../telemetry';
 import { buildTimeAxis, quietGaps } from '../timeAxis';
 
 describe('quietGaps', () => {
@@ -160,5 +160,42 @@ describe('HUD altitude', () => {
     const t = touchdown(flight5, 'booster');
     expect(alt(flight5, 'booster', t - 5)).toBeGreaterThan(alt(flight5, 'booster', t));
     expect(alt(flight5, 'booster', t)).toBeLessThan(10);
+  });
+});
+
+describe('split view', () => {
+  const flight10 = simulateFlight(10, { asFlown: true, interventions: [] });
+  const sep = flight10.separationT ?? NaN;
+  /** Middle of a vehicle's model at t (as the stage frames it), from its centre of mass and attitude. */
+  const middle = (track: FlightResult['booster'], length: number, t: number) => {
+    let i = 0;
+    while (i < track.n - 2 && track.t[i + 1] <= t) i++;
+    const f = Math.min(1, Math.max(0, (t - track.t[i]) / (track.t[i + 1] - track.t[i])));
+    const at = (a: ArrayLike<number>, size: number, k: number) => a[size * i + k] + (a[size * (i + 1) + k] - a[size * i + k]) * f;
+    const [qx, qy, qz, qw] = [0, 1, 2, 3].map((k) => at(track.quat, 4, k));
+    const axis = [2 * (qx * qy - qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz + qx * qw)];
+    return [0, 1, 2].map((k) => at(track.pos, 3, k) + axis[k] * (length / 2 - at(track.com, 1, 0)));
+  };
+
+  it('starts once the vehicles are 3 km apart, never after the stage splits', () => {
+    expect(sideBySide(flight10, sep - 1)).toBe(false);
+    expect(sideBySide(flight10, sep + 5)).toBe(false);
+    let on = NaN;
+    for (let t = sep; t < sep + 60 && Number.isNaN(on); t += 0.01) if (sideBySide(flight10, t)) on = t;
+    // Flight 10 flies Block 2 vehicles, 70.8 m and 52.1 m long.
+    let apart = NaN;
+    for (let t = sep; t < sep + 60 && Number.isNaN(apart); t += 0.01) {
+      const b = middle(flight10.booster, 70.8, t);
+      const s = middle(flight10.ship, 52.1, t);
+      if (Math.hypot(b[0] - s[0], b[1] - s[1], b[2] - s[2]) >= 3000) apart = t;
+    }
+    expect(on).toBeLessThanOrEqual(apart);
+    expect(apart - on).toBeLessThan(0.3);
+  });
+
+  it('ends when the booster has left the view after its splashdown', () => {
+    const end = flight10.booster.end;
+    expect(sideBySide(flight10, end + 30)).toBe(true);
+    expect(sideBySide(flight10, end + 46)).toBe(false);
   });
 });

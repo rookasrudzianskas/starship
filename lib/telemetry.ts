@@ -175,6 +175,45 @@ export function isStacked(result: FlightResult, t: number): boolean {
   return result.separationT === null || t < result.separationT;
 }
 
+// The split view, as lib/three/stage/index.ts decides it: keep these in step with it.
+/** Vehicles this far apart (m, between the middles of their models) are shown side by side. */
+const SPLIT_APART = 3000;
+/** Between centres of mass instead, the distance can differ by up to half of each vehicle's length (72 m and 52 m). */
+const SPLIT_SLACK = 65;
+/** A vehicle that splashed down stays in view this long after its track ends, s; one caught or in orbit stays. */
+const SPLASHED_IN_VIEW = 45;
+
+function inView(track: Track, t: number): boolean {
+  if (t <= track.end) return true;
+  return track.endKind === 'catch' || track.endKind === 'orbit' || (track.endKind === 'splashdown' && t < track.end + SPLASHED_IN_VIEW);
+}
+
+/** Distance between two vehicles' centres of mass at t, m. */
+function distanceBetween(a: Track, b: Track, t: number): number {
+  const ta = Math.min(Math.max(t, a.start), a.end);
+  const tb = Math.min(Math.max(t, b.start), b.end);
+  const i = sampleIndex(a.t, a.n, ta);
+  const j = sampleIndex(b.t, b.n, tb);
+  const fa = sampleFraction(a, i, ta);
+  const fb = sampleFraction(b, j, tb);
+  let d2 = 0;
+  for (let k = 0; k < 3; k++) {
+    const pa = lerp(a.pos[3 * i + k], a.pos[3 * (i + 1) + k] ?? a.pos[3 * i + k], fa);
+    const pb = lerp(b.pos[3 * j + k], b.pos[3 * (j + 1) + k] ?? b.pos[3 * j + k], fb);
+    d2 += (pa - pb) * (pa - pb);
+  }
+  return Math.sqrt(d2);
+}
+
+/**
+ * Whether the chase and free cameras, following both vehicles, show them side by side at t: from when they are 3 km
+ * apart while both are in view. Measured between the centres of mass, it may start a moment early, never late.
+ */
+export function sideBySide(result: FlightResult, t: number): boolean {
+  if (isStacked(result, t) || !inView(result.booster, t) || !inView(result.ship, t)) return false;
+  return distanceBetween(result.booster, result.ship, t) >= SPLIT_APART - SPLIT_SLACK;
+}
+
 /** The simulation's time step near the ground and in the air, s (lib/sim: stack.ts, booster.ts, ship.ts). */
 const SIM_STEP = 0.02;
 

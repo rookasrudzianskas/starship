@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { IconShare } from '@/components/icons';
 import { SiteHeader } from '@/components/shell/SiteHeader';
+import { useWebgl2 } from '@/lib/clientState';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatDate } from '@/lib/format';
 import { runSimulation } from '@/lib/sim/client';
@@ -12,6 +13,7 @@ import type { FlightEvent } from '@/lib/sim/types';
 import { AS_FLOWN, isModified, isSkipping, useReplay, type CameraMode } from '@/lib/store/replay';
 import { replayAddress, setReplayAddress } from '@/lib/store/replayAddress';
 import { encodeScenario, linkOf, readRunLink, runLinkSearch } from '@/lib/store/runLink';
+import { sideBySide } from '@/lib/telemetry';
 import { CameraBar, nextEventTime, PlaybackControls, previousEventTime, toggleFullscreen, WEBCAST_SHOTS } from './Controls';
 import { DirectorPanel } from './DirectorPanel';
 import { FlightPicker } from './FlightPicker';
@@ -88,6 +90,11 @@ export function ReplayApp() {
   const scenario = useReplay((s) => s.scenario);
   const camera = useReplay((s) => s.camera);
   const reduceMotion = useReplay((s) => s.settings.reduceMotion);
+  // The 3D view is split between the vehicles, and titles each half itself.
+  const webgl = useWebgl2();
+  const split = useReplay(
+    (s) => webgl && s.settings.quality !== 'off' && (s.camera === 'chase' || s.camera === 'free') && s.follow === 'both' && s.result !== null && sideBySide(s.result, s.t),
+  );
   const [toast, setToast] = useState<string | null>(null);
   const [linkToCopy, setLinkToCopy] = useState<string | null>(null);
   const flight = getFlight(flightN);
@@ -379,6 +386,9 @@ export function ReplayApp() {
   }, [share]);
 
   const vehicles = [flight.boosterId ? `Super Heavy ${flight.boosterId}` : 'Super Heavy', flight.shipId ? `Starship ${flight.shipId}` : 'Starship'];
+  // The vehicle names over the view would repeat the split view's own titles. Hidden rather than removed, so the
+  // controls keep their places and the shots their framing (Stage.tsx measures these labels).
+  const namesStyle: React.CSSProperties | undefined = split ? { visibility: 'hidden' } : undefined;
 
   return (
     <>
@@ -397,7 +407,7 @@ export function ReplayApp() {
       <main className={styles.replay} ref={rootRef} aria-label="Flight replay" data-reduce-motion={reduceMotion || undefined}>
         <div className={styles.stage}>
           <Stage />
-          <div className={styles.stageLabels} aria-hidden="true">
+          <div className={styles.stageLabels} aria-hidden="true" style={namesStyle}>
             <span>{vehicles[0]}</span>
             <span>{vehicles[1]}</span>
           </div>
@@ -407,7 +417,7 @@ export function ReplayApp() {
           </Link>
           {/* Inside the stage: on phones the bar sits at the bottom of the 3D view, above the HUD. */}
           <div className={styles.topBar}>
-            <div className={styles.topLabel}>
+            <div className={styles.topLabel} style={namesStyle}>
               <span>{vehicles[0]}</span> · <span>{vehicles[1]}</span>
             </div>
             <CameraBar />

@@ -965,10 +965,12 @@ kbd.key {
 
 /* ------------------------------------------------------------------ hint */
 
+/* Below the split view's frame titles, which the stage draws just under the camera bar (two lines of labels on
+   narrow desktops). */
 .hint {
   position: absolute;
   left: 20px;
-  top: 52px;
+  top: 76px;
   z-index: 13;
   display: flex;
   align-items: center;
