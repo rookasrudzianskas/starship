@@ -24,25 +24,28 @@ export function enuAt(p: V3, east: THREE.Vector3, north: THREE.Vector3, up: THRE
   north.crossVectors(up, east).normalize();
 }
 
+// Scratch for the helpers below, which run several times per frame.
+const sEast = new THREE.Vector3();
+const sNorth = new THREE.Vector3();
+const sUp = new THREE.Vector3();
+const sBasis = new THREE.Matrix4();
+
 /** Rotation that maps a local frame (+X east, +Y up, +Z south; right-handed) to ECEF at p. */
 export function enuQuaternion(p: V3, out: THREE.Quaternion): THREE.Quaternion {
-  const e = new THREE.Vector3();
-  const n = new THREE.Vector3();
-  const u = new THREE.Vector3();
-  enuAt(p, e, n, u);
-  const m = new THREE.Matrix4().makeBasis(e, u, n.negate());
-  return out.setFromRotationMatrix(m);
+  enuAt(p, sEast, sNorth, sUp);
+  sBasis.makeBasis(sEast, sUp, sNorth.negate());
+  return out.setFromRotationMatrix(sBasis);
 }
 
-/** p + east*e + north*n + up*u, in ECEF. */
+/** p + east*e + north*n + up*u, in ECEF. `out` may be `p`. */
 export function offsetEnu(p: V3, e: number, n: number, u: number, out: V3): V3 {
-  const east = new THREE.Vector3();
-  const north = new THREE.Vector3();
-  const up = new THREE.Vector3();
-  enuAt(p, east, north, up);
-  out[0] = p[0] + east.x * e + north.x * n + up.x * u;
-  out[1] = p[1] + east.y * e + north.y * n + up.y * u;
-  out[2] = p[2] + east.z * e + north.z * n + up.z * u;
+  enuAt(p, sEast, sNorth, sUp);
+  const x = p[0] + sEast.x * e + sNorth.x * n + sUp.x * u;
+  const y = p[1] + sEast.y * e + sNorth.y * n + sUp.y * u;
+  const z = p[2] + sEast.z * e + sNorth.z * n + sUp.z * u;
+  out[0] = x;
+  out[1] = y;
+  out[2] = z;
   return out;
 }
 

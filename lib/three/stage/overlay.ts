@@ -1,12 +1,24 @@
+/** One label's elements and what was last written to them (DOM writes only on change). */
+interface Label {
+  el: HTMLDivElement;
+  dot: HTMLElement | null;
+  title: HTMLElement;
+  sub: HTMLElement;
+  color: string;
+  x: number;
+  y: number;
+  shown: boolean;
+}
+
 /** DOM layer over the canvas for vehicle labels, event-gate labels and the small-frame chrome. */
 export class Overlay {
   readonly root: HTMLDivElement;
-  private readonly labels = new Map<string, HTMLDivElement>();
+  private readonly labels = new Map<string, Label>();
   private readonly used = new Set<string>();
   private readonly frames = new Map<string, HTMLDivElement>();
   private readonly usedFrames = new Set<string>();
 
-  constructor(parent: HTMLElement) {
+  constructor() {
     this.root = document.createElement('div');
     Object.assign(this.root.style, {
       position: 'absolute',
@@ -16,7 +28,17 @@ export class Overlay {
       zIndex: '2',
       fontFamily: 'var(--font)',
     } satisfies Partial<CSSStyleDeclaration>);
-    parent.appendChild(this.root);
+  }
+
+  /** Put the layer in `parent` (moving it from wherever it was). */
+  mount(parent: HTMLElement): void {
+    if (this.root.parentElement !== parent) parent.appendChild(this.root);
+  }
+
+  /** Hide everything (nothing to label). */
+  clear(): void {
+    this.begin();
+    this.end();
   }
 
   /** Start a frame: everything not placed again before `end()` is hidden. */
@@ -26,9 +48,9 @@ export class Overlay {
   }
 
   label(id: string, x: number, y: number, title: string, sub: string, color: string, kind: 'vehicle' | 'gate'): void {
-    let el = this.labels.get(id);
-    if (!el) {
-      el = document.createElement('div');
+    let l = this.labels.get(id);
+    if (!l) {
+      const el = document.createElement('div');
       Object.assign(el.style, {
         position: 'absolute',
         left: '0',
@@ -47,18 +69,28 @@ export class Overlay {
       const span = el.querySelector('span') as HTMLElement;
       Object.assign(span.style, { marginLeft: '8px', fontSize: '9.5px', opacity: '0.75' });
       this.root.appendChild(el);
-      this.labels.set(id, el);
+      l = { el, dot, title: b, sub: span, color: '', x: NaN, y: NaN, shown: false };
+      this.labels.set(id, l);
     }
-    const dot = el.querySelector('i');
-    if (dot) (dot as HTMLElement).style.background = color;
-    const b = el.querySelector('b') as HTMLElement;
-    if (b.textContent !== title) b.textContent = title;
-    b.style.color = kind === 'gate' ? color : '#fff';
-    const span = el.querySelector('span') as HTMLElement;
-    if (span.textContent !== sub) span.textContent = sub;
-    span.style.color = kind === 'gate' ? color : '#fff';
-    el.style.transform = `translate(${Math.round(x + (kind === 'vehicle' ? -3 : 10))}px, ${Math.round(y - 7)}px)`;
-    el.style.display = 'block';
+    if (l.color !== color) {
+      l.color = color;
+      if (l.dot) l.dot.style.background = color;
+      l.title.style.color = kind === 'gate' ? color : '#fff';
+      l.sub.style.color = kind === 'gate' ? color : '#fff';
+    }
+    if (l.title.textContent !== title) l.title.textContent = title;
+    if (l.sub.textContent !== sub) l.sub.textContent = sub;
+    const px = Math.round(x + (kind === 'vehicle' ? -3 : 10));
+    const py = Math.round(y - 7);
+    if (px !== l.x || py !== l.y) {
+      l.x = px;
+      l.y = py;
+      l.el.style.transform = `translate(${px}px, ${py}px)`;
+    }
+    if (!l.shown) {
+      l.shown = true;
+      l.el.style.display = 'block';
+    }
     this.used.add(id);
   }
 
@@ -117,14 +149,19 @@ export class Overlay {
   }
 
   end(): void {
-    for (const [id, el] of this.labels) if (!this.used.has(id)) el.style.display = 'none';
+    for (const [id, l] of this.labels) {
+      if (l.shown && !this.used.has(id)) {
+        l.shown = false;
+        l.el.style.display = 'none';
+      }
+    }
     for (const [id, el] of this.frames) if (!this.usedFrames.has(id)) el.style.display = 'none';
   }
 
   clearGates(): void {
-    for (const [id, el] of this.labels) {
+    for (const [id, l] of this.labels) {
       if (id.startsWith('gate:')) {
-        el.remove();
+        l.el.remove();
         this.labels.delete(id);
       }
     }
