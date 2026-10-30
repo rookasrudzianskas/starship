@@ -69,9 +69,9 @@ export default function AboutPage() {
 
           <h2 className={styles.h2}>Watching</h2>
           <p>
-            The webcast camera cuts between ground trackers and onboard views like the broadcast does, or you can pin one view.
-            Chase follows a vehicle, Free lets you fly the camera around, and Globe shows both trajectories over the whole Earth
-            with event markers. Everything is scrubbable: drag the timeline, step event by event with [ and ], or skip long
+            The webcast camera cuts between trackers on the ground and in the air and onboard views like the broadcast does, or
+            you can pin one view; drag or scroll it to take over with the free camera. Chase rides alongside a vehicle, Free lets
+            you fly the camera around, and Globe shows both trajectories over the whole Earth with event markers. Everything is scrubbable: drag the timeline, step event by event with [ and ], or skip long
             coasts. Press ? for every shortcut. The sync button keeps the replay on the clock of a live webcast, so you can follow
             along during a launch. The <Link href="/compare">compare</Link> view puts all fourteen flights on shared axes, and every
             flight downloads as a CSV from the <Link href="/flights">flights</Link> list.

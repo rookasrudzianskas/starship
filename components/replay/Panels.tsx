@@ -76,7 +76,7 @@ export function SettingsPanel() {
           Event callouts
         </Toggle>
         <Toggle checked={settings.reduceMotion} onChange={set('reduceMotion')}>
-          Reduce motion (no camera shake or cuts)
+          Reduce motion (no camera shake; views change at once)
         </Toggle>
       </div>
       <div className={styles.section}>
@@ -91,7 +91,7 @@ export function SettingsPanel() {
           Engines-off coast and impact point
         </Toggle>
         <Toggle checked={settings.showGates} onChange={set('showGates')}>
-          Event markers
+          Event markers on the globe
         </Toggle>
         <Toggle checked={settings.showLabels} onChange={set('showLabels')}>
           Vehicle labels from afar
@@ -113,12 +113,39 @@ const SHORTCUTS: [string[], string][] = [
   [['G'], 'Globe view on or off'],
   [['V'], 'Follow both, the booster or the ship'],
   [['P'], 'Small frame on or off'],
-  [['R'], 'Reset the free camera (or the globe)'],
+  [['R'], 'Reset the cameras you turned or zoomed'],
   [['K'], 'Flight director: take control'],
   [['F'], 'Full screen'],
   [['S'], 'Copy a link to this moment'],
   [['?'], 'This list'],
 ];
+
+/** Pointer input over the 3D view, as lib/three/stage handles it (a second finger pans, a pinch zooms). */
+const POINTER: [string[], string][] = [
+  [['Drag'], 'Turn the camera (the webcast hands over to Free)'],
+  [['Right-drag', 'Two fingers'], 'Pan the free camera, tilt the globe'],
+  [['Scroll', 'Pinch'], 'Zoom'],
+  [['Double-click'], 'Recentre the free camera, reset the globe'],
+];
+
+function KeyList({ items }: { items: [string[], string][] }) {
+  return (
+    <dl className={styles.keys}>
+      {items.map(([keys, text]) => (
+        <div key={text} style={{ display: 'contents' }}>
+          <dt>
+            {keys.map((k) => (
+              <kbd key={k} className={styles.key}>
+                {k}
+              </kbd>
+            ))}
+          </dt>
+          <dd>{text}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export function HelpDialog() {
   const open = useReplay((s) => s.panel === 'help');
@@ -152,24 +179,11 @@ export function HelpDialog() {
 
   return (
     <div className={styles.dialogBackdrop} onPointerDown={(e) => e.target === e.currentTarget && setPanel('none')}>
-      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="help-title" onKeyDown={onKeyDown}>
-        <h2 className={styles.dialogTitle} id="help-title">
-          Keyboard
-        </h2>
-        <dl className={styles.keys}>
-          {SHORTCUTS.map(([keys, text]) => (
-            <div key={text} style={{ display: 'contents' }}>
-              <dt>
-                {keys.map((k) => (
-                  <kbd key={k} className={styles.key}>
-                    {k}
-                  </kbd>
-                ))}
-              </dt>
-              <dd>{text}</dd>
-            </div>
-          ))}
-        </dl>
+      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Keyboard and mouse" onKeyDown={onKeyDown}>
+        <h2 className={styles.dialogTitle}>Keyboard</h2>
+        <KeyList items={SHORTCUTS} />
+        <h3 className={styles.dialogSubtitle}>Mouse and touch</h3>
+        <KeyList items={POINTER} />
         <button type="button" className={styles.dialogClose} onClick={() => setPanel('none')}>
           Close
         </button>

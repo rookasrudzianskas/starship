@@ -851,7 +851,8 @@
   border-radius: var(--radius);
 }
 
-.dialogTitle {
+.dialogTitle,
+.dialogSubtitle {
   margin: 0 0 14px;
   font-weight: 700;
   font-size: 12px;
@@ -859,9 +860,14 @@
   text-transform: uppercase;
 }
 
+.dialogSubtitle {
+  margin-top: 22px;
+}
+
+/* The keys and the mouse actions share one column width, so both lists line up. */
 .keys {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: minmax(132px, auto) 1fr;
   gap: 9px 18px;
   align-items: center;
   margin: 0;

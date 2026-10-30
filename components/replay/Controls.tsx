@@ -155,8 +155,8 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       <button
         type="button"
         className={`${styles.ctl} ${styles.ctlDesk}`}
-        aria-label="Keyboard shortcuts (?)"
-        title="Keyboard shortcuts (?)"
+        aria-label="Keyboard and mouse (?)"
+        title="Keyboard and mouse (?)"
         aria-pressed={panel === 'help'}
         onClick={() => togglePanel('help')}
       >
@@ -181,26 +181,32 @@ export interface WebcastShot {
   detail: string;
 }
 
+// What each camera does is set in lib/three/stage (cameras.ts, director.ts and the shots in index.ts): keep these
+// descriptions in step with it.
 export const WEBCAST_SHOTS: WebcastShot[] = [
   { id: 'auto', label: 'Director', detail: 'Cuts between cameras like the broadcast' },
   { id: 'pad', label: 'Pad camera', detail: 'Low on the launch site, looking up' },
-  { id: 'tracking', label: 'Long-range tracker', detail: 'Ground telescope following the climb' },
-  { id: 'booster-top', label: 'Booster onboard', detail: 'Super Heavy, looking up at the ship' },
-  { id: 'booster-aft', label: 'Booster engines', detail: 'Super Heavy, looking down past the grid fins' },
-  { id: 'ship-aft', label: 'Ship aft skirt', detail: 'Starship, looking back along the flap' },
-  { id: 'ship-nose', label: 'Ship forward flap', detail: 'Starship, nose camera for entry and landing' },
-  { id: 'tower', label: 'Tower camera', detail: 'On the launch tower, for catches' },
+  { id: 'tracking', label: 'Long-range tracker', detail: 'Ground telescope, then a chase plane alongside' },
+  { id: 'booster-top', label: 'Booster top', detail: 'Super Heavy, looking up between two grid fins' },
+  { id: 'booster-aft', label: 'Booster engines', detail: 'Super Heavy, looking down the hull at the engines' },
+  { id: 'ship-aft', label: 'Ship aft flap', detail: 'Starship, looking back along the flap' },
+  { id: 'ship-nose', label: 'Ship forward flap', detail: 'Starship, looking back from a forward flap' },
+  { id: 'tower', label: 'Catch camera', detail: 'Raised beside the pad, facing the tower' },
   { id: 'buoy', label: 'Splashdown buoy', detail: 'At sea level next to the landing zone' },
 ];
 
 const CAMERAS: { id: CameraMode; label: string; title: string }[] = [
-  { id: 'chase', label: 'Chase', title: 'Behind the vehicle (C)' },
-  { id: 'free', label: 'Free', title: 'Free camera: drag to turn, right-drag to pan, scroll or pinch to zoom, double-click to recentre (R resets)' },
-  { id: 'globe', label: 'Globe', title: 'The whole Earth (G): drag to turn it, scroll to zoom' },
+  { id: 'chase', label: 'Chase', title: 'Chase: beside the vehicle; drag to turn round it, scroll or pinch to zoom (R resets)' },
+  {
+    id: 'free',
+    label: 'Free',
+    title: 'Free camera: drag to turn, right-drag or two fingers to pan, scroll or pinch to zoom, double-click to recentre (R resets)',
+  },
+  { id: 'globe', label: 'Globe', title: 'The whole Earth (G): drag to turn it, right-drag or two fingers to tilt, scroll or pinch to zoom, double-click to reset' },
 ];
 
 const FOLLOW: { id: FollowMode; label: string; title: string }[] = [
-  { id: 'both', label: 'Both', title: 'Both vehicles, side by side after separation (V)' },
+  { id: 'both', label: 'Both', title: 'Both vehicles: side by side in the chase and free cameras once they are apart (V)' },
   { id: 'booster', label: 'Booster', title: 'Follow Super Heavy only, the other in a small frame (V)' },
   { id: 'ship', label: 'Ship', title: 'Follow Starship only, the other in a small frame (V)' },
 ];
@@ -252,7 +258,7 @@ export function CameraBar() {
           aria-pressed={camera === 'webcast'}
           aria-haspopup="menu"
           aria-expanded={shotsOpen}
-          title={`The webcast's cameras: the director cuts between them, or pick one (W). Now: ${shotLabel.toLowerCase()}`}
+          title={`The webcast's cameras: the director cuts between them, or pick one (W). Drag, scroll or pinch the view to take over with the free camera. Now: ${shotLabel.toLowerCase()}`}
           onClick={() => {
             if (camera !== 'webcast') setCamera('webcast');
             else setPanel(shotsOpen ? 'none' : 'shots');
@@ -307,7 +313,7 @@ export function CameraBar() {
             {f.label}
           </button>
         ))}
-        <button type="button" className={styles.camButton} aria-pressed={pip} title="Picture in picture (P)" onClick={() => setPip(!pip)}>
+        <button type="button" className={styles.camButton} aria-pressed={pip} title="Picture in picture: a small chase view (P)" onClick={() => setPip(!pip)}>
           PiP
         </button>
       </div>
