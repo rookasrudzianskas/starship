@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { PhaseCode, Track } from '@/lib/sim/types';
-import { sampleIndex } from '@/lib/telemetry';
+// Relative so the director can be unit tested (vitest has no @/ alias).
+import { sampleIndex } from '../../telemetry';
 
 /** Everything the stage needs from one track at one instant. Reused between frames (no allocation). */
 export interface StageSample {

@@ -1,13 +1,37 @@
-import { Phase, type FlightResult, type VehicleId } from '@/lib/sim/types';
+import type { FlightResult, VehicleId } from '@/lib/sim/types';
 import type { FollowMode } from '@/lib/store/replay';
+// Relative so the director can be unit tested (vitest has no @/ alias).
+import { Phase } from '../../sim/types';
 import { firstPhaseTime } from './sample';
 
 export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-aft' | 'ship-nose' | 'buoy' | 'tower';
 
 export interface Shot {
-  id: ShotId;
-  vehicle: VehicleId;
+  readonly id: ShotId;
+  readonly vehicle: VehicleId;
 }
+
+const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower'];
+
+function shotTable(vehicle: VehicleId): Record<ShotId, Shot> {
+  const table = {} as Record<ShotId, Shot>;
+  for (const id of SHOT_IDS) table[id] = Object.freeze({ id, vehicle });
+  return table;
+}
+
+/** One shared Shot per camera and vehicle: the director runs every frame and allocates nothing. */
+const SHOTS: Record<VehicleId, Record<ShotId, Shot>> = { booster: shotTable('booster'), ship: shotTable('ship') };
+
+function shot(id: ShotId, vehicle: VehicleId): Shot {
+  return SHOTS[vehicle][id];
+}
+
+/**
+ * The long-range tracker hands over from the ground telescope near the pad (which by then sees the climbing stack
+ * end on, through its exhaust) to a chase aircraft alongside. The director's first cut to the booster's engine
+ * camera (T+57 to T+68) hides the change.
+ */
+export const AERIAL_TRACKING_FROM = 62;
 
 /** Times the director plans around, derived once per result. */
 export interface DirectorPlan {
@@ -17,6 +41,7 @@ export interface DirectorPlan {
   boosterEnd: number;
   boosterCatch: boolean;
   shipSeco: number;
+  /** Infinity for a ship that never comes back into the atmosphere. */
   shipEntry: number;
   shipLanding: number;
   shipEnd: number;
@@ -36,7 +61,7 @@ export function planDirector(r: FlightResult): DirectorPlan {
     boosterEnd: r.booster.end,
     boosterCatch: r.booster.endKind === 'catch',
     shipSeco: ev('seco') ?? (sep !== null ? sep + 360 : r.ship.end),
-    shipEntry: ev('entry') ?? r.ship.end - 1500,
+    shipEntry: ev('entry') ?? firstPhaseTime(r.ship, Phase.Entry, sep ?? 0) ?? Infinity,
     shipLanding,
     shipEnd: r.ship.end,
     shipLands: r.ship.endKind === 'splashdown',
@@ -44,16 +69,24 @@ export function planDirector(r: FlightResult): DirectorPlan {
   };
 }
 
+/** The booster's landing (or its last moments, if it doesn't land) is shown from this long before its landing burn. */
+const LANDING_LEAD = 12;
+
+/** The booster's landing window: from just before its landing burn until shortly after it is down. */
+function boosterLanding(t: number, p: DirectorPlan): boolean {
+  return t >= p.boosterLanding - LANDING_LEAD && t <= p.boosterEnd + 12;
+}
+
 function boosterShot(t: number, p: DirectorPlan): Shot {
-  if (p.boosterLands && t >= p.boosterLanding - 12) return { id: p.boosterCatch ? 'tower' : 'buoy', vehicle: 'booster' };
-  if (p.sep !== null && t < p.sep + 9) return { id: 'booster-top', vehicle: 'booster' };
-  return { id: 'booster-aft', vehicle: 'booster' };
+  if (p.boosterLands && t >= p.boosterLanding - LANDING_LEAD) return shot(p.boosterCatch ? 'tower' : 'buoy', 'booster');
+  if (p.sep !== null && t < p.sep + 9) return shot('booster-top', 'booster');
+  return shot('booster-aft', 'booster');
 }
 
 function shipShot(t: number, p: DirectorPlan): Shot {
-  if (p.shipLands && t >= p.shipLanding - 25) return { id: 'buoy', vehicle: 'ship' };
-  if (t >= p.shipEntry - 30) return { id: 'ship-nose', vehicle: 'ship' };
-  return { id: 'ship-aft', vehicle: 'ship' };
+  if (p.shipLands && t >= p.shipLanding - 25) return shot('buoy', 'ship');
+  if (t >= p.shipEntry - 30) return shot('ship-nose', 'ship');
+  return shot('ship-aft', 'ship');
 }
 
 /**
@@ -62,23 +95,22 @@ function shipShot(t: number, p: DirectorPlan): Shot {
  * the booster looking up; afterwards it follows whichever vehicle has something happening.
  */
 export function autoShot(t: number, p: DirectorPlan, follow: FollowMode): Shot {
-  if (t < 11) return { id: 'pad', vehicle: 'booster' };
+  if (t < 11) return shot('pad', 'booster');
   if (p.sep === null || t < p.sep - 7) {
     const cycle = (t - 11) % 64;
-    if (t > 40 && cycle > 46 && cycle < 57 && (p.sep === null || t < p.sep - 20)) return { id: 'booster-aft', vehicle: 'booster' };
-    return { id: 'tracking', vehicle: 'booster' };
+    if (t > 40 && cycle > 46 && cycle < 57 && (p.sep === null || t < p.sep - 20)) return shot('booster-aft', 'booster');
+    return shot('tracking', 'booster');
   }
-  if (t < p.sep + 9) return { id: 'booster-top', vehicle: 'booster' };
+  if (t < p.sep + 9) return shot('booster-top', 'booster');
 
   const boosterAlive = t <= p.boosterEnd + 20;
   const shipAlive = t <= p.shipEnd + 20;
   if (follow === 'booster') return boosterAlive || !shipAlive ? boosterShot(t, p) : shipShot(t, p);
   if (follow === 'ship') return shipAlive || !boosterAlive ? shipShot(t, p) : boosterShot(t, p);
 
-  // Both: booster during its flip/boostback and its landing, ship otherwise.
-  const boosterBusy = boosterAlive && (t < p.boostbackEnd + 6 || (t >= p.boosterLanding - 14 && t <= p.boosterEnd + 12));
-  const shipBusy = shipAlive && t < p.shipSeco + 4;
-  if (boosterBusy && !(shipBusy && t > p.boostbackEnd + 6)) return boosterShot(t, p);
+  // Both: the booster during its flip and boostback, and through its landing (the ship carries on in the small
+  // frame, as on the broadcast); the ship otherwise.
+  if (boosterAlive && (t < p.boostbackEnd + 6 || boosterLanding(t, p))) return boosterShot(t, p);
   if (shipAlive) return shipShot(t, p);
   return boosterShot(t, p);
 }
@@ -88,15 +120,17 @@ export function pickedShot(id: ShotId, t: number, p: DirectorPlan, follow: Follo
   switch (id) {
     case 'pad':
     case 'tracking':
-      return { id, vehicle: follow === 'ship' ? 'ship' : 'booster' };
+      return shot(id, follow === 'ship' ? 'ship' : 'booster');
     case 'booster-top':
     case 'booster-aft':
-      return t <= p.boosterEnd + 20 ? { id, vehicle: 'booster' } : autoShot(t, p, follow);
+      return t <= p.boosterEnd + 20 ? shot(id, 'booster') : autoShot(t, p, follow);
     case 'ship-aft':
     case 'ship-nose':
-      return t <= p.shipEnd + 20 ? { id, vehicle: 'ship' } : autoShot(t, p, follow);
-    case 'buoy':
+      return t <= p.shipEnd + 20 ? shot(id, 'ship') : autoShot(t, p, follow);
     case 'tower':
-      return { id, vehicle: follow === 'booster' ? 'booster' : 'ship' };
+      // The tower watches the booster come home.
+      return shot(id, 'booster');
+    case 'buoy':
+      return shot(id, follow === 'booster' ? 'booster' : 'ship');
   }
 }

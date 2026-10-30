@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { EARTH_RADIUS } from '@/lib/sim/types';
+// Relative so the cameras can be unit tested (vitest has no @/ alias).
+import { EARTH_RADIUS } from '../../sim/types';
 
 export type V3 = [number, number, number];
 

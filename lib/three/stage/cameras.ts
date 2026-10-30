@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { EARTH_RADIUS } from '@/lib/sim/types';
-import { copy3, damp, dist3, enuAt, offsetEnu, type V3 } from './geo';
+// Relative so the cameras can be unit tested (vitest has no @/ alias).
+import { EARTH_RADIUS } from '../../sim/types';
+import { copy3, dist3, enuAt, offsetEnu, type V3 } from './geo';
 
 export interface CameraPose {
   pos: V3;
@@ -42,26 +43,62 @@ export function fitFov(size: number, distance: number, fill: number, min = 0.25,
 /** What a camera can follow. */
 export interface Focus {
   pos: V3;
-  vel: V3;
-  quat: THREE.Quaternion;
+  /** Where it is heading over the ground: a horizontal unit vector (see course.ts). */
+  course: V3;
   /** Length of the thing being framed, m. */
   size: number;
 }
 
+/** A camera that follows a vehicle stays at least this high above the sea (the pad's ground is 3 m up), m. */
+export const MIN_CAMERA_ALTITUDE = 10;
+
 const east = new THREE.Vector3();
 const north = new THREE.Vector3();
 const up = new THREE.Vector3();
+const fwd = new THREE.Vector3();
+const right = new THREE.Vector3();
 const tmp = new THREE.Vector3();
 const tmp2 = new THREE.Vector3();
+const orbitTarget: V3 = [0, 0, 0];
+const globeLook: V3 = [0, 0, 0];
 
-/** Orbit-style offset in the target's local east/north/up frame. */
+/** Lowest elevation (radians) at which a camera `dist` m from a point `alt` m up stays MIN_CAMERA_ALTITUDE up. */
+function minElevation(alt: number, dist: number): number {
+  return Math.asin(Math.min(1, Math.max(-1, (MIN_CAMERA_ALTITUDE - alt) / Math.max(1, dist))));
+}
+
+/** Orbit-style offset in the target's local east/north/up frame (azimuth clockwise from north), kept off the ground. */
 function orbitOffset(target: V3, azDeg: number, elDeg: number, dist: number, out: V3): V3 {
   const az = (azDeg * Math.PI) / 180;
-  const el = (elDeg * Math.PI) / 180;
+  const alt = Math.hypot(target[0], target[1], target[2]) - EARTH_RADIUS;
+  const el = Math.max((elDeg * Math.PI) / 180, minElevation(alt, dist));
   const e = Math.sin(az) * Math.cos(el) * dist;
   const n = Math.cos(az) * Math.cos(el) * dist;
   const u = Math.sin(el) * dist;
   return offsetEnu(target, e, n, u, out);
+}
+
+/**
+ * Offset from a vehicle in the frame of its course: `azDeg` from straight behind round to its right-hand side,
+ * `elDeg` above the local horizontal (raised where needed to stay off the ground), `dist` metres away. Leaves the
+ * local up at the vehicle in `up`.
+ */
+function besideOffset(f: Focus, azDeg: number, elDeg: number, dist: number, out: V3): V3 {
+  up.set(f.pos[0], f.pos[1], f.pos[2]);
+  const r = up.length();
+  up.divideScalar(r);
+  fwd.set(f.course[0], f.course[1], f.course[2]);
+  right.crossVectors(fwd, up);
+  const az = (azDeg * Math.PI) / 180;
+  const el = Math.max((elDeg * Math.PI) / 180, minElevation(r - EARTH_RADIUS, dist));
+  const h = Math.cos(el) * dist;
+  const back = -Math.cos(az) * h;
+  const side = Math.sin(az) * h;
+  const lift = Math.sin(el) * dist;
+  out[0] = f.pos[0] + fwd.x * back + right.x * side + up.x * lift;
+  out[1] = f.pos[1] + fwd.y * back + right.y * side + up.y * lift;
+  out[2] = f.pos[2] + fwd.z * back + right.z * side + up.z * lift;
+  return out;
 }
 
 export interface DragInput {
@@ -70,20 +107,32 @@ export interface DragInput {
   button: number;
 }
 
+/** Zoom per pixel of wheel travel: each camera's distance scales by exp(delta * WHEEL_ZOOM). */
+export const WHEEL_ZOOM = 0.0012;
+
+// Every camera turns with the pointer, as if the scene were held: dragging right swings the view round to the
+// left of what it looks at, dragging down raises it.
+
 // ---------------------------------------------------------------- chase
 
+/**
+ * Where the chase camera sits by default: off the vehicle's right-hand side, a little behind and above, so it sees
+ * the vehicle side on (the way the broadcast's tracking views show it) and never looks up its exhaust.
+ */
+const CHASE_AZIMUTH = 70;
+const CHASE_ELEVATION = 8;
+
 export class ChaseCamera {
+  /** The viewer's turn round the vehicle away from the default side view, degrees. */
   azimuth = 0;
-  elevation = 12;
+  /** Degrees above the vehicle's horizon. */
+  elevation = CHASE_ELEVATION;
   zoom = 1;
-  private smoothedBack = new THREE.Vector3();
-  private initialised = false;
 
   reset(): void {
     this.azimuth = 0;
-    this.elevation = 12;
+    this.elevation = CHASE_ELEVATION;
     this.zoom = 1;
-    this.initialised = false;
   }
 
   drag(d: DragInput): void {
@@ -92,36 +141,24 @@ export class ChaseCamera {
   }
 
   wheel(delta: number): void {
-    this.zoom = Math.min(25, Math.max(0.25, this.zoom * Math.exp(delta * 0.0012)));
+    this.zoom = Math.min(25, Math.max(0.25, this.zoom * Math.exp(delta * WHEEL_ZOOM)));
   }
 
-  pose(f: Focus, dt: number, out: CameraPose): CameraPose {
-    enuAt(f.pos, east, north, up);
-    // "Behind" = against the direction of travel; on the pad, look from the south-west.
-    tmp.set(f.vel[0], f.vel[1], f.vel[2]);
-    if (tmp.lengthSq() < 25) tmp.copy(north).multiplyScalar(0.6).add(tmp2.copy(east).multiplyScalar(0.8));
-    tmp.normalize().negate();
-    if (!this.initialised || dt > 0.5) {
-      this.smoothedBack.copy(tmp);
-      this.initialised = true;
-    } else {
-      this.smoothedBack.lerp(tmp, damp(0.6, dt)).normalize();
-    }
-    // Rotate the back vector by the user's azimuth/elevation around local up / the side axis.
-    const back = tmp.copy(this.smoothedBack);
-    back.applyAxisAngle(up, (this.azimuth * Math.PI) / 180);
-    const side = tmp2.crossVectors(back, up);
-    if (side.lengthSq() > 1e-8) back.applyAxisAngle(side.normalize(), (this.elevation * Math.PI) / 180);
-    const dist = f.size * 2.4 * this.zoom + 20;
-    out.pos[0] = f.pos[0] + back.x * dist;
-    out.pos[1] = f.pos[1] + back.y * dist;
-    out.pos[2] = f.pos[2] + back.z * dist;
+  /**
+   * A pure function of the focus, so a paused view settles at once and a seek lands on the final framing.
+   * `reach` scales the distance: a frame with less free height (page controls over it) stands further back.
+   */
+  pose(f: Focus, out: CameraPose, reach = 1): CameraPose {
+    const dist = f.size * 2.4 * this.zoom * reach + 20;
+    besideOffset(f, CHASE_AZIMUTH + this.azimuth, this.elevation, dist, out.pos);
     out.fov = 40;
     return lookAt(out, f.pos, up);
   }
 }
 
 // ----------------------------------------------------------------- free
+
+const FREE_FOV = 45;
 
 export class FreeCamera {
   azimuth = 215;
@@ -140,31 +177,45 @@ export class FreeCamera {
     if (d.button === 2) {
       const scale = Math.max(this.distance, size * 2) * 0.0016;
       const az = (this.azimuth * Math.PI) / 180;
-      // Pan in the local horizontal plane relative to the view direction, and vertically.
-      this.pan[0] -= (Math.cos(az) * d.dx) * scale;
-      this.pan[1] += (Math.sin(az) * d.dx) * scale;
+      // Pan in the local horizontal plane relative to the view direction, and vertically: the scene follows the
+      // pointer both ways.
+      this.pan[0] += Math.cos(az) * d.dx * scale;
+      this.pan[1] -= Math.sin(az) * d.dx * scale;
       this.pan[2] += d.dy * scale;
       return;
     }
-    this.azimuth -= d.dx * 0.3;
+    this.azimuth += d.dx * 0.3;
     this.elevation = Math.min(89, Math.max(-89, this.elevation + d.dy * 0.25));
   }
 
   wheel(delta: number, size: number): void {
     const base = this.distance || size * 2.6 + 30;
-    this.distance = Math.min(5e7, Math.max(size * 0.6 + 5, base * Math.exp(delta * 0.0012)));
+    this.distance = Math.min(5e7, Math.max(size * 0.6 + 5, base * Math.exp(delta * WHEEL_ZOOM)));
   }
 
   recentre(): void {
     this.pan = [0, 0, 0];
   }
 
+  /** Take over a view: orbit the focus from where it is seen now, at the distance that keeps its size on screen. */
+  takeOver(p: CameraPose, f: Focus): void {
+    enuAt(f.pos, east, north, up);
+    tmp.set(p.pos[0] - f.pos[0], p.pos[1] - f.pos[1], p.pos[2] - f.pos[2]);
+    const d = tmp.length();
+    if (d < 1) return;
+    this.azimuth = (Math.atan2(tmp.dot(east), tmp.dot(north)) * 180) / Math.PI;
+    this.elevation = Math.min(89, Math.max(-89, (Math.asin(tmp.dot(up) / d) * 180) / Math.PI));
+    this.pan = [0, 0, 0];
+    const lens = Math.tan((p.fov * Math.PI) / 360) / Math.tan((FREE_FOV * Math.PI) / 360);
+    this.distance = Math.min(5e7, Math.max(f.size * 0.6 + 5, d * lens));
+  }
+
   pose(f: Focus, out: CameraPose): CameraPose {
     const dist = this.distance || f.size * 2.6 + 30;
-    const target: V3 = offsetEnu(f.pos, this.pan[0], this.pan[1], this.pan[2], [0, 0, 0]);
+    const target = offsetEnu(f.pos, this.pan[0], this.pan[1], this.pan[2], orbitTarget);
     orbitOffset(target, this.azimuth, this.elevation, dist, out.pos);
     enuAt(target, east, north, up);
-    out.fov = 45;
+    out.fov = FREE_FOV;
     return lookAt(out, target, up);
   }
 }
@@ -176,15 +227,24 @@ export class GlobeCamera {
   lat = 0;
   distance = EARTH_RADIUS * 2.7;
   tilt = 0;
+  /** Centred for this visit to the globe. */
   private centred = false;
+  /** The viewer has turned or zoomed it: coming back to the globe keeps their view. */
+  private moved = false;
 
   reset(): void {
     this.centred = false;
+    this.moved = false;
     this.distance = EARTH_RADIUS * 2.7;
     this.tilt = 0;
   }
 
-  /** Centre the view over an ECEF point the first time the globe is shown. */
+  /** The globe view is shown again: centre it afresh on what is followed, unless the viewer has turned it. */
+  enter(): void {
+    if (!this.moved) this.centred = false;
+  }
+
+  /** Centre the view over an ECEF point, once per visit (see enter()). */
   centreOn(p: V3): void {
     if (this.centred) return;
     const r = Math.hypot(p[0], p[1], p[2]);
@@ -194,6 +254,7 @@ export class GlobeCamera {
   }
 
   drag(d: DragInput): void {
+    this.moved = true;
     const k = (this.distance / EARTH_RADIUS - 1) * 0.12 + 0.02;
     if (d.button === 2) {
       this.tilt = Math.min(70, Math.max(0, this.tilt + d.dy * 0.2));
@@ -204,34 +265,41 @@ export class GlobeCamera {
   }
 
   wheel(delta: number): void {
+    this.moved = true;
     const alt = this.distance - EARTH_RADIUS;
-    this.distance = EARTH_RADIUS + Math.min(EARTH_RADIUS * 9, Math.max(250_000, alt * Math.exp(delta * 0.0012)));
+    this.distance = EARTH_RADIUS + Math.min(EARTH_RADIUS * 9, Math.max(250_000, alt * Math.exp(delta * WHEEL_ZOOM)));
   }
 
   pose(out: CameraPose): CameraPose {
     const lat = (this.lat * Math.PI) / 180;
     const lon = (this.lon * Math.PI) / 180;
-    const center: V3 = [0, 0, 0];
-    const surface: V3 = [Math.cos(lat) * Math.cos(lon), Math.cos(lat) * Math.sin(lon), Math.sin(lat)];
-    // Tilt: move the eye south of the look point and aim at a point above the surface.
-    const tiltRad = (this.tilt * Math.PI) / 180;
-    const alt = this.distance - EARTH_RADIUS;
-    const look: V3 = this.tilt > 0 ? [surface[0] * EARTH_RADIUS, surface[1] * EARTH_RADIUS, surface[2] * EARTH_RADIUS] : center;
+    const sx = Math.cos(lat) * Math.cos(lon);
+    const sy = Math.cos(lat) * Math.sin(lon);
+    const sz = Math.sin(lat);
     if (this.tilt > 0) {
-      enuAt(look, east, north, up);
+      // Tilt: move the eye south of the look point and aim at the surface below it.
+      const tiltRad = (this.tilt * Math.PI) / 180;
+      const alt = this.distance - EARTH_RADIUS;
+      globeLook[0] = sx * EARTH_RADIUS;
+      globeLook[1] = sy * EARTH_RADIUS;
+      globeLook[2] = sz * EARTH_RADIUS;
+      enuAt(globeLook, east, north, up);
       const back = Math.sin(tiltRad) * alt;
       const height = Math.cos(tiltRad) * alt;
-      out.pos[0] = look[0] - north.x * back + up.x * height;
-      out.pos[1] = look[1] - north.y * back + up.y * height;
-      out.pos[2] = look[2] - north.z * back + up.z * height;
+      out.pos[0] = globeLook[0] - north.x * back + up.x * height;
+      out.pos[1] = globeLook[1] - north.y * back + up.y * height;
+      out.pos[2] = globeLook[2] - north.z * back + up.z * height;
     } else {
-      out.pos[0] = surface[0] * this.distance;
-      out.pos[1] = surface[1] * this.distance;
-      out.pos[2] = surface[2] * this.distance;
+      globeLook[0] = 0;
+      globeLook[1] = 0;
+      globeLook[2] = 0;
+      out.pos[0] = sx * this.distance;
+      out.pos[1] = sy * this.distance;
+      out.pos[2] = sz * this.distance;
     }
     up.set(0, 0, 1);
     out.fov = 38;
-    return lookAt(out, look, up);
+    return lookAt(out, globeLook, up);
   }
 }
 
@@ -243,6 +311,16 @@ export function trackerPose(site: V3, f: Focus, fill: number, minFov: number, ma
   const d = dist3(site, f.pos);
   out.fov = fitFov(f.size, d, fill, minFov, maxFov);
   enuAt(site, east, north, up);
+  return lookAt(out, f.pos, up);
+}
+
+/**
+ * A camera flying alongside a vehicle with a long lens (a tracking aircraft): `dist` m away, `azDeg` from straight
+ * behind round to its right-hand side and `elDeg` above its horizon, zoomed so it fills `fill` of the frame height.
+ */
+export function alongsidePose(f: Focus, azDeg: number, elDeg: number, dist: number, fill: number, minFov: number, maxFov: number, out: CameraPose): CameraPose {
+  besideOffset(f, azDeg, elDeg, dist, out.pos);
+  out.fov = fitFov(f.size, dist, fill, minFov, maxFov);
   return lookAt(out, f.pos, up);
 }
 
@@ -260,10 +338,48 @@ export function onboardPose(base: V3, quat: THREE.Quaternion, local: THREE.Vecto
   return out;
 }
 
-/** Ease between two poses (position in float64, slerped orientation). */
+// --------------------------------------------------------------- blends
+
+/** Smoothstep ease of a blend's progress. */
+function ease(f: number): number {
+  return f * f * (3 - 2 * f);
+}
+
+/**
+ * Ease between two nearby poses (position in float64, slerped orientation). Views of a moving vehicle are blended
+ * with `a` carried along with it (see the stage), so the camera never falls behind.
+ */
 export function blendPose(a: CameraPose, b: CameraPose, f: number, out: CameraPose): CameraPose {
-  const e = f * f * (3 - 2 * f);
+  const e = ease(f);
   for (let k = 0; k < 3; k++) out.pos[k] = a.pos[k] + (b.pos[k] - a.pos[k]) * e;
+  out.quat.slerpQuaternions(a.quat, b.quat, e);
+  out.fov = a.fov + (b.fov - a.fov) * e;
+  return out;
+}
+
+const dirA = new THREE.Vector3();
+const dirB = new THREE.Vector3();
+const swing = new THREE.Quaternion();
+const noSwing = new THREE.Quaternion();
+
+/**
+ * Ease between two poses far apart round the Earth (into or out of the globe view): the camera swings round the
+ * Earth's centre instead of cutting through the planet, and climbs or descends evenly in log altitude.
+ */
+export function blendAround(a: CameraPose, b: CameraPose, f: number, out: CameraPose): CameraPose {
+  const e = ease(f);
+  dirA.set(a.pos[0], a.pos[1], a.pos[2]);
+  dirB.set(b.pos[0], b.pos[1], b.pos[2]);
+  const altA = Math.max(1, dirA.length() - EARTH_RADIUS);
+  const altB = Math.max(1, dirB.length() - EARTH_RADIUS);
+  dirA.normalize();
+  dirB.normalize();
+  swing.setFromUnitVectors(dirA, dirB);
+  dirA.applyQuaternion(noSwing.identity().slerp(swing, e));
+  const r = EARTH_RADIUS + Math.exp(Math.log(altA) + (Math.log(altB) - Math.log(altA)) * e);
+  out.pos[0] = dirA.x * r;
+  out.pos[1] = dirA.y * r;
+  out.pos[2] = dirA.z * r;
   out.quat.slerpQuaternions(a.quat, b.quat, e);
   out.fov = a.fov + (b.fov - a.fov) * e;
   return out;

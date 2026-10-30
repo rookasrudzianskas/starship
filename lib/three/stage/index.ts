@@ -8,9 +8,10 @@ import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm 
 import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
 import { boosterCatchHeight, createBooster, createShip, prefetchProceduralTextures } from '@/lib/three/vehicles';
 import type { EarthFrame, Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
-import { blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, type CameraPose, type DragInput, type Focus } from './cameras';
+import { alongsidePose, blendAround, blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, WHEEL_ZOOM, type CameraPose, type DragInput, type Focus } from './cameras';
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
-import { autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
+import { computeCourse, courseAt } from './course';
+import { AERIAL_TRACKING_FROM, autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
 import { copy3, damp, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
 import { Overlay } from './overlay';
 import { EventGates, TrajectoryLines, type GateMark } from './paths';
@@ -37,6 +38,11 @@ export interface StageHandle {
   detach(host: HTMLElement): void;
   /** Called every animation frame by the replay clock; draws only when something visible changed. */
   render(t: number, dt: number): void;
+  /**
+   * How far page controls reach over the top and bottom of the view (CSS px): shots frame their subject in the
+   * height left between them.
+   */
+  setInsets(top: number, bottom: number): void;
   resetCamera(): void;
   dispose(): void;
 }
@@ -76,6 +82,8 @@ interface Rig {
   splash: Splash | null;
   touchdown: number | null;
   coast: CoastPrediction;
+  /** Where the vehicle is heading over the ground, per sample of its track (see course.ts). */
+  course: Float32Array;
 }
 
 function makeRig(id: VehicleId): Rig {
@@ -104,6 +112,7 @@ function makeRig(id: VehicleId): Rig {
     splash: null,
     touchdown: null,
     coast: createCoastPrediction(COAST_POINTS),
+    course: new Float32Array(0),
   };
 }
 
@@ -138,6 +147,16 @@ const PLUME_EXPOSURE = 1.3;
 const PIP_WIDTH = 320;
 const PIP_ASPECT = 0.62;
 const PIP_HEIGHT = Math.round(PIP_WIDTH * PIP_ASPECT);
+/** Size of a vehicle's breakup (the explosion's scale, m): cameras widen out to its debris cloud. */
+const BREAKUP_SCALE: Record<VehicleId, number> = { booster: 70, ship: 50 };
+/** Size of the body making a splash (the effect's scale, m), and how much wider cameras frame while its spray is up. */
+const SPLASH_SCALE: Record<VehicleId, number> = { booster: 72, ship: 52 };
+const SPLASH_SPREAD: Record<VehicleId, number> = { booster: 140, ship: 120 };
+/**
+ * Free height (fraction of the frame) the chase distance is made for: frames with less, because page controls
+ * cover more of them, stand further back.
+ */
+const CHASE_BAND = 0.6;
 
 const v1 = new THREE.Vector3();
 const v2 = new THREE.Vector3();
@@ -151,6 +170,21 @@ const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const site: V3 = [0, 0, 0];
 const endPos: V3 = [0, 0, 0];
 const pt = { x: 0, y: 0 };
+/** The opening shot, for the moment before the director has a plan. */
+const PAD_SHOT: Shot = { id: 'pad', vehicle: 'booster' };
+/** Height of one row of labels over the view, CSS px. */
+const LABEL_ROW = 15;
+
+/** Width of a letter of a label's title (vehicles, event gates) and of its second part, CSS px (see overlay.ts). */
+const LABEL_CHAR_VEHICLE = 9;
+const LABEL_CHAR_GATE = 8.6;
+const LABEL_CHAR_SUB = 8;
+
+/** About how wide a label is (CSS px): worked out from its letters, not read back from the page every frame. */
+function labelWidth(title: string, sub: string, kind: 'vehicle' | 'gate'): number {
+  const head = kind === 'vehicle' ? 15 + title.length * LABEL_CHAR_VEHICLE : title.length * LABEL_CHAR_GATE;
+  return Math.ceil(head + (sub ? 8 + sub.length * LABEL_CHAR_SUB : 0));
+}
 
 /** Ray from a to b passes through the Earth before reaching b. */
 function hiddenByEarth(a: V3, b: V3): boolean {
@@ -235,6 +269,8 @@ export function createStage(): StageHandle {
   let width = 1;
   let height = 1;
   let dprSeen = 0;
+  /** How far page controls reach over the top and bottom of the view (CSS px; see setInsets). */
+  const insets = { top: 0, bottom: 0 };
 
   // ------------------------------------------------------------ lifecycle
   let host: HTMLElement | null = null;
@@ -257,7 +293,6 @@ export function createStage(): StageHandle {
   let changedAt = -Infinity;
   const drawnPose = createPose();
   const drawnLeft = createPose();
-  const drawnRight = createPose();
   const drawnPip = createPose();
   const drawnLayout = { split: false, pip: '', w: 0, h: 0 };
   const seen = { settings: null as unknown, camera: '', follow: '', shot: '', pip: false, textures: -1, geometries: -1 };
@@ -327,7 +362,7 @@ export function createStage(): StageHandle {
   const earthFrame: EarthFrame = { cameraEcef: [0, 0, 0], camera, sunDir, time: 0 };
   /** Frame titles and gate labels for the current flight, made once per result rather than every frame. */
   const titles = { booster: '', ship: '', stack: 'Super Heavy · Starship' };
-  const gateLabels = new WeakMap<GateMark, { id: string; time: string; color: string }>();
+  const gateLabels = new WeakMap<GateMark, { id: string; time: string; color: string; width: number }>();
 
   function createEarthFor(p: PadId) {
     const e = createEarth({ renderer, scene, quality, pad: p });
@@ -461,6 +496,7 @@ export function createStage(): StageHandle {
 
     for (const rig of rigs) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
+      rig.course = computeCourse(track);
       rig.engines = new Uint8Array((rig.id === 'booster' ? result.boosterEngines : result.shipEngines).slots.length);
       rig.visual.engines = new Uint8Array(rig.engines.length);
       const ends = track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact';
@@ -471,7 +507,7 @@ export function createStage(): StageHandle {
           added = true;
         }
         const alt = track.alt[track.n - 1];
-        rig.explosion.trigger(rig.id === 'booster' ? 70 : 50, Math.exp(-Math.max(0, alt) / 8500));
+        rig.explosion.trigger(BREAKUP_SCALE[rig.id], Math.exp(-Math.max(0, alt) / 8500));
       }
       rig.touchdown = firstPhaseTime(track, Phase.Splashed);
       if (rig.touchdown !== null && !rig.splash) {
@@ -497,6 +533,7 @@ export function createStage(): StageHandle {
     if (newFlight) {
       globe.reset();
       free.reset();
+      freeLeft.reset();
     }
     current = result;
     currentBaseline = baseline;
@@ -589,57 +626,155 @@ export function createStage(): StageHandle {
   // ------------------------------------------------------------- cameras
   const chase = new ChaseCamera();
   const chasePip = new ChaseCamera();
-  const chaseLeft = new ChaseCamera();
-  const chaseRight = new ChaseCamera();
   const free = new FreeCamera();
+  /** The split view's left half, on the booster; the right half is the main camera, on the ship. */
+  const chaseLeft = new ChaseCamera();
+  const freeLeft = new FreeCamera();
   const globe = new GlobeCamera();
   const pose = createPose();
   const pipPose = createPose();
   const leftPose = createPose();
-  const rightPose = createPose();
   const lastPose = createPose();
   const fromPose = createPose();
+  /** The pose a blend starts from, carried along with what that view was following. */
+  const fromNow = createPose();
   const target = createPose();
   let blendT = 1;
   let blendDur = 1;
+  /** The blend swings round the Earth (into or out of the globe) instead of cutting straight across. */
+  let blendGlobe = false;
+  /** What the view a blend starts from was following, and where that was at the switch. */
+  let fromFocus: Focus | null = null;
+  const fromAnchor: V3 = [0, 0, 0];
   let viewKey = '';
   let lastShot: Shot | null = null;
+  /** What the main view follows (null for the globe), as of the last frame. */
+  let viewFocus: Focus | null = null;
+  /** The last frame could show the vehicles side by side: the split view, in the chase and free cameras. */
+  let splitReady = false;
+  /** Where the views were drawn last (CSS px), so pointer input goes to the camera under the pointer. */
+  const shownViews = { split: false, half: 0, pip: false, pipX: 0, pipY: 0, pipW: 0, pipH: 0 };
 
-  // Pointer input drives the free, chase and globe cameras.
-  let drag: { x: number; y: number; button: number; id: number } | null = null;
+  /** One camera's handle on pointer input; `pans`: two fingers moved together pan it (as a right-drag does). */
+  interface Control {
+    drag(d: DragInput): void;
+    wheel(delta: number): void;
+    readonly pans: boolean;
+  }
+  const mainSize = () => viewFocus?.size ?? focusB.size;
+  const globeControl: Control = { drag: (d) => globe.drag(d), wheel: (delta) => globe.wheel(delta), pans: true };
+  const freeControl: Control = { drag: (d) => free.drag(d, mainSize()), wheel: (delta) => free.wheel(delta, mainSize()), pans: true };
+  const freeLeftControl: Control = { drag: (d) => freeLeft.drag(d, focusB.size), wheel: (delta) => freeLeft.wheel(delta, focusB.size), pans: true };
+  const chaseControl: Control = { drag: (d) => chase.drag(d), wheel: (delta) => chase.wheel(delta), pans: false };
+  const chaseLeftControl: Control = { drag: (d) => chaseLeft.drag(d), wheel: (delta) => chaseLeft.wheel(delta), pans: false };
+  const pipControl: Control = { drag: (d) => chasePip.drag(d), wheel: (delta) => chasePip.wheel(delta), pans: false };
+
+  /** The camera under a point of the canvas (CSS px); null over the webcast, which has no controls of its own. */
+  function controlAt(x: number, y: number): Control | null {
+    const v = shownViews;
+    if (v.pip && x >= v.pipX && x < v.pipX + v.pipW && y >= v.pipY && y < v.pipY + v.pipH) return pipControl;
+    const camera = useReplay.getState().camera;
+    const left = v.split && x < v.half;
+    if (camera === 'globe') return globeControl;
+    if (camera === 'free') return left ? freeLeftControl : freeControl;
+    if (camera === 'chase') return left ? chaseLeftControl : chaseControl;
+    return null;
+  }
+
+  /**
+   * Turning or zooming the webcast hands over to the free camera, starting from the view as it is: the same
+   * direction onto the same vehicle, at the same size on screen. In the split view that vehicle may be the booster,
+   * on the left.
+   */
+  function handOver(): Control {
+    const f = viewFocus ?? focusB;
+    const left = splitReady && f === focusB;
+    (left ? freeLeft : free).takeOver(lastPose, f);
+    useReplay.getState().setCamera('free');
+    return left ? freeLeftControl : freeControl;
+  }
+
+  // Pointer input: one pointer (or the mouse) turns the camera under it, or pans it with the right button; two
+  // pointers pinch to zoom and, moved together, pan. The gesture keeps the camera it started on.
+  const pointers = new Map<number, { x: number; y: number }>();
+  let control: Control | null = null;
+  let button = 0;
+  /** How far a drag on the webcast has moved (px): it takes over once that is clearly not a click. */
+  let moved = 0;
+  /** Distance between two pointers and their midpoint, as of the last move. */
+  let pinch = 0;
+  const mid = { x: 0, y: 0 };
+  const measurePinch = (): number => {
+    let n = 0;
+    let ax = 0;
+    let ay = 0;
+    let bx = 0;
+    let by = 0;
+    for (const p of pointers.values()) {
+      if (n === 0) {
+        ax = p.x;
+        ay = p.y;
+      } else if (n === 1) {
+        bx = p.x;
+        by = p.y;
+      }
+      n++;
+    }
+    mid.x = (ax + bx) / 2;
+    mid.y = (ay + by) / 2;
+    return Math.hypot(bx - ax, by - ay);
+  };
   const onPointerDown = (e: PointerEvent) => {
-    drag = { x: e.clientX, y: e.clientY, button: e.button, id: e.pointerId };
+    if (pointers.size === 0) {
+      const r = canvas.getBoundingClientRect();
+      control = controlAt(e.clientX - r.left, e.clientY - r.top);
+      button = e.button;
+      moved = 0;
+    }
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     canvas.setPointerCapture(e.pointerId);
+    if (pointers.size === 2) pinch = measurePinch();
   };
   const onPointerMove = (e: PointerEvent) => {
-    if (!drag || drag.id !== e.pointerId) return;
-    const d: DragInput = { dx: e.clientX - drag.x, dy: e.clientY - drag.y, button: drag.button };
-    drag.x = e.clientX;
-    drag.y = e.clientY;
-    const st = useReplay.getState();
-    const size = focusSize(st.follow);
-    if (st.camera === 'globe') globe.drag(d);
-    else if (st.camera === 'free') free.drag(d, size);
-    else if (st.camera === 'chase') chase.drag(d);
-    else {
-      // Dragging the webcast hands over to the free camera, starting from where the view is.
-      st.setCamera('free');
+    const p = pointers.get(e.pointerId);
+    if (!p) return;
+    const dx = e.clientX - p.x;
+    const dy = e.clientY - p.y;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (pointers.size === 1) {
+      if (!control) {
+        moved += Math.abs(dx) + Math.abs(dy);
+        if (moved < 4) return;
+        control = handOver();
+      }
+      control.drag({ dx, dy, button });
+    } else if (pointers.size === 2) {
+      const mx = mid.x;
+      const my = mid.y;
+      const d = measurePinch();
+      control ??= handOver();
+      if (pinch > 0 && d > 0) control.wheel(Math.log(pinch / d) / WHEEL_ZOOM);
+      if (control.pans) control.drag({ dx: mid.x - mx, dy: mid.y - my, button: 2 });
+      pinch = d;
     }
   };
   const onPointerUp = (e: PointerEvent) => {
-    if (drag?.id === e.pointerId) drag = null;
+    if (!pointers.delete(e.pointerId)) return;
+    // Lifting one of two fingers leaves the other turning the view from where it is now.
+    if (pointers.size === 0) control = null;
   };
   const onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    const st = useReplay.getState();
-    const size = focusSize(st.follow);
-    if (st.camera === 'globe') globe.wheel(e.deltaY);
-    else if (st.camera === 'free') free.wheel(e.deltaY, size);
-    else if (st.camera === 'chase') chase.wheel(e.deltaY);
+    const r = canvas.getBoundingClientRect();
+    // Lines or pages (some mice in Firefox) count as about as far as the pixels of a touchpad.
+    const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1);
+    (controlAt(e.clientX - r.left, e.clientY - r.top) ?? handOver()).wheel(delta);
   };
-  const onDblClick = () => {
+  const onDblClick = (e: MouseEvent) => {
     const st = useReplay.getState();
-    if (st.camera === 'free') free.recentre();
+    const r = canvas.getBoundingClientRect();
+    if (st.camera === 'free') (shownViews.split && e.clientX - r.left < shownViews.half ? freeLeft : free).recentre();
     if (st.camera === 'globe') globe.reset();
   };
   const onContext = (e: Event) => e.preventDefault();
@@ -681,16 +816,12 @@ export function createStage(): StageHandle {
     return vehicleLengths;
   }
 
-  function focusSize(follow: string): number {
-    const L = lengths();
-    if (current && isStacked(current, useReplay.getState().t)) return L.booster + L.ship;
-    return follow === 'ship' ? L.ship : L.booster;
-  }
-
-  const focusB: Focus = { pos: [0, 0, 0], vel: [0, 0, 0], quat: new THREE.Quaternion(), size: 70 };
-  const focusS: Focus = { pos: [0, 0, 0], vel: [0, 0, 0], quat: new THREE.Quaternion(), size: 50 };
-  const focusStack: Focus = { pos: [0, 0, 0], vel: [0, 0, 0], quat: new THREE.Quaternion(), size: 121 };
-  const focusBoth: Focus = { pos: [0, 0, 0], vel: [0, 0, 0], quat: new THREE.Quaternion(), size: 121 };
+  const focusB: Focus = { pos: [0, 0, 0], course: [1, 0, 0], size: 70 };
+  const focusS: Focus = { pos: [0, 0, 0], course: [1, 0, 0], size: 50 };
+  const focusStack: Focus = { pos: [0, 0, 0], course: [1, 0, 0], size: 121 };
+  const focusBoth: Focus = { pos: [0, 0, 0], course: [1, 0, 0], size: 121 };
+  /** The pad camera's subject while the stack is near the ground: from the foot of the mount to the nose. */
+  const focusPad: Focus = { pos: [0, 0, 0], course: [1, 0, 0], size: 150 };
 
   // ---------------------------------------------------------- vehicle state
   function updateRig(rig: Rig, result: FlightResult, t: number) {
@@ -731,11 +862,23 @@ export function createStage(): StageHandle {
     vis.sunBody.copy(sunDir).applyQuaternion(qInv);
   }
 
-  function setFocus(f: Focus, rig: Rig, size: number) {
+  function setFocus(f: Focus, rig: Rig, track: Track, t: number, size: number) {
     copy3(rig.center, f.pos);
-    copy3(rig.sample.vel, f.vel);
-    f.quat.copy(rig.sample.quat);
+    if (rig.course.length === track.n * 3) courseAt(track, rig.course, t, f.pos, f.course);
     f.size = size;
+  }
+
+  /**
+   * What cameras frame round a vehicle: its length, grown to take in its debris cloud once it has broken up, and
+   * the spray of its splashdown while that is thick (so a camera stands back from it rather than in it).
+   */
+  function framedLength(rig: Rig, track: Track, t: number, length: number): number {
+    if (rig.explosion && t > track.end) return length + BREAKUP_SCALE[rig.id] * 4 * smoothstep(0, 2.5, t - track.end);
+    if (rig.splash && rig.touchdown !== null && t > rig.touchdown) {
+      const age = t - rig.touchdown;
+      return length + SPLASH_SPREAD[rig.id] * smoothstep(0, 2, age) * (1 - smoothstep(16, 30, age));
+    }
+    return length;
   }
 
   // ------------------------------------------------------------- shots
@@ -743,24 +886,39 @@ export function createStage(): StageHandle {
   const DIR = new THREE.Vector3();
   const UP = new THREE.Vector3();
 
-  function shotPose(shot: Shot, t: number, out: CameraPose): boolean {
+  /** What a shot of `vehicle` looks at: the stack until separation. */
+  function shotFocus(vehicle: VehicleId, t: number): Focus {
+    if (current && isStacked(current, t)) return focusStack;
+    return vehicle === 'ship' ? focusS : focusB;
+  }
+
+  /**
+   * The pose of a webcast shot looking at `f`. Cameras that zoom fill a share of `band`, the part of the frame
+   * height page controls leave free. False when the shot can't be shown (its vehicle is gone).
+   */
+  function shotPose(shot: Shot, t: number, f: Focus, band: number, out: CameraPose): boolean {
     const L = lengths();
     switch (shot.id) {
       case 'pad': {
         offsetEnu(padEcef, 330, -260, 3, site);
-        const f = isStacked(current as FlightResult, t) ? focusStack : shot.vehicle === 'ship' ? focusS : focusB;
-        trackerPose(site, f, 0.78, 3, 62, out);
+        // Near the ground the mount stays in the picture.
+        trackerPose(site, f === focusStack ? focusPad : f, 0.86 * band, 3, 62, out);
         return true;
       }
       case 'tower': {
         offsetEnu(padEcef, -60, -120, 40, site);
-        trackerPose(site, focusB, 0.7, 4, 70, out);
+        trackerPose(site, f, 0.78 * band, 4, 70, out);
         return true;
       }
       case 'tracking': {
-        offsetEnu(padEcef, 2600, 8800, 18, site);
-        const f = current && isStacked(current, t) ? focusStack : shot.vehicle === 'ship' ? focusS : focusB;
-        trackerPose(site, f, 0.62, 0.12, 30, out);
+        if (t < AERIAL_TRACKING_FROM) {
+          // A telescope on the ground north of the pad...
+          offsetEnu(padEcef, 2600, 8800, 18, site);
+          trackerPose(site, f, 0.8 * band, 0.12, 30, out);
+        } else {
+          // ...then a chase plane off the vehicle's right-hand side, keeping it side on with a long lens.
+          alongsidePose(f, 80, 3, f.size * 20, 0.72 * band, 0.12, 30, out);
+        }
         return true;
       }
       case 'buoy': {
@@ -773,32 +931,36 @@ export function createStage(): StageHandle {
         site[1] = (track.pos[i * 3 + 1] / r) * 6_371_000;
         site[2] = (track.pos[i * 3 + 2] / r) * 6_371_000;
         offsetEnu(site, 420, -300, 4, site);
-        trackerPose(site, shot.vehicle === 'booster' ? focusB : focusS, 0.7, 1.5, 55, out);
+        trackerPose(site, f, 0.78 * band, 1.5, 55, out);
         return rig.visible || t < track.end + 45;
       }
       case 'booster-top': {
         if (!booster.visible) return false;
-        // On the outside of the interstage, looking up along the hull at the ship's engines.
-        LOCAL.set(0, L.booster - 3.2, 5.6);
-        DIR.set(0, 1, -0.2).normalize();
-        UP.set(0, 0, -1);
-        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 84, out);
+        // On the +Z side between the grid fins, well below the vents and off the hull: looking up the booster at
+        // the interstage and the ship's engines, a fin either side, with the hull along the bottom of the frame.
+        LOCAL.set(0, L.booster - 14, 6.5);
+        DIR.set(0, 18, -6.5).normalize();
+        UP.set(0, 0, 1);
+        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 60, out);
         return true;
       }
       case 'booster-aft': {
         if (!booster.visible) return false;
-        LOCAL.set(4.95, L.booster - 7, 0);
-        DIR.set(0.12, -1, 0).normalize();
-        UP.set(1, 0, 0);
-        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 78, out);
+        // Below the grid fins on the +Z side (between them on every generation), looking down the hull at the engines.
+        LOCAL.set(0, L.booster - 10, 5.1);
+        DIR.set(0, -1, 0.16).normalize();
+        UP.set(0, 0, 1);
+        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 74, out);
         return true;
       }
       case 'ship-aft': {
         if (!ship.visible) return false;
+        // Over the aft flap, looking back along it: the hull on one side, the Earth below and space above, with
+        // the exhaust at the edge of the frame rather than in the middle of it.
         LOCAL.set(4.9, 9, -0.6);
-        DIR.set(0.18, -1, 0.05).normalize();
-        UP.set(1, 0, 0);
-        onboardPose(ship.base, ship.sample.quat, LOCAL, DIR, UP, 80, out);
+        DIR.set(0.25, -1, 0.1).normalize();
+        UP.set(0, 0, -1);
+        onboardPose(ship.base, ship.sample.quat, LOCAL, DIR, UP, 75, out);
         return true;
       }
       case 'ship-nose': {
@@ -918,7 +1080,7 @@ export function createStage(): StageHandle {
     cam.near = 0.3;
     cam.far = 4e8;
     // Raise the optical centre so what the camera aims at sits above the HUD that overlays the bottom.
-    if (liftCentre > 0) cam.setViewOffset(vp.w, vp.h, 0, vp.h * liftCentre, vp.w, vp.h);
+    if (liftCentre !== 0) cam.setViewOffset(vp.w, vp.h, 0, vp.h * liftCentre, vp.w, vp.h);
     else cam.clearViewOffset();
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld(true);
@@ -957,8 +1119,34 @@ export function createStage(): StageHandle {
     return true;
   }
 
-  function labels(cameraEcef: V3, cam: THREE.PerspectiveCamera, vp: Viewport, t: number, settingsLabels: boolean, settingsGates: boolean) {
+  /** Screen boxes of the labels placed so far in this frame (x0, y0, x1, y1 each), so that later ones keep clear. */
+  const labelBoxes: number[] = [];
+
+  /**
+   * Find room for a label `w` px wide whose top left would be at (x, y): there, or a row or up to three rows lower
+   * (labels of events at the same place stack into a short list), clear of the labels already placed and of the
+   * page controls over the view. Returns the top, or NaN where there is no room (the label is left out).
+   */
+  function placeLabel(x: number, y: number, w: number, top: number, bottom: number): number {
+    for (let row = 0; row < 4; row++) {
+      const y0 = y + row * LABEL_ROW;
+      if (y0 + LABEL_ROW > bottom) return NaN;
+      if (y0 < top) continue;
+      let clear = true;
+      for (let i = 0; i < labelBoxes.length && clear; i += 4) {
+        clear = x >= labelBoxes[i + 2] || x + w <= labelBoxes[i] || y0 >= labelBoxes[i + 3] || y0 + LABEL_ROW <= labelBoxes[i + 1];
+      }
+      if (clear) {
+        labelBoxes.push(x, y0, x + w, y0 + LABEL_ROW);
+        return y0;
+      }
+    }
+    return NaN;
+  }
+
+  function labels(cameraEcef: V3, cam: THREE.PerspectiveCamera, vp: Viewport, t: number, settingsLabels: boolean, settingsGates: boolean, coverTop: number, coverBottom: number) {
     const flight = getFlight(flightN);
+    const bottom = height - coverBottom;
     if (settingsLabels) {
       for (const rig of rigs) {
         if (!rig.visible) continue;
@@ -972,24 +1160,37 @@ export function createStage(): StageHandle {
         const stacked = current !== null && isStacked(current, t);
         const name = stacked ? 'Starship' : rig.id === 'booster' ? 'Super Heavy' : 'Starship';
         const id = stacked ? '' : rig.id === 'booster' ? flight.boosterId : flight.shipId;
-        overlay.label(rig.id === 'booster' ? 'veh:booster' : 'veh:ship', pt.x, pt.y, name, id, rig.id === 'booster' && !stacked ? '#ff7a66' : '#7ab4ff', 'vehicle');
+        // The dot sits on the vehicle.
+        const x = Math.round(pt.x - 3);
+        const y = placeLabel(x, Math.round(pt.y - 7), labelWidth(name, id, 'vehicle'), coverTop, bottom);
+        if (Number.isNaN(y)) continue;
+        overlay.label(rig.id === 'booster' ? 'veh:booster' : 'veh:ship', x, y, name, id, rig.id === 'booster' && !stacked ? '#ff7a66' : '#7ab4ff', 'vehicle');
       }
     }
     if (settingsGates && gates?.mesh.visible) {
-      for (const g of gates.items) {
-        if (hiddenByEarth(cameraEcef, g.pos)) continue;
-        if (!project(g.pos, cameraEcef, cam, vp)) continue;
-        let l = gateLabels.get(g);
-        if (!l) {
-          const m = Math.round(Math.abs(g.event.t));
-          l = {
-            id: `gate:${g.event.key}:${g.event.t}`,
-            time: m >= 3600 ? `T+${Math.floor(m / 3600)}:${String(Math.floor((m % 3600) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}` : `T+${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`,
-            color: g.event.vehicle === 'booster' ? '#ff8a78' : g.event.vehicle === 'ship' ? '#8cc0ff' : '#ffffff',
-          };
-          gateLabels.set(g, l);
+      // Major events first: where several share a spot, they are the ones that keep their label.
+      for (let pass = 0; pass < 2; pass++) {
+        for (const g of gates.items) {
+          if (g.event.major !== (pass === 0)) continue;
+          if (hiddenByEarth(cameraEcef, g.pos)) continue;
+          if (!project(g.pos, cameraEcef, cam, vp)) continue;
+          let l = gateLabels.get(g);
+          if (!l) {
+            const m = Math.round(Math.abs(g.event.t));
+            const time = m >= 3600 ? `T+${Math.floor(m / 3600)}:${String(Math.floor((m % 3600) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}` : `T+${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+            l = {
+              id: `gate:${g.event.key}:${g.event.t}`,
+              time,
+              color: g.event.vehicle === 'booster' ? '#ff8a78' : g.event.vehicle === 'ship' ? '#8cc0ff' : '#ffffff',
+              width: labelWidth(g.event.short, time, 'gate'),
+            };
+            gateLabels.set(g, l);
+          }
+          const x = Math.round(pt.x + 10);
+          const y = placeLabel(x, Math.round(pt.y - 7), l.width, coverTop, bottom);
+          if (Number.isNaN(y)) continue;
+          overlay.label(l.id, x, y, g.event.short, l.time, l.color, 'gate');
         }
-        overlay.label(l.id, pt.x, pt.y, g.event.short, l.time, l.color, 'gate');
       }
     }
   }
@@ -1106,45 +1307,68 @@ export function createStage(): StageHandle {
     updateRig(ship, result, t);
     const L = lengths();
     const stacked = isStacked(result, t);
-    setFocus(focusB, booster, L.booster);
-    setFocus(focusS, ship, L.ship);
+    setFocus(focusB, booster, result.booster, t, framedLength(booster, result.booster, t, L.booster));
+    setFocus(focusS, ship, result.ship, t, framedLength(ship, result.ship, t, L.ship));
     // The stack's middle is the top of the booster.
+    const stackLength = L.booster + L.ship;
     v1.set(0, 1, 0).applyQuaternion(booster.sample.quat);
-    focusStack.pos[0] = booster.base[0] + v1.x * (L.booster + L.ship) * 0.5;
-    focusStack.pos[1] = booster.base[1] + v1.y * (L.booster + L.ship) * 0.5;
-    focusStack.pos[2] = booster.base[2] + v1.z * (L.booster + L.ship) * 0.5;
-    copy3(booster.sample.vel, focusStack.vel);
-    focusStack.quat.copy(booster.sample.quat);
-    focusStack.size = L.booster + L.ship;
+    focusStack.pos[0] = booster.base[0] + v1.x * stackLength * 0.5;
+    focusStack.pos[1] = booster.base[1] + v1.y * stackLength * 0.5;
+    focusStack.pos[2] = booster.base[2] + v1.z * stackLength * 0.5;
+    copy3(focusB.course, focusStack.course);
+    focusStack.size = framedLength(booster, result.booster, t, stackLength);
+    // The pad camera frames the stack from the ground under it to its nose until it is well clear of the mount.
+    const clear = smoothstep(150, 600, dist3(booster.base, padEcef));
+    let padSize = 0;
+    for (let k = 0; k < 3; k++) {
+      const nose = booster.base[k] + v1.getComponent(k) * stackLength;
+      const foot = padEcef[k] + (booster.base[k] - padEcef[k]) * clear;
+      focusPad.pos[k] = (nose + foot) / 2;
+      padSize += (nose - foot) * (nose - foot);
+    }
+    focusPad.size = Math.sqrt(padSize);
+    copy3(focusB.course, focusPad.course);
     const apart = dist3(booster.center, ship.center);
     focusBoth.pos[0] = (booster.center[0] + ship.center[0]) / 2;
     focusBoth.pos[1] = (booster.center[1] + ship.center[1]) / 2;
     focusBoth.pos[2] = (booster.center[2] + ship.center[2]) / 2;
-    copy3(ship.sample.vel, focusBoth.vel);
-    focusBoth.size = Math.max(L.booster + L.ship, apart + L.booster);
+    copy3(focusS.course, focusBoth.course);
+    // The two start half a stack apart, centre to centre: the frame grows from the stack's as they draw apart.
+    focusBoth.size = Math.max(stackLength, apart + stackLength / 2);
 
     // ---- choose the views
     const follow = st.follow;
     const sep = !stacked;
     const mainFocus = !sep ? focusStack : follow === 'ship' ? focusS : follow === 'booster' ? focusB : apart < 3000 ? focusBoth : focusS;
-    const split = sep && follow === 'both' && apart >= 3000 && (st.camera === 'chase' || st.camera === 'free') && booster.visible && ship.visible;
+    // Both vehicles, far apart: the chase and free cameras split the view, the booster on the left and the ship
+    // (the main camera) on the right.
+    splitReady = sep && follow === 'both' && apart >= 3000 && booster.visible && ship.visible;
+    const split = splitReady && (st.camera === 'chase' || st.camera === 'free');
+
+    // The part of the frame page controls leave free (the camera bar over the top, the HUD over the bottom on wide
+    // screens): what a camera aims at sits in its middle, and shots that zoom fit their subject into it.
+    const coverTop = Math.min(insets.top, height * 0.4);
+    const coverBottom = Math.min(insets.bottom, height * 0.5);
+    const band = Math.max(0.3, (height - coverTop - coverBottom) / Math.max(1, height));
+    const lift = (coverBottom - coverTop) / (2 * Math.max(1, height));
+    const reach = CHASE_BAND / band;
 
     let key: string = st.camera;
+    let followed: Focus | null = mainFocus;
     if (st.camera === 'globe') {
+      if (viewKey !== 'globe') globe.enter();
       globe.centreOn(mainFocus.pos);
       globe.pose(target);
+      followed = null;
     } else if (st.camera === 'free') {
       free.pose(mainFocus, target);
     } else if (st.camera === 'chase') {
-      chase.pose(mainFocus, dt, target);
+      chase.pose(mainFocus, target, reach);
       key += follow;
     } else {
-      const shot: Shot = plan
-        ? st.webcastShot === 'auto'
-          ? autoShot(t, plan, follow)
-          : pickedShot(st.webcastShot as ShotId, t, plan, follow)
-        : { id: 'pad', vehicle: 'booster' };
-      if (!shotPose(shot, t, target)) chase.pose(mainFocus, dt, target);
+      const shot: Shot = plan ? (st.webcastShot === 'auto' ? autoShot(t, plan, follow) : pickedShot(st.webcastShot as ShotId, t, plan, follow)) : PAD_SHOT;
+      followed = shotFocus(shot.vehicle, t);
+      if (!shotPose(shot, t, followed, band, target)) chase.pose(followed, target, reach);
       key += `${shot.id}:${shot.vehicle}`;
       if (st.settings.reduceMotion === false && (shot.id === 'pad' || shot.id === 'tower') && t > -1 && t < 14) {
         // Ground shake from the engines near liftoff.
@@ -1160,23 +1384,29 @@ export function createStage(): StageHandle {
       const isCut = key.startsWith('webcast') && viewKey.startsWith('webcast');
       if (viewKey && !isCut && !st.settings.reduceMotion) {
         copyPose(lastPose, fromPose);
+        // The view being left keeps moving with what it followed, so a blend never falls behind a fast vehicle.
+        fromFocus = viewFocus;
+        if (fromFocus) copy3(fromFocus.pos, fromAnchor);
+        blendGlobe = key === 'globe' || viewKey === 'globe';
         blendT = 0;
-        blendDur = key === 'globe' || viewKey === 'globe' ? 1.6 : 0.9;
+        blendDur = blendGlobe ? 1.6 : 0.9;
       } else blendT = 1;
       viewKey = key;
     }
     if (blendT < 1) {
       blendT = Math.min(1, blendT + dt / blendDur);
-      blendPose(fromPose, target, blendT, pose);
+      copyPose(fromPose, fromNow);
+      if (fromFocus) for (let k = 0; k < 3; k++) fromNow.pos[k] += fromFocus.pos[k] - fromAnchor[k];
+      if (blendGlobe) blendAround(fromNow, target, blendT, pose);
+      else blendPose(fromNow, target, blendT, pose);
     } else copyPose(target, pose);
     copyPose(pose, lastPose);
+    viewFocus = followed;
 
-    // On wide screens the HUD overlays the bottom of the view; on narrow ones it sits below the canvas.
-    const lift = width > 860 ? 0.13 : 0;
     const half = Math.floor(width / 2);
     if (split) {
-      chaseLeft.pose(focusB, dt, leftPose);
-      chaseRight.pose(focusS, dt, rightPose);
+      if (st.camera === 'free') freeLeft.pose(focusB, leftPose);
+      else chaseLeft.pose(focusB, leftPose, reach);
     }
 
     // Small frame: the other vehicle (or the followed one when the main view is the globe).
@@ -1193,7 +1423,7 @@ export function createStage(): StageHandle {
               : null;
     const pip = pipTarget && pipTarget.visible && width > 520 ? pipTarget : null;
     const pipFocus = st.camera === 'globe' && !sep ? focusStack : pip?.id === 'booster' ? focusB : focusS;
-    if (pip) chasePip.pose(pipFocus, dt, pipPose);
+    if (pip) chasePip.pose(pipFocus, pipPose);
 
     // Eye adaptation: brighten towards the Earth's suggestion in twilight and at night, but meter for a lit plume
     // that fills the view (the brightest thing in it), so night launches and landings don't blow out.
@@ -1238,7 +1468,7 @@ export function createStage(): StageHandle {
       mem.textures !== seen.textures ||
       mem.geometries !== seen.geometries ||
       !samePose(pose, drawnPose, height, dist3(pose.pos, mainFocus.pos)) ||
-      (split && (!samePose(leftPose, drawnLeft, height, dist3(leftPose.pos, focusB.pos)) || !samePose(rightPose, drawnRight, height, dist3(rightPose.pos, focusS.pos)))) ||
+      (split && !samePose(leftPose, drawnLeft, height, dist3(leftPose.pos, focusB.pos))) ||
       (pip !== null && !samePose(pipPose, drawnPip, PIP_HEIGHT, dist3(pipPose.pos, pipFocus.pos)));
     if (changed) changedAt = now;
     // Until the imagery is in the outline covers the view: draw only what warms it up, not every frame.
@@ -1251,33 +1481,40 @@ export function createStage(): StageHandle {
     renderer.setScissorTest(false);
     renderer.clear();
     overlay.begin();
+    labelBoxes.length = 0;
     if (split) {
       const left: Viewport = { x: 0, y: 0, w: half, h: height };
       const right: Viewport = { x: half, y: 0, w: width - half, h: height };
       prepareView(leftPose, camera, left, t, true, lift);
       drawView(camera, left);
-      labels(leftPose.pos, camera, left, t, st.settings.showLabels, false);
-      prepareView(rightPose, sideCamera, right, t, false, lift);
+      labels(leftPose.pos, camera, left, t, st.settings.showLabels, false, coverTop, coverBottom);
+      prepareView(pose, sideCamera, right, t, false, lift);
       drawView(sideCamera, right);
-      labels(rightPose.pos, sideCamera, right, t, st.settings.showLabels, false);
-      // Below the camera bar, which sits over the top of the view on wide screens.
-      const titleTop = lift > 0 ? 52 : 7;
-      overlay.frame('split-left', 0, 0, half, height, titles.booster, undefined, titleTop);
-      overlay.frame('split-right', half, 0, width - half, height, titles.ship, undefined, titleTop);
+      labels(pose.pos, sideCamera, right, t, st.settings.showLabels, false, coverTop, coverBottom);
+      // Titles and the divider keep to the part of the view that page controls leave free.
+      overlay.title('split-left', 9, coverTop + 7, titles.booster);
+      overlay.title('split-right', half + 9, coverTop + 7, titles.ship);
+      overlay.divider('split', half, coverTop, height - coverTop - coverBottom);
     } else {
       const full: Viewport = { x: 0, y: 0, w: width, h: height };
       prepareView(pose, camera, full, t, true, lift);
       drawView(camera, full);
-      labels(pose.pos, camera, full, t, st.settings.showLabels, st.settings.showGates && st.camera === 'globe');
+      labels(pose.pos, camera, full, t, st.settings.showLabels, st.settings.showGates && st.camera === 'globe', coverTop, coverBottom);
     }
+    const pipW = Math.round(Math.min(PIP_WIDTH, width * 0.28));
+    const pipVp: Viewport = { x: width - pipW - 16, y: Math.max(12, coverTop + 8), w: pipW, h: Math.round(pipW * PIP_ASPECT) };
     if (pip) {
-      const w = Math.round(Math.min(PIP_WIDTH, width * 0.28));
-      const h = Math.round(w * PIP_ASPECT);
-      const vp: Viewport = { x: width - w - 16, y: 52, w, h };
-      prepareView(pipPose, sideCamera, vp, t, false);
-      drawView(sideCamera, vp);
-      overlay.frame('pip', vp.x, vp.y, vp.w, vp.h, !sep ? titles.stack : pip.id === 'booster' ? titles.booster : titles.ship, closePip);
+      prepareView(pipPose, sideCamera, pipVp, t, false);
+      drawView(sideCamera, pipVp);
+      overlay.frame('pip', pipVp.x, pipVp.y, pipVp.w, pipVp.h, !sep ? titles.stack : pip.id === 'booster' ? titles.booster : titles.ship, closePip);
     }
+    shownViews.split = split;
+    shownViews.half = half;
+    shownViews.pip = pip !== null;
+    shownViews.pipX = pipVp.x;
+    shownViews.pipY = pipVp.y;
+    shownViews.pipW = pipVp.w;
+    shownViews.pipH = pipVp.h;
     overlay.end();
     if (governor.end(now, st.playing)) applySize();
 
@@ -1287,7 +1524,6 @@ export function createStage(): StageHandle {
     drawnAt = now;
     copyPose(pose, drawnPose);
     copyPose(leftPose, drawnLeft);
-    copyPose(rightPose, drawnRight);
     copyPose(pipPose, drawnPip);
     drawnLayout.split = split;
     drawnLayout.pip = pip?.id ?? '';
@@ -1330,7 +1566,7 @@ export function createStage(): StageHandle {
     for (const rig of rigs) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
       rig.explosion?.setAge(track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact' ? t - track.end : -1);
-      if (rig.splash) rig.splash.setAge(rig.touchdown !== null ? t - rig.touchdown : -1, rig.id === 'booster' ? 72 : 52);
+      if (rig.splash) rig.splash.setAge(rig.touchdown !== null ? t - rig.touchdown : -1, SPLASH_SCALE[rig.id]);
     }
     (ship.model as ShipModel | null)?.setPayloadDoor(doorAt(t));
     updateCoast(result, t, st.playing, now);
@@ -1457,10 +1693,19 @@ export function createStage(): StageHandle {
     attach,
     detach,
     render,
+    setInsets(top: number, bottom: number) {
+      if (top === insets.top && bottom === insets.bottom) return;
+      insets.top = top;
+      insets.bottom = bottom;
+      dirty = true;
+    },
     resetCamera() {
       free.reset();
+      freeLeft.reset();
       globe.reset();
       chase.reset();
+      chaseLeft.reset();
+      chasePip.reset();
       dirty = true;
     },
     dispose,

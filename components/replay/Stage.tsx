@@ -48,6 +48,30 @@ const overViewStyle: React.CSSProperties = {
 /** A flight that takes longer than this to load says so over the view. */
 const SLOW_LOAD_MS = 400;
 
+/** The replay's controls that lie over the 3D view: the camera bar, the vehicle names (phones) and the HUD panels. */
+const OVER_VIEW = [styles.topBar, styles.stageLabels, styles.hudBooster, styles.center, styles.hudShip];
+/** Space kept between those controls and what the shots frame, CSS px. */
+const INSET_MARGIN = 6;
+
+function overViewElements(host: HTMLElement): Element[] {
+  const root = host.closest('main') ?? document;
+  return OVER_VIEW.map((name) => root.querySelector(`.${CSS.escape(name)}`)).filter((el): el is Element => el !== null);
+}
+
+/** How far those controls reach over the top and the bottom of the view, CSS px. */
+function measureInsets(host: HTMLElement, elements: Element[]): { top: number; bottom: number } {
+  const view = host.getBoundingClientRect();
+  let top = 0;
+  let bottom = 0;
+  for (const el of elements) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || r.bottom <= view.top || r.top >= view.bottom) continue;
+    if (r.top + r.height / 2 < view.top + view.height / 2) top = Math.max(top, r.bottom - view.top + INSET_MARGIN);
+    else bottom = Math.max(bottom, view.bottom - r.top + INSET_MARGIN);
+  }
+  return { top: Math.round(top), bottom: Math.round(bottom) };
+}
+
 export function Stage() {
   const hostRef = useRef<HTMLDivElement>(null);
   const quality = useReplay((s) => s.settings.quality);
@@ -72,6 +96,7 @@ export function Stage() {
     prefetchEarthImagery();
     let active = true;
     let stage: StageHandle | null = null;
+    let insetsObserver: ResizeObserver | null = null;
     import('@/lib/three/stage')
       .then((m) => {
         if (!active) return;
@@ -89,12 +114,23 @@ export function Stage() {
           },
         });
         stageHandle.current = stage;
+        // Shots frame their subject in the part of the view the page's controls leave free.
+        const elements = overViewElements(host);
+        const fit = () => {
+          const insets = measureInsets(host, elements);
+          stage?.setInsets(insets.top, insets.bottom);
+        };
+        fit();
+        insetsObserver = new ResizeObserver(fit);
+        insetsObserver.observe(host);
+        for (const el of elements) insetsObserver.observe(el);
       })
       .catch((e: unknown) => {
         if (active) setFailed(`The 3D view failed to load: ${message(e)}`);
       });
     return () => {
       active = false;
+      insetsObserver?.disconnect();
       if (stage) {
         if (stageHandle.current === stage) stageHandle.current = null;
         stage.detach(host);

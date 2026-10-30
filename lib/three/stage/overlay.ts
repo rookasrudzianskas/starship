@@ -1,3 +1,25 @@
+/** How a frame's title looks. */
+const FRAME_TITLE_STYLE: Partial<CSSStyleDeclaration> = {
+  fontSize: '9.5px',
+  letterSpacing: '0.18em',
+  textTransform: 'uppercase',
+  whiteSpace: 'nowrap',
+  color: 'rgba(255,255,255,0.85)',
+  textShadow: '0 1px 6px rgba(0,0,0,0.9)',
+};
+
+const DIVIDER_STYLE: Partial<CSSStyleDeclaration> = { width: '1px', background: 'rgba(255,255,255,0.35)' };
+
+/** A loose title or line and what was last written to it. */
+interface Mark {
+  el: HTMLDivElement;
+  text: string;
+  x: number;
+  y: number;
+  h: number;
+  shown: boolean;
+}
+
 /** One label's elements and what was last written to them (DOM writes only on change). */
 interface Label {
   el: HTMLDivElement;
@@ -17,6 +39,9 @@ export class Overlay {
   private readonly used = new Set<string>();
   private readonly frames = new Map<string, HTMLDivElement>();
   private readonly usedFrames = new Set<string>();
+  /** Loose titles and divider lines (the split view's). */
+  private readonly marks = new Map<string, Mark>();
+  private readonly usedMarks = new Set<string>();
 
   constructor() {
     this.root = document.createElement('div');
@@ -45,8 +70,10 @@ export class Overlay {
   begin(): void {
     this.used.clear();
     this.usedFrames.clear();
+    this.usedMarks.clear();
   }
 
+  /** A vehicle's or an event's label with its top left at (x, y). */
   label(id: string, x: number, y: number, title: string, sub: string, color: string, kind: 'vehicle' | 'gate'): void {
     let l = this.labels.get(id);
     if (!l) {
@@ -80,8 +107,8 @@ export class Overlay {
     }
     if (l.title.textContent !== title) l.title.textContent = title;
     if (l.sub.textContent !== sub) l.sub.textContent = sub;
-    const px = Math.round(x + (kind === 'vehicle' ? -3 : 10));
-    const py = Math.round(y - 7);
+    const px = Math.round(x);
+    const py = Math.round(y);
     if (px !== l.x || py !== l.y) {
       l.x = px;
       l.y = py;
@@ -94,11 +121,8 @@ export class Overlay {
     this.used.add(id);
   }
 
-  /**
-   * A bordered frame with a title (small frame or one half of the split view); `titleTop` keeps the title clear of
-   * page controls over the frame's top edge.
-   */
-  frame(id: string, x: number, y: number, w: number, h: number, title: string, onClose?: () => void, titleTop = 7): void {
+  /** A bordered frame with a title (the small frame), and a close button if `onClose` is given. */
+  frame(id: string, x: number, y: number, w: number, h: number, title: string, onClose?: () => void): void {
     let el = this.frames.get(id);
     if (!el) {
       el = document.createElement('div');
@@ -109,16 +133,7 @@ export class Overlay {
         boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
       } satisfies Partial<CSSStyleDeclaration>);
       const t = document.createElement('div');
-      Object.assign(t.style, {
-        position: 'absolute',
-        left: '9px',
-        top: '7px',
-        fontSize: '9.5px',
-        letterSpacing: '0.18em',
-        textTransform: 'uppercase',
-        color: 'rgba(255,255,255,0.85)',
-        textShadow: '0 1px 6px rgba(0,0,0,0.9)',
-      } satisfies Partial<CSSStyleDeclaration>);
+      Object.assign(t.style, { position: 'absolute', left: '9px', top: '7px', ...FRAME_TITLE_STYLE } satisfies Partial<CSSStyleDeclaration>);
       el.appendChild(t);
       if (onClose) {
         const btn = document.createElement('button');
@@ -148,8 +163,51 @@ export class Overlay {
     Object.assign(el.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, display: 'block' });
     const titleEl = el.firstChild as HTMLDivElement;
     if (titleEl.textContent !== title) titleEl.textContent = title;
-    titleEl.style.top = `${titleTop}px`;
     this.usedFrames.add(id);
+  }
+
+  /** A title over the view with its top left at (x, y), styled like a frame's. */
+  title(id: string, x: number, y: number, text: string): void {
+    const m = this.mark(id, FRAME_TITLE_STYLE);
+    if (m.text !== text) {
+      m.text = text;
+      m.el.textContent = text;
+    }
+    this.place(m, x, y, 0);
+  }
+
+  /** A vertical line `h` px long from (x, y), like a frame's edge (between the halves of the split view). */
+  divider(id: string, x: number, y: number, h: number): void {
+    this.place(this.mark(id, DIVIDER_STYLE), x, y, Math.max(0, h));
+  }
+
+  private mark(id: string, style: Partial<CSSStyleDeclaration>): Mark {
+    let m = this.marks.get(id);
+    if (!m) {
+      const el = document.createElement('div');
+      Object.assign(el.style, { position: 'absolute', left: '0', top: '0', ...style } satisfies Partial<CSSStyleDeclaration>);
+      this.root.appendChild(el);
+      m = { el, text: '', x: NaN, y: NaN, h: NaN, shown: false };
+      this.marks.set(id, m);
+    }
+    this.usedMarks.add(id);
+    return m;
+  }
+
+  private place(m: Mark, x: number, y: number, h: number): void {
+    if (m.x !== x || m.y !== y) {
+      m.x = x;
+      m.y = y;
+      m.el.style.transform = `translate(${x}px, ${y}px)`;
+    }
+    if (h > 0 && m.h !== h) {
+      m.h = h;
+      m.el.style.height = `${h}px`;
+    }
+    if (!m.shown) {
+      m.shown = true;
+      m.el.style.display = 'block';
+    }
   }
 
   end(): void {
@@ -160,6 +218,12 @@ export class Overlay {
       }
     }
     for (const [id, el] of this.frames) if (!this.usedFrames.has(id)) el.style.display = 'none';
+    for (const [id, m] of this.marks) {
+      if (m.shown && !this.usedMarks.has(id)) {
+        m.shown = false;
+        m.el.style.display = 'none';
+      }
+    }
   }
 
   clearGates(): void {
