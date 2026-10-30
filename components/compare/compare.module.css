@@ -327,6 +327,7 @@
   border-radius: 2px;
   background: rgba(255, 255, 255, 0.05);
   touch-action: none;
+  cursor: grab;
 }
 
 .brushWin {
@@ -356,6 +357,48 @@
   right: -4px;
 }
 
+/* Touch: a taller track, and edges a finger can catch outside the window (inside it, at most a third each, so the
+   middle of a short window still moves it). A grip marks each edge. */
+@media (pointer: coarse) {
+  .brush {
+    height: 30px;
+  }
+
+  .brushWin {
+    min-width: 10px;
+  }
+
+  .brushHandle {
+    width: calc(24px + min(8px, 30%));
+  }
+
+  .brushHandle[data-side='l'] {
+    left: -24px;
+  }
+
+  .brushHandle[data-side='r'] {
+    right: -24px;
+  }
+
+  .brushHandle::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.85);
+  }
+
+  .brushHandle[data-side='l']::after {
+    left: 22px;
+  }
+
+  .brushHandle[data-side='r']::after {
+    right: 22px;
+  }
+}
+
 @media (max-width: 1100px) {
   .flightGrid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -377,5 +420,31 @@
 
   .chart[data-max] .plot {
     height: 380px;
+  }
+
+  /* The window's track gets a line of its own, the full width of the chart, under its label and times. */
+  .brushRow {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .brushLabel {
+    margin-right: auto;
+  }
+
+  .brushTime {
+    min-width: 0;
+  }
+
+  .brush {
+    order: 1;
+    flex-basis: 100%;
+  }
+
+  /* "T+0:00 – T+9:20": the dash sits 6 px from each time (the row's gap is 10 px). */
+  .brush + .brushTime::before {
+    content: '–';
+    margin: 0 6px 0 -4px;
+    color: var(--text-3);
   }
 }

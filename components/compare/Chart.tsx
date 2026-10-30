@@ -370,8 +370,17 @@ function WindowBrush({ window: win, extent, onWindow, alignEnd }: { window: [num
     <div className={styles.brushRow}>
       <span className={styles.brushLabel}>Window</span>
       <span className={styles.brushTime}>{fmt(win[0])}</span>
-      <div className={styles.brush} ref={ref} onPointerMove={onMove} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}>
-        <div className={styles.brushWin} style={{ left: `${left}%`, width: `${width}%` }} onPointerDown={(e) => startDrag(e, 'move')}>
+      {/* A drag anywhere along the track moves the window, so a short window needs no aiming; its edges resize it. */}
+      <div
+        className={styles.brush}
+        ref={ref}
+        onPointerDown={(e) => startDrag(e, 'move')}
+        onPointerMove={onMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onLostPointerCapture={endDrag}
+      >
+        <div className={styles.brushWin} style={{ left: `${left}%`, width: `${width}%` }}>
           <span className={styles.brushHandle} data-side="l" onPointerDown={(e) => startDrag(e, 'l')} />
           <span className={styles.brushHandle} data-side="r" onPointerDown={(e) => startDrag(e, 'r')} />
         </div>
