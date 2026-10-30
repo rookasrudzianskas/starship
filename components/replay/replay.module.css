@@ -851,8 +851,7 @@
   border-radius: var(--radius);
 }
 
-.dialogTitle,
-.dialogSubtitle {
+.dialogTitle {
   margin: 0 0 14px;
   font-weight: 700;
   font-size: 12px;
@@ -860,11 +859,29 @@
   text-transform: uppercase;
 }
 
-.dialogSubtitle {
-  margin-top: 22px;
+/* The keyboard and the mouse side by side where there is room, so the help fits a short window as well. */
+.helpColumns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 22px 40px;
+  align-items: start;
 }
 
-/* The keys and the mouse actions share one column width, so both lists line up. */
+@media (min-width: 861px) {
+  .dialog {
+    width: min(800px, 100%);
+  }
+
+  .helpColumns {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .helpColumns .keys {
+    grid-template-columns: auto 1fr;
+  }
+}
+
+/* One above the other, the keys and the mouse actions share a column width, so both lists line up. */
 .keys {
   display: grid;
   grid-template-columns: minmax(132px, auto) 1fr;

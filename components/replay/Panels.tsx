@@ -180,10 +180,16 @@ export function HelpDialog() {
   return (
     <div className={styles.dialogBackdrop} onPointerDown={(e) => e.target === e.currentTarget && setPanel('none')}>
       <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-label="Keyboard and mouse" onKeyDown={onKeyDown}>
-        <h2 className={styles.dialogTitle}>Keyboard</h2>
-        <KeyList items={SHORTCUTS} />
-        <h3 className={styles.dialogSubtitle}>Mouse and touch</h3>
-        <KeyList items={POINTER} />
+        <div className={styles.helpColumns}>
+          <section>
+            <h2 className={styles.dialogTitle}>Keyboard</h2>
+            <KeyList items={SHORTCUTS} />
+          </section>
+          <section>
+            <h2 className={styles.dialogTitle}>Mouse and touch</h2>
+            <KeyList items={POINTER} />
+          </section>
+        </div>
         <button type="button" className={styles.dialogClose} onClick={() => setPanel('none')}>
           Close
         </button>
