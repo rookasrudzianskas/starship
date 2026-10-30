@@ -4,14 +4,15 @@ import type { FollowMode } from '@/lib/store/replay';
 import { Phase } from '../../sim/types';
 import { firstPhaseTime } from './sample';
 
-export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-aft' | 'ship-nose' | 'buoy' | 'tower';
+/** 'separation' is the director's own: a long lens on both vehicles as they part (not in the camera menu). */
+export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-aft' | 'ship-nose' | 'buoy' | 'tower' | 'separation';
 
 export interface Shot {
   readonly id: ShotId;
   readonly vehicle: VehicleId;
 }
 
-const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower'];
+const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower', 'separation'];
 
 function shotTable(vehicle: VehicleId): Record<ShotId, Shot> {
   const table = {} as Record<ShotId, Shot>;
@@ -36,41 +37,87 @@ export const AERIAL_TRACKING_FROM = 62;
 /** Times the director plans around, derived once per result. */
 export interface DirectorPlan {
   sep: number | null;
+  /** When the ship's engines light while it is still attached (hot staging), or null. */
+  hotStage: number | null;
   boostbackEnd: number;
   boosterLanding: number;
   boosterEnd: number;
   boosterCatch: boolean;
+  /** When each vehicle comes down in the water, or null: its onboard cameras are then at the waterline. */
+  boosterTouchdown: number | null;
   shipSeco: number;
   /** Infinity for a ship that never comes back into the atmosphere. */
   shipEntry: number;
   shipLanding: number;
+  shipTouchdown: number | null;
   shipEnd: number;
   shipLands: boolean;
   boosterLands: boolean;
+  /** The vehicle's flight ends in a breakup. */
+  boosterBreaksUp: boolean;
+  shipBreaksUp: boolean;
 }
+
+const BREAKUPS = new Set(['lost', 'termination', 'impact']);
 
 export function planDirector(r: FlightResult): DirectorPlan {
   const ev = (key: string) => r.events.find((e) => e.key === key)?.t;
   const sep = r.separationT;
   const boosterLanding = firstPhaseTime(r.booster, Phase.LandingBurn, sep ?? 0) ?? r.booster.end - 20;
   const shipLanding = firstPhaseTime(r.ship, Phase.ShipFlip, sep ?? 0) ?? firstPhaseTime(r.ship, Phase.LandingBurn, (sep ?? 0) + 60) ?? r.ship.end - 25;
+  const hotStage = sep !== null ? firstPhaseTime(r.ship, Phase.HotStage) : null;
   return {
     sep,
+    hotStage: hotStage !== null && sep !== null && hotStage <= sep ? hotStage : null,
     boostbackEnd: ev('boostback-end') ?? (sep !== null ? sep + 50 : 0),
     boosterLanding,
     boosterEnd: r.booster.end,
     boosterCatch: r.booster.endKind === 'catch',
+    boosterTouchdown: firstPhaseTime(r.booster, Phase.Splashed),
     shipSeco: ev('seco') ?? (sep !== null ? sep + 360 : r.ship.end),
     shipEntry: ev('entry') ?? firstPhaseTime(r.ship, Phase.Entry, sep ?? 0) ?? Infinity,
     shipLanding,
+    shipTouchdown: firstPhaseTime(r.ship, Phase.Splashed),
     shipEnd: r.ship.end,
     shipLands: r.ship.endKind === 'splashdown',
     boosterLands: r.booster.endKind === 'splashdown' || r.booster.endKind === 'catch',
+    boosterBreaksUp: BREAKUPS.has(r.booster.endKind),
+    shipBreaksUp: BREAKUPS.has(r.ship.endKind),
   };
 }
 
 /** The booster's landing (or its last moments, if it doesn't land) is shown from this long before its landing burn. */
 const LANDING_LEAD = 12;
+/**
+ * How long the director stays on a vehicle after its flight ends: a landed one floating or held by the tower, or
+ * the debris of one that broke up (gone within seconds in thin air), before the other vehicle takes over.
+ */
+const LANDED_HOLD = 20;
+const BREAKUP_HOLD = 8;
+
+/**
+ * Staging, as the broadcast shows it: the booster's camera looking up at the ship from a little before the ship's
+ * engines light (STAGING_LEAD s) until the ship has just pulled clear (SEPARATION_FROM s after separation), when
+ * the booster's flip starts turning that camera away from it; then a long lens alongside both vehicles as they
+ * part, until SEPARATION_TO s after separation, when the booster's engine camera takes over for its boostback.
+ */
+const STAGING_LEAD = 2.5;
+/** At most this long before separation, however long the ship's engines burn while attached. */
+const STAGING_MAX = 8;
+export const SEPARATION_FROM = 1.8;
+export const SEPARATION_TO = 12;
+
+/**
+ * The launch steam billows round the tower camera from about this long after liftoff until it has thinned out
+ * (see lib/three/effects/launchClouds.ts): a grey frame, so a tower camera picked then shows the director's shot.
+ */
+const TOWER_STEAM: readonly [number, number] = [25, 160];
+
+/** When the booster's camera looking up at the ship comes on. */
+function stagingFrom(p: DirectorPlan): number {
+  if (p.sep === null) return Infinity;
+  return Math.max(p.sep - STAGING_MAX, (p.hotStage ?? p.sep - 2) - STAGING_LEAD);
+}
 
 /** The booster's landing window: from just before its landing burn until shortly after it is down. */
 function boosterLanding(t: number, p: DirectorPlan): boolean {
@@ -79,7 +126,6 @@ function boosterLanding(t: number, p: DirectorPlan): boolean {
 
 function boosterShot(t: number, p: DirectorPlan): Shot {
   if (p.boosterLands && t >= p.boosterLanding - LANDING_LEAD) return shot(p.boosterCatch ? 'tower' : 'buoy', 'booster');
-  if (p.sep !== null && t < p.sep + 9) return shot('booster-top', 'booster');
   return shot('booster-aft', 'booster');
 }
 
@@ -92,19 +138,22 @@ function shipShot(t: number, p: DirectorPlan): Shot {
 /**
  * The broadcast director: which camera is live at time t. Pure function of t, so scrubbing is stable.
  * Ascent alternates between the long-range tracker and the booster's engine camera; staging is seen from
- * the booster looking up; afterwards it follows whichever vehicle has something happening.
+ * the booster looking up, then from alongside as the two part; afterwards it follows whichever vehicle has
+ * something happening.
  */
 export function autoShot(t: number, p: DirectorPlan, follow: FollowMode): Shot {
   if (t < 11) return shot('pad', 'booster');
-  if (p.sep === null || t < p.sep - 7) {
+  if (p.sep === null || t < stagingFrom(p)) {
     const cycle = (t - 11) % 64;
-    if (t > 40 && cycle > 46 && cycle < 57 && (p.sep === null || t < p.sep - 20)) return shot('booster-aft', 'booster');
+    // Not once the stack has broken up: the tracker stays on what is left of it.
+    if (t > 40 && cycle > 46 && cycle < 57 && t <= p.boosterEnd && (p.sep === null || t < p.sep - 20)) return shot('booster-aft', 'booster');
     return shot('tracking', 'booster');
   }
-  if (t < p.sep + 9) return shot('booster-top', 'booster');
+  if (t < p.sep + SEPARATION_FROM) return shot('booster-top', 'booster');
+  if (t < p.sep + SEPARATION_TO) return shot('separation', 'booster');
 
-  const boosterAlive = t <= p.boosterEnd + 20;
-  const shipAlive = t <= p.shipEnd + 20;
+  const boosterAlive = t <= p.boosterEnd + (p.boosterBreaksUp ? BREAKUP_HOLD : LANDED_HOLD);
+  const shipAlive = t <= p.shipEnd + (p.shipBreaksUp ? BREAKUP_HOLD : LANDED_HOLD);
   if (follow === 'booster') return boosterAlive || !shipAlive ? boosterShot(t, p) : shipShot(t, p);
   if (follow === 'ship') return shipAlive || !boosterAlive ? shipShot(t, p) : boosterShot(t, p);
 
@@ -120,19 +169,27 @@ export function pickedShot(id: ShotId, t: number, p: DirectorPlan, follow: Follo
   switch (id) {
     case 'pad':
     case 'tracking':
-      return shot(id, follow === 'ship' ? 'ship' : 'booster');
+      // Following both, they watch the vehicle the director would.
+      return shot(id, follow === 'both' ? autoShot(t, p, follow).vehicle : follow);
     case 'booster-top':
     case 'booster-aft':
+      // Once the booster is down in the water its cameras are at the waterline: the buoy shows it instead.
+      if (p.boosterTouchdown !== null && t >= p.boosterTouchdown) return t <= p.boosterEnd + 20 ? shot('buoy', 'booster') : autoShot(t, p, follow);
       return t <= p.boosterEnd + 20 ? shot(id, 'booster') : autoShot(t, p, follow);
     case 'ship-aft':
     case 'ship-nose':
+      if (p.shipTouchdown !== null && t >= p.shipTouchdown) return t <= p.shipEnd + 20 ? shot('buoy', 'ship') : autoShot(t, p, follow);
       return t <= p.shipEnd + 20 ? shot(id, 'ship') : autoShot(t, p, follow);
     case 'tower':
-      // The tower watches the booster come home.
+      // The tower watches the booster come home; it sees liftoff, but not through the launch steam.
+      if (t > TOWER_STEAM[0] && t < TOWER_STEAM[1]) return autoShot(t, p, follow);
       return shot(id, 'booster');
     case 'buoy':
       // Following both, it watches whichever comes down next: the ship's buoy, half a world away, would show an
       // empty sea for hours while the booster climbs and lands.
       return shot(id, follow === 'booster' || (follow === 'both' && p.boosterLands && t <= p.boosterEnd + 20) ? 'booster' : 'ship');
+    case 'separation':
+      // The director's own; not offered in the camera menu.
+      return autoShot(t, p, follow);
   }
 }

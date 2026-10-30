@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { EARTH_RADIUS } from '../../../sim/types';
-import { blendAround, ChaseCamera, createPose, FreeCamera, GlobeCamera, MIN_CAMERA_ALTITUDE, type CameraPose, type Focus } from '../cameras';
+import { alongsidePose, blendAround, ChaseCamera, createPose, fitPoints, FreeCamera, GlobeCamera, MIN_CAMERA_ALTITUDE, type CameraPose, type Focus } from '../cameras';
 import { enuAt, latLonToEcef, offsetEnu, type V3 } from '../geo';
 
 /** Where a world point lands on screen (NDC: +x right, +y up) for a pose. */
@@ -157,5 +157,24 @@ describe('blendAround', () => {
     const gap = (p: V3, q: V3) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
     expect(gap(blendAround(a, b, 0, out).pos, a.pos)).toBeLessThan(0.01);
     expect(gap(blendAround(a, b, 1, out).pos, b.pos)).toBeLessThan(1);
+  });
+});
+
+describe('fitPoints', () => {
+  it('zooms in until the furthest point reaches the edge of the free band or of the width', () => {
+    const f = focusAt(50_000, 300);
+    const pose = alongsidePose(f, 80, 12, 6000, 0.7, 0.12, 30, createPose());
+    // Two vehicles 300 m apart along the course, either side of the focus.
+    const a = offsetEnu(f.pos, -150 * 1, 0, 0, [0, 0, 0]);
+    const b = offsetEnu(f.pos, 150, 0, 40, [0, 0, 0]);
+    const aspect = 1.6;
+    const band = 0.6;
+    fitPoints(pose, [a, b], 0.8, 0.75, band, aspect, 0.12, 30);
+    // NDC as if the frame were square: x is scaled by the aspect.
+    const sa = screen(a, pose);
+    const sb = screen(b, pose);
+    const reachX = Math.max(Math.abs(sa.x), Math.abs(sb.x)) / aspect;
+    const reachY = Math.max(Math.abs(sa.y), Math.abs(sb.y)) / band;
+    expect(Math.max(reachX / 0.75, reachY / 0.8)).toBeCloseTo(1, 3);
   });
 });

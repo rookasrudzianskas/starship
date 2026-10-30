@@ -324,6 +324,25 @@ export function alongsidePose(f: Focus, azDeg: number, elDeg: number, dist: numb
   return lookAt(out, f.pos, up);
 }
 
+const fitInv = new THREE.Quaternion();
+
+/**
+ * Zoom a pose (its position and direction kept) so that every point (ECEF) lies within `fillY` of the free band of
+ * the frame (`band`, a share of its height, centred on the view direction) and within `fillX` of its width.
+ * `aspect` is the frame's width over its height.
+ */
+export function fitPoints(pose: CameraPose, points: readonly V3[], fillY: number, fillX: number, band: number, aspect: number, minFov: number, maxFov: number): CameraPose {
+  fitInv.copy(pose.quat).invert();
+  let k = 0;
+  for (const p of points) {
+    tmp.set(p[0] - pose.pos[0], p[1] - pose.pos[1], p[2] - pose.pos[2]).applyQuaternion(fitInv);
+    const depth = Math.max(1, -tmp.z);
+    k = Math.max(k, Math.abs(tmp.y) / depth / (fillY * band), Math.abs(tmp.x) / depth / (fillX * aspect));
+  }
+  pose.fov = Math.min(maxFov, Math.max(minFov, (2 * Math.atan(k) * 180) / Math.PI));
+  return pose;
+}
+
 /** A camera fixed to a vehicle: `local` offset and `dir` view direction in the body frame, `upLocal` body-frame up. */
 export function onboardPose(base: V3, quat: THREE.Quaternion, local: THREE.Vector3, dir: THREE.Vector3, upLocal: THREE.Vector3, fov: number, out: CameraPose): CameraPose {
   tmp.copy(local).applyQuaternion(quat);

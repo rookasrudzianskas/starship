@@ -8,7 +8,7 @@ import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm 
 import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
 import { boosterCatchHeight, createBooster, createShip, prefetchProceduralTextures } from '@/lib/three/vehicles';
 import type { EarthFrame, Explosion, LaunchClouds, PadModel, Quality, ShipModel, Splash, StarlinkSwarm, VehicleModel, VehicleVisualState } from '@/lib/three/contracts';
-import { alongsidePose, blendAround, blendPose, ChaseCamera, copyPose, createPose, FreeCamera, GlobeCamera, onboardPose, trackerPose, WHEEL_ZOOM, type CameraPose, type DragInput, type Focus } from './cameras';
+import { alongsidePose, blendAround, blendPose, ChaseCamera, copyPose, createPose, fitPoints, FreeCamera, GlobeCamera, onboardPose, trackerPose, WHEEL_ZOOM, type CameraPose, type DragInput, type Focus } from './cameras';
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
 import { computeCourse, courseAt } from './course';
 import { AERIAL_TRACKING_FROM, autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
@@ -143,6 +143,8 @@ const DOOR_LEAD = 5;
 const SWARM_CAPACITY = 48;
 /** Highest eye adaptation while a lit plume fills the view: it is the brightest thing there, even at night. */
 const PLUME_EXPOSURE = 1.3;
+/** How far the eye adaptation stops down right by the blazing hot-staging vents (a share of the exposure). */
+const VENT_STOP = 0.4;
 /** Pixels per CSS pixel a context without MSAA renders at least, before the resolution governor steps down. */
 const NO_MSAA_MIN_RATIO = 1.5;
 /** Picture-in-picture frame: at most this wide (CSS px), with this aspect. */
@@ -158,6 +160,11 @@ const BOOSTER_MOUNTS: Record<Generation, readonly number[]> = {
   b2: [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2],
   v3: [0, (2 * Math.PI) / 3, (4 * Math.PI) / 3],
 };
+/**
+ * How far below the booster's top its camera looking up at the ship sits (m): a couple of metres under the vented
+ * interstage, which is taller on the V3 booster than the separate ring of the earlier ones.
+ */
+const BOOSTER_TOP_DROP: Record<Generation, number> = { b1: 4, b2: 4, v3: 6.5 };
 /** Size of a vehicle's breakup (the explosion's scale, m): cameras widen out to its debris cloud. */
 const BREAKUP_SCALE: Record<VehicleId, number> = { booster: 70, ship: 50 };
 /** Size of the body making a splash (the effect's scale, m), and how much wider cameras frame while its spray is up. */
@@ -180,6 +187,13 @@ const satSpin = new THREE.Quaternion();
 const AXIS_Y = new THREE.Vector3(0, 1, 0);
 const site: V3 = [0, 0, 0];
 const endPos: V3 = [0, 0, 0];
+/** Both ends of both vehicles, for the shot that frames the two of them. */
+const ends: V3[] = [
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+];
 const pt = { x: 0, y: 0 };
 /** The opening shot, for the moment before the director has a plan. */
 const PAD_SHOT: Shot = { id: 'pad', vehicle: 'booster' };
@@ -213,6 +227,22 @@ function hiddenByEarth(a: V3, b: V3): boolean {
   const cy = a[1] + dy * tc;
   const cz = a[2] + dz * tc;
   return cx * cx + cy * cy + cz * cz < 6_368_000 * 6_368_000;
+}
+
+/** The track ends in a breakup (the explosion effect plays where it ends). */
+function breaksUp(track: Track): boolean {
+  return track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact';
+}
+
+/**
+ * About how wide the cloud of a breakup of size `scale` (m) is `age` s after it, at `alt` m (cameras widen out to
+ * it): after lib/three/effects/explosion.ts, which blends a vacuum burst, whose vapour shells race out and slow
+ * over a few seconds, with a fireball in air, which stays within a few times its size.
+ */
+function breakupSpread(scale: number, age: number, alt: number): number {
+  const air = Math.pow(Math.exp(-Math.max(0, alt) / 8500), 0.3);
+  const shells = 0.12 + 1.8 * 6 * (1 - Math.exp(-age / 6));
+  return scale * (2.2 * shells * (1 - air) + 4 * air) * smoothstep(0, 2.5, age);
 }
 
 function smoothstep(a: number, b: number, x: number): number {
@@ -528,8 +558,7 @@ export function createStage(): StageHandle {
       rig.course = computeCourse(track);
       rig.engines = new Uint8Array((rig.id === 'booster' ? result.boosterEngines : result.shipEngines).slots.length);
       rig.visual.engines = new Uint8Array(rig.engines.length);
-      const ends = track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact';
-      if (ends) {
+      if (breaksUp(track)) {
         if (!rig.explosion) {
           rig.explosion = createExplosion();
           scene.add(rig.explosion.object);
@@ -929,7 +958,7 @@ export function createStage(): StageHandle {
    * the spray of its splashdown while that is thick (so a camera stands back from it rather than in it).
    */
   function framedLength(rig: Rig, track: Track, t: number, length: number): number {
-    if (rig.explosion && t > track.end) return length + BREAKUP_SCALE[rig.id] * 4 * smoothstep(0, 2.5, t - track.end);
+    if (breaksUp(track) && t > track.end) return length + breakupSpread(BREAKUP_SCALE[rig.id], t - track.end, track.alt[track.n - 1]);
     if (rig.splash && rig.touchdown !== null && t > rig.touchdown) {
       const age = t - rig.touchdown;
       return length + SPLASH_SPREAD[rig.id] * smoothstep(0, 2, age) * (1 - smoothstep(16, 30, age));
@@ -942,15 +971,27 @@ export function createStage(): StageHandle {
   const DIR = new THREE.Vector3();
   const UP = new THREE.Vector3();
 
-  /** What a shot of `vehicle` looks at: the stack until separation. */
-  function shotFocus(vehicle: VehicleId, t: number): Focus {
+  /** What a shot of `vehicle` looks at: the stack until separation, and both vehicles for the director's staging shot. */
+  function shotFocus(shot: Shot, t: number): Focus {
     if (current && isStacked(current, t)) return focusStack;
-    return vehicle === 'ship' ? focusS : focusB;
+    if (shot.id === 'separation') return focusBoth;
+    return shot.vehicle === 'ship' ? focusS : focusB;
+  }
+
+  /** A chase plane off the vehicle's right-hand side, keeping `f` side on with a long lens. */
+  function aerialPose(f: Focus, band: number, out: CameraPose): CameraPose {
+    return alongsidePose(f, 80, 3, f.size * 20, 0.72 * band, 0.12, 30, out);
+  }
+
+  /** A camera on the ground at `site` can see a vehicle it follows: still there, and above its horizon. */
+  function inSight(vehicle: VehicleId, f: Focus): boolean {
+    return (vehicle === 'booster' ? booster : ship).visible && !hiddenByEarth(site, f.pos);
   }
 
   /**
    * The pose of a webcast shot looking at `f`. Cameras that zoom fill a share of `band`, the part of the frame
-   * height page controls leave free. False when the shot can't be shown (its vehicle is gone).
+   * height page controls leave free. False when the shot can't be shown: its vehicle is gone, or a camera on the
+   * ground has lost it below the horizon.
    */
   function shotPose(shot: Shot, t: number, f: Focus, band: number, out: CameraPose): boolean {
     const L = lengths();
@@ -959,12 +1000,12 @@ export function createStage(): StageHandle {
         offsetEnu(padEcef, 330, -260, 3, site);
         // Near the ground the mount stays in the picture.
         trackerPose(site, f === focusStack ? focusPad : f, 0.86 * band, 3, 62, out);
-        return true;
+        return inSight(shot.vehicle, f);
       }
       case 'tower': {
         offsetEnu(padEcef, -60, -120, 40, site);
         trackerPose(site, f, 0.78 * band, 4, 70, out);
-        return true;
+        return inSight(shot.vehicle, f);
       }
       case 'tracking': {
         if (t < AERIAL_TRACKING_FROM) {
@@ -972,32 +1013,47 @@ export function createStage(): StageHandle {
           offsetEnu(padEcef, 2600, 8800, 18, site);
           trackerPose(site, f, 0.8 * band, 0.12, 30, out);
         } else {
-          // ...then a chase plane off the vehicle's right-hand side, keeping it side on with a long lens.
-          alongsidePose(f, 80, 3, f.size * 20, 0.72 * band, 0.12, 30, out);
+          // ...then a chase plane alongside.
+          aerialPose(f, band, out);
         }
         return true;
       }
+      case 'separation': {
+        // The chase plane again, a little above them against the haze, framing both vehicles end to end as they
+        // part: the ship pulling ahead, the booster turning back.
+        alongsidePose(f, 80, 12, f.size * 20, 0.72 * band, 0.12, 30, out);
+        let k = 0;
+        for (const rig of rigs) {
+          const length = rig.id === 'booster' ? L.booster : L.ship;
+          v1.set(0, 1, 0).applyQuaternion(rig.sample.quat);
+          copy3(rig.base, ends[k++]);
+          for (let c = 0; c < 3; c++) ends[k][c] = rig.base[c] + v1.getComponent(c) * length;
+          k++;
+        }
+        fitPoints(out, ends, 0.8, 0.74, band, width / Math.max(1, height), 0.12, 30);
+        return true;
+      }
       case 'buoy': {
-        const rig = shot.vehicle === 'booster' ? booster : ship;
         const track = shot.vehicle === 'booster' ? current?.booster : current?.ship;
         if (!track) return false;
         const i = track.n - 1;
         const r = Math.hypot(track.pos[i * 3], track.pos[i * 3 + 1], track.pos[i * 3 + 2]);
-        site[0] = (track.pos[i * 3] / r) * 6_371_000;
-        site[1] = (track.pos[i * 3 + 1] / r) * 6_371_000;
-        site[2] = (track.pos[i * 3 + 2] / r) * 6_371_000;
+        site[0] = (track.pos[i * 3] / r) * EARTH_RADIUS;
+        site[1] = (track.pos[i * 3 + 1] / r) * EARTH_RADIUS;
+        site[2] = (track.pos[i * 3 + 2] / r) * EARTH_RADIUS;
         offsetEnu(site, 420, -300, 4, site);
         trackerPose(site, f, 0.78 * band, 1.5, 55, out);
-        return rig.visible || t < track.end + 45;
+        return inSight(shot.vehicle, f);
       }
       case 'booster-top': {
         if (!booster.visible) return false;
-        // Between two grid fins, well below the vents and off the hull: looking up the booster at the interstage and
-        // the ship's engines, a fin either side, with the hull along the bottom of the frame.
-        LOCAL.set(0, L.booster - 14, 6.5).applyAxisAngle(AXIS_Y, boosterMount);
-        DIR.set(0, 18, -6.5).normalize().applyAxisAngle(AXIS_Y, boosterMount);
+        // Off the hull between two grid fins, a couple of metres below the interstage: looking up at it and, through
+        // its vents, at the ship's engines. At hot staging the vents blaze round the frame, then the ship's aft end
+        // lifts away above the interstage.
+        LOCAL.set(0, L.booster - BOOSTER_TOP_DROP[generation ?? 'v3'], 7.2).applyAxisAngle(AXIS_Y, boosterMount);
+        DIR.set(0, 1, -0.5).normalize().applyAxisAngle(AXIS_Y, boosterMount);
         UP.set(0, 0, 1).applyAxisAngle(AXIS_Y, boosterMount);
-        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 60, out);
+        onboardPose(booster.base, booster.sample.quat, LOCAL, DIR, UP, 68, out);
         return true;
       }
       case 'booster-aft': {
@@ -1293,6 +1349,18 @@ export function createStage(): StageHandle {
     return w;
   }
 
+  /**
+   * 0..1: how close the main view is to the hot-staging vents while they blaze (the ship's engines firing into the
+   * interstage): from the booster's own cameras they outshine the daylight, so the eye adaptation stops down.
+   */
+  function ventsInView(p: CameraPose): number {
+    if (!booster.visible || booster.visual.hotStage === 0) return 0;
+    v1.set(0, 1, 0).applyQuaternion(booster.sample.quat);
+    const L = lengths().booster;
+    const d = Math.hypot(booster.base[0] + v1.x * L - p.pos[0], booster.base[1] + v1.y * L - p.pos[1], booster.base[2] + v1.z * L - p.pos[2]);
+    return 1 - smoothstep(25, 90, d);
+  }
+
   /** Nothing to show for the current flight yet (loading, or building it): black, without stale labels or frames. */
   function blank() {
     if (shown === null) return;
@@ -1425,9 +1493,18 @@ export function createStage(): StageHandle {
       chase.pose(mainFocus, target, reach);
       key += follow;
     } else {
-      const shot: Shot = plan ? (st.webcastShot === 'auto' ? autoShot(t, plan, follow) : pickedShot(st.webcastShot as ShotId, t, plan, follow)) : PAD_SHOT;
-      followed = shotFocus(shot.vehicle, t);
-      if (!shotPose(shot, t, followed, band, target)) chase.pose(followed, target, reach);
+      const auto = plan ? autoShot(t, plan, follow) : PAD_SHOT;
+      let shot: Shot = plan && st.webcastShot !== 'auto' ? pickedShot(st.webcastShot as ShotId, t, plan, follow) : auto;
+      followed = shotFocus(shot, t);
+      if (!shotPose(shot, t, followed, band, target)) {
+        // A camera the viewer picked that can't show its vehicle (a ground camera that has lost it below the
+        // horizon) gives way to the director's. Otherwise the chase plane takes over: it frames what is left of a
+        // vehicle that has broken up from outside its debris.
+        if (shot !== auto && shotPose(auto, t, shotFocus(auto, t), band, target)) {
+          shot = auto;
+          followed = shotFocus(shot, t);
+        } else aerialPose(followed, band, target);
+      }
       key += `${shot.id}:${shot.vehicle}`;
       if (st.settings.reduceMotion === false && (shot.id === 'pad' || shot.id === 'tower') && t > -1 && t < 14) {
         // Ground shake from the engines near liftoff.
@@ -1490,7 +1567,7 @@ export function createStage(): StageHandle {
     let adapting = false;
     if (earth) {
       const metered = Math.min(4, Math.max(1, earth.exposureHint));
-      const goal = metered + (Math.min(metered, PLUME_EXPOSURE) - metered) * plumeInView(pose);
+      const goal = (metered + (Math.min(metered, PLUME_EXPOSURE) - metered) * plumeInView(pose)) * (1 - VENT_STOP * ventsInView(pose));
       exposure += (goal - exposure) * damp(1, dt);
       // The last percent is invisible; settling there lets a paused view stop redrawing.
       if (Math.abs(goal - exposure) < 0.01 * goal) exposure = goal;
@@ -1625,7 +1702,7 @@ export function createStage(): StageHandle {
     }
     for (const rig of rigs) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
-      rig.explosion?.setAge(track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact' ? t - track.end : -1);
+      rig.explosion?.setAge(breaksUp(track) ? t - track.end : -1);
       if (rig.splash) {
         rig.splash.setAge(rig.touchdown !== null ? t - rig.touchdown : -1, SPLASH_SCALE[rig.id]);
         // A landing burn lights the water under the vehicle, which is what shows at night: the height of its base
