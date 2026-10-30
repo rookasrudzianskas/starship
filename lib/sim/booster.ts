@@ -158,7 +158,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   let heldUntil = 0;
   let lbSeg = 0;
   let attAcc = 0;
-  /** Engines the final approach may run on: the last set and its spares (see VehicleRt.throttleTo). */
+  /** Engines of the last landing set (failed ones replaced by their stand-ins). */
   let finalSet: number[] = [];
   const segAcc: number[] = [];
   const segSwitch: number[] = [];
@@ -617,7 +617,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     } else if (mode === 'free') {
       // Engines cut over the water or the arms: the booster drops the last few metres upright.
       qLook(qT, up, zAx);
-      slew(body, qT, 8 * D, 4 * D, dt);
+      slew(body, qT, 15 * D, 25 * D, dt);
       phase = Phase.Descent;
     } else if (mode === 'coast' && (attAcc += dt) >= 0.1 - 1e-9) {
       // Engines first for the descent; grid fins steer the impact point onto the target (10 Hz).
@@ -712,8 +712,16 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
         lbSeg++;
         const last = lbSeg === segSwitch.length;
         part.setEngines(selectBoosterEngines(last ? finalCount() : segN[lbSeg], (i) => part.usable(i)), t);
-        // Spares for the final approach: the set, then the next engines in (the inner ring) to stand in for one that fails.
-        if (last) finalSet = selectBoosterEngines(Math.min(13, part.litTotal() + 3), (i) => part.usable(i));
+        if (last) finalSet = part.litEngines();
+      }
+      // An engine of the last set that fails is stood in for by the next one in (from the inner ring).
+      if (lbSeg === segSwitch.length) {
+        for (let k = 0; k < finalSet.length; k++) {
+          if (part.usable(finalSet[k])) continue;
+          const spare = selectBoosterEngines(Math.min(13, finalSet.length + 3), (i) => part.usable(i)).find((i) => !finalSet.includes(i) && !part.isLit(i));
+          if (spare === undefined || !part.ignite(spare, t)) break;
+          finalSet[k] = spare;
+        }
       }
       // Track the reference: feed-forward deceleration scaled by how fast we actually descend (so a booster
       // that stalls above the aim point keeps settling instead of hovering), plus velocity feedback.
