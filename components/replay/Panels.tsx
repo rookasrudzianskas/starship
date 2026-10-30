@@ -193,6 +193,12 @@ export function LivePanel() {
   const ref = useDismiss(open, () => setPanel('none'), '[aria-label="Sync to a live webcast"]');
   if (!open) return null;
   const seconds = parseClock(clock);
+  const sync = () => {
+    if (seconds === null) return;
+    const nowT = sign === '-' ? -seconds : seconds;
+    setLive(Date.now() - nowT * 1000);
+    setPanel('none');
+  };
   return (
     <div className={styles.popover} ref={ref} role="dialog" aria-label="Sync to a live webcast">
       <div className={styles.sectionLabel}>Sync to a live webcast</div>
@@ -200,47 +206,45 @@ export function LivePanel() {
         Type the clock the webcast shows right now. The replay then runs on the same mission clock, so the simulated
         flight plays alongside the real one.
       </p>
-      <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
-        <Segmented<'-' | '+'> label="Before or after liftoff" value={sign} onChange={setSign} options={[['-', 'T−'], ['+', 'T+']]} />
-        <input
-          aria-label="Webcast clock (hh:mm:ss)"
-          value={clock}
-          onChange={(e) => setClock(e.target.value)}
-          inputMode="numeric"
-          style={{
-            flex: 1,
-            height: 32,
-            padding: '0 10px',
-            background: 'transparent',
-            border: '1px solid var(--line-strong)',
-            borderRadius: 2,
-            color: 'var(--text)',
-            font: 'inherit',
-            fontSize: 14,
-            letterSpacing: '0.08em',
-          }}
-        />
-      </div>
-      <div className={styles.cardActions}>
-        <button
-          type="button"
-          className={`${styles.ctl} ${styles.ctlText}`}
-          disabled={seconds === null}
-          onClick={() => {
-            if (seconds === null) return;
-            const nowT = sign === '-' ? -seconds : seconds;
-            setLive(Date.now() - nowT * 1000);
-            setPanel('none');
-          }}
-        >
-          Sync now
-        </button>
-        {live !== null ? (
-          <button type="button" className={`${styles.ctl} ${styles.ctlText}`} onClick={() => setLive(null)}>
-            Stop sync
+      {/* A form, so Enter in the clock syncs as the button does. */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          sync();
+        }}
+      >
+        <div style={{ display: 'flex', gap: 6, marginTop: 12 }}>
+          <Segmented<'-' | '+'> label="Before or after liftoff" value={sign} onChange={setSign} options={[['-', 'T−'], ['+', 'T+']]} />
+          <input
+            aria-label="Webcast clock (hh:mm:ss)"
+            value={clock}
+            onChange={(e) => setClock(e.target.value)}
+            inputMode="numeric"
+            style={{
+              flex: 1,
+              height: 32,
+              padding: '0 10px',
+              background: 'transparent',
+              border: '1px solid var(--line-strong)',
+              borderRadius: 2,
+              color: 'var(--text)',
+              font: 'inherit',
+              fontSize: 14,
+              letterSpacing: '0.08em',
+            }}
+          />
+        </div>
+        <div className={styles.cardActions}>
+          <button type="submit" className={`${styles.ctl} ${styles.ctlText}`} disabled={seconds === null}>
+            Sync now
           </button>
-        ) : null}
-      </div>
+          {live !== null ? (
+            <button type="button" className={`${styles.ctl} ${styles.ctlText}`} onClick={() => setLive(null)}>
+              Stop sync
+            </button>
+          ) : null}
+        </div>
+      </form>
     </div>
   );
 }
