@@ -112,8 +112,8 @@ export interface Track {
   //                         90 nose up, 0 nose downrange, 180 nose uprange, negative nose down. Range (-180, 180].
   aoa: Float32Array; // n   total angle of attack, deg (0..180)
   throttle: Float32Array; // n mean throttle of lit engines 0..1 (0 when none lit)
-  lox: Float32Array; // n   LOX remaining, fraction of the full load
-  ch4: Float32Array; // n   CH4 remaining, fraction of the full load
+  lox: Float32Array; // n   LOX remaining, fraction of the flight's full load (1 at T-10 unless the scenario loads less)
+  ch4: Float32Array; // n   CH4 remaining, fraction of the flight's full load
   heating: Float32Array; // n 0..1 normalised entry heating (drives the plasma glow)
   aero: Float32Array; // 4n control surfaces, deg. Booster: grid fins 0..3 (V3 uses 0..2). Ship: fwdLeft, fwdRight, aftLeft, aftRight
   phase: Uint8Array; // n   PhaseCode

@@ -64,7 +64,7 @@ export interface SimOptions {
 export function simulateWithOptions(flightNumber: number, scenario: Scenario, opts: SimOptions = {}): FlightResult {
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   const flight = getFlight(flightNumber);
-  const ctx = new SimContext(flight, scenario, flightParams(flight, opts.params));
+  const ctx = new SimContext(flight, scenario, flightParams(flight, opts.params, scenario));
   const stack = runStack(ctx);
   if (stack.boosterBody && stack.shipBody) {
     if (!opts.skipBooster) runBooster(ctx, stack.boosterBody, stack.booster, stack.t);

@@ -1,4 +1,4 @@
-import { GULF_SPLASHDOWN, PADS, type Anomaly, type Flight, type PadSite } from '../flights/catalog';
+import { ANOMALY_PHASE_TARGET, GULF_SPLASHDOWN, PADS, type Anomaly, type AnomalyPhase, type Flight, type PadSite } from '../flights/catalog';
 import { atmosphereInto, type AtmosphereState } from './atmosphere';
 import { makeEvent, type EventState } from './events';
 import { inertialToEcef, latLonAltToEcef, localEnuBasis } from './geo';
@@ -61,7 +61,10 @@ export class SimContext {
   readonly mission: ShipMission;
   readonly shipLanding: { lat: number; lon: number };
   readonly payload: PayloadPlan | null;
+  /** Interventions and clock-timed anomalies, sorted by time; phase-tied anomalies join when armed. */
   readonly actions: Action[];
+  /** As-flown anomalies tied to a phase, waiting for the run to reach it (delay after the phase starts, s). */
+  private readonly phased: Array<{ anomaly: Anomaly; delay: number }> = [];
   readonly events: FlightEvent[] = [];
   readonly releases: PayloadRelease[] = [];
   readonly boosterTrack = new TrackBuilder(8192);
@@ -120,8 +123,29 @@ export class SimContext {
       if (!Number.isFinite(iv.t)) continue;
       acts.push({ t: Math.max(-10, iv.t), vehicle: iv.kind === 'stage-now' ? 'stack' : iv.vehicle, iv });
     }
-    for (const a of anomalies) acts.push({ t: a.t, vehicle: a.vehicle, anomaly: a });
+    for (const a of anomalies) {
+      if (a.phase) {
+        const start = flight.targets[ANOMALY_PHASE_TARGET[a.phase]];
+        this.phased.push({ anomaly: a, delay: start === undefined ? 0 : Math.max(0, a.t - start) });
+      } else acts.push({ t: a.t, vehicle: a.vehicle, anomaly: a });
+    }
     this.actions = acts.map((a, i) => ({ a, i })).sort((x, y) => x.a.t - y.a.t || x.i - y.i).map((x) => x.a);
+  }
+
+  /**
+   * The run reached `phase` at time t: its anomalies join the action list, timed from now. They are inserted
+   * after every action at or before their time, so a runner's read position stays valid.
+   */
+  armPhase(phase: AnomalyPhase, t: number): void {
+    for (let k = 0; k < this.phased.length; k++) {
+      const x = this.phased[k];
+      if (x.anomaly.phase !== phase) continue;
+      this.phased.splice(k--, 1);
+      const at = t + x.delay;
+      let i = this.actions.length;
+      while (i > 0 && this.actions[i - 1].t > at) i--;
+      this.actions.splice(i, 0, { t: at, vehicle: x.anomaly.vehicle, anomaly: x.anomaly });
+    }
   }
 
   /** Deterministic generator for one anomaly (stable when other parts of the scenario change). */
@@ -285,8 +309,8 @@ export function recordSample(
   s.pitch = pitch;
   s.aoa = aoa;
   s.throttle = part.meanThrottle();
-  s.lox = part.lox / part.loxCap;
-  s.ch4 = part.ch4 / part.ch4Cap;
+  s.lox = part.lox / part.loxFull;
+  s.ch4 = part.ch4 / part.ch4Full;
   s.heating = ex.heating;
   s.a0 = ex.aero[0]; s.a1 = ex.aero[1]; s.a2 = ex.aero[2]; s.a3 = ex.aero[3];
   s.phase = ex.phase;

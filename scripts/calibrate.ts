@@ -5,6 +5,9 @@
  *   npx tsx scripts/calibrate.ts            calibrate all flights and print the table
  *   npx tsx scripts/calibrate.ts 5 10       calibrate only these flights (others keep their values)
  *   npx tsx scripts/calibrate.ts --report   print the table for the current calibration only
+ *
+ * Plans that went elsewhere than the flight did (PLAN_LANDING) also get the cut-off of their plan fitted,
+ * stored under `plans` and used by runs with asFlown = false.
  */
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -13,11 +16,17 @@ import calibrationData from '../lib/sim/data/calibration.json';
 import { latLonAltToEcef, surfaceDistance } from '../lib/sim/geo';
 import { defaultParams, type CalibrationFile, type FlightParamOverrides, type FlightParams } from '../lib/sim/params';
 import { simulateWithOptions, type SimOptions } from '../lib/sim/simulate';
-import type { EventKey, FlightResult } from '../lib/sim/types';
+import type { EventKey, FlightResult, Scenario } from '../lib/sim/types';
 import { vehicleSpec } from '../lib/sim/vehicles';
 
 const OUT = new URL('../lib/sim/data/calibration.json', import.meta.url);
-const NOMINAL = { asFlown: true, interventions: [] };
+const NOMINAL: Scenario = { asFlown: true, interventions: [] };
+const PLAN: Scenario = { asFlown: false, interventions: [] };
+/**
+ * Planned splashdown time (s) of plans whose ship was to fly further than any flight did: Flights 1 and 2
+ * were to cross the Indian Ocean and the Pacific to a splashdown off Kauai about 90 minutes after launch.
+ */
+const PLAN_LANDING: Record<number, number> = { 2: 5400 };
 const calibration = calibrationData as unknown as CalibrationFile;
 /** Reference flight of each generation (calibrated first; seeds the others). */
 const REFERENCE: Record<string, number> = { b1: 5, b2: 10, v3: 13 };
@@ -83,7 +92,8 @@ export interface Metrics {
   boosterLandingKm: number | null;
   boosterEndKind: string;
   shipEndKind: string;
-  shipPropAtSeco: number | null; // t
+  /** LOX left just after SECO, as a fraction of the ship's full load. */
+  shipPropAtSeco: number | null;
 }
 
 export function eventTime(r: FlightResult, key: EventKey | 'separation'): number | undefined {
@@ -120,7 +130,7 @@ export function metrics(f: Flight, r: FlightResult): Metrics {
     const tr = r.ship;
     let i = 0;
     while (i < tr.n - 1 && tr.t[i] < seco + 0.5) i++;
-    shipPropAtSeco = tr.lox[i] + 0 * tr.ch4[i];
+    shipPropAtSeco = tr.lox[i];
   }
   return {
     values,
@@ -186,8 +196,8 @@ export function report(f: Flight, r: FlightResult): { lines: string[]; misses: n
   return { lines, misses };
 }
 
-export function run(f: Flight, params: FlightParamOverrides, opts: Omit<SimOptions, 'params'> = {}): FlightResult {
-  return simulateWithOptions(f.n, NOMINAL, { ...opts, params });
+export function run(f: Flight, params: FlightParamOverrides, opts: Omit<SimOptions, 'params'> = {}, scenario = NOMINAL): FlightResult {
+  return simulateWithOptions(f.n, scenario, { ...opts, params });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -206,7 +216,7 @@ interface ParamSpec {
   sigma?: number;
 }
 
-type ResidualFn = (r: FlightResult, m: Metrics) => number[];
+type ResidualFn = (r: FlightResult, m: Metrics, params: FlightParamOverrides) => number[];
 
 const MISSING = 25;
 
@@ -234,13 +244,14 @@ function optimise(
   residuals: ResidualFn,
   opts: Omit<SimOptions, 'params'>,
   maxIter = 12,
+  scenario = NOMINAL,
 ): FlightParamOverrides {
   const prior = specs.map((s) => clampTo(s, numberOf(base, s.key, f)));
   const evalAt = (x: number[]): number[] => {
     const params: FlightParamOverrides = { ...base };
     specs.forEach((s, j) => ((params as Record<string, number>)[s.key] = x[j]));
-    const r = run(f, params, opts);
-    const res = residuals(r, metrics(f, r)).map((v) => (Number.isFinite(v) ? v : MISSING));
+    const r = run(f, params, opts, scenario);
+    const res = residuals(r, metrics(f, r), params).map((v) => (Number.isFinite(v) ? v : MISSING));
     specs.forEach((s, j) => {
       if (s.sigma) res.push((x[j] - prior[j]) / s.sigma);
     });
@@ -533,10 +544,12 @@ function stageShip(f: Flight, p: FlightParamOverrides): FlightParamOverrides {
     specs.push({ key: 'insertionPerigee', min: 120_000, max: 270_000, h: 2_000, sigma: 60_000 });
     specs.push({ key: 'deorbitPerigee', min: -60_000, max: 110_000, h: 2_000, sigma: 50_000 });
   }
-  // A ship that reaches SECO should keep only its landing reserve plus a small margin.
+  // A ship that reaches SECO should keep only its landing reserve plus a small margin. Gauges read
+  // fractions of the full load, which is what the run loaded (see runStack).
   const reserve = numberOf(p, 'shipReserve', f) + 15_000;
-  const res: ResidualFn = (_r, m) => [
-    ...(reachesSeco && m.shipPropAtSeco !== null ? [(m.shipPropAtSeco * cap - reserve) / 6_000] : []),
+  const load = (q: FlightParamOverrides) => Math.min(numberOf(q, 'shipProp', f), cap * 1.05);
+  const res: ResidualFn = (_r, m, q) => [
+    ...(reachesSeco && m.shipPropAtSeco !== null ? [(m.shipPropAtSeco * load(q) - reserve) / 6_000] : []),
     ...rt(m.values.seco, tg.seco, 0.7),
     ...rf(m.values.shipTopSpeedKmh, tg.shipTopSpeedKmh, 0.004),
     ...rf(m.values.shipApogeeKm, tg.shipApogeeKm, 0.006),
@@ -548,7 +561,7 @@ function stageShip(f: Flight, p: FlightParamOverrides): FlightParamOverrides {
     // The load is set by what the ascent needs: trim the excess left at SECO directly, then refit.
     const m = metrics(f, run(f, out, { skipBooster: true }));
     if (m.shipPropAtSeco !== null) {
-      const excess = m.shipPropAtSeco * cap - reserve;
+      const excess = m.shipPropAtSeco * load(out) - reserve;
       const prop = Math.min(cap * 1.04, Math.max(cap * 0.8, numberOf(out, 'shipProp', f) - 0.9 * excess));
       out = optimise(f, { ...out, shipProp: prop }, specs, res, { skipBooster: true }, 10);
     }
@@ -602,6 +615,46 @@ function stageNoStaging(f: Flight, start: FlightParamOverrides): FlightParamOver
   return optimise(f, p, specs, res, {}, 16);
 }
 
+/**
+ * The plan's cut-off speed for a ship that was to fly further than the flight did (see PLAN_LANDING): the
+ * plan run should splash down at the plan's landing zone at the planned time. `flight` is the flight's
+ * calibration; returns the plan's overrides.
+ */
+function stagePlan(f: Flight, flight: FlightParamOverrides, plan: FlightParamOverrides): FlightParamOverrides {
+  const tLand = PLAN_LANDING[f.n];
+  const zone = Float64Array.from(latLonAltToEcef(f.plan.ship.landing.lat, f.plan.ship.landing.lon, 0));
+  const base = { ...flight, ...plan };
+  const res: ResidualFn = (r) => {
+    const [along, cross] = landingMiss(r, zone);
+    const end = r.events.find((e) => e.key === 'ship-end')?.t;
+    return [along / 30, cross / 30, ...rt(end, tLand, 300), r.ship.endKind === 'splashdown' ? 0 : 6];
+  };
+  // The splashdown point sweeps around the globe with the cut-off speed: scan for the right pass, then refine.
+  const flightSpeed = numberOf(flight, 'cutSpeed', f);
+  let c0 = flightSpeed;
+  let best = Infinity;
+  for (let v = flightSpeed - 20; v <= flightSpeed + 100; v += 4) {
+    const r = run(f, { ...base, cutSpeed: v }, { skipBooster: true }, PLAN);
+    const cost = res(r, metrics(f, r), base).reduce((a, x) => a + x * x, 0);
+    if (cost < best) {
+      best = cost;
+      c0 = v;
+    }
+  }
+  const specs: ParamSpec[] = [{ key: 'cutSpeed', min: c0 - 6, max: c0 + 6, h: 0.5 }];
+  const out = optimise(f, { ...base, cutSpeed: c0 }, specs, res, { skipBooster: true }, 12, PLAN);
+  return { ...plan, cutSpeed: out.cutSpeed };
+}
+
+export function planReport(f: Flight): string[] {
+  const r = run(f, {}, {}, PLAN);
+  const zone = Float64Array.from(latLonAltToEcef(f.plan.ship.landing.lat, f.plan.ship.landing.lon, 0));
+  const end = r.ship.n - 1;
+  const at = Float64Array.from([r.ship.pos[3 * end], r.ship.pos[3 * end + 1], r.ship.pos[3 * end + 2]]);
+  const t = r.events.find((e) => e.key === 'ship-end')?.t ?? NaN;
+  return [`  plan: ship ${r.ship.endKind} at T+${t.toFixed(0)} (planned ~${PLAN_LANDING[f.n]}), ${(surfaceDistance(at, zone) / 1000).toFixed(0)} km from ${f.plan.ship.landing.name}`];
+}
+
 function hasBoosterReturn(f: Flight): boolean {
   const t = f.targets;
   return t.staging !== undefined && f.plan.booster.recovery !== 'expend';
@@ -635,6 +688,7 @@ if (isMain && process.argv.includes('--report')) {
     const { lines, misses } = report(f, r);
     console.log(`Flight ${f.n} (${r.computeMs.toFixed(0)} ms) — ${misses} outside tolerance`);
     console.log(lines.join('\n'));
+    if (PLAN_LANDING[f.n] !== undefined) console.log(planReport(f).join('\n'));
   }
 }
 
@@ -675,12 +729,16 @@ function pick(p: FlightParamOverrides, keys: Array<keyof FlightParams>): FlightP
 function writeCalibration(file: CalibrationFile): void {
   const ordered: CalibrationFile = { flights: {} };
   for (const k of Object.keys(file.flights).sort((a, b) => Number(a) - Number(b))) ordered.flights[k] = file.flights[k];
+  if (file.plans) {
+    ordered.plans = {};
+    for (const k of Object.keys(file.plans).sort((a, b) => Number(a) - Number(b))) ordered.plans[k] = file.plans[k];
+  }
   writeFileSync(OUT, JSON.stringify(ordered, null, 2) + '\n');
 }
 
 if (isMain && !process.argv.includes('--report') && !process.argv.includes('--stage')) {
   const only = process.argv.slice(2).filter((a) => /^\d+$/.test(a)).map(Number);
-  const file: CalibrationFile = { flights: { ...calibration.flights } };
+  const file: CalibrationFile = { flights: { ...calibration.flights }, ...(calibration.plans ? { plans: { ...calibration.plans } } : {}) };
   const fresh = process.argv.includes('--fresh');
   let total = 0;
   // Reference flights of each generation first; their values seed the others.
@@ -697,6 +755,10 @@ if (isMain && !process.argv.includes('--report') && !process.argv.includes('--st
     const start = restart ? seed : { ...seed, ...(file.flights[String(f.n)] ?? {}) };
     file.flights[String(f.n)] = calibrateFlight(f, start);
     writeCalibration(file);
+    if (PLAN_LANDING[f.n] !== undefined) {
+      file.plans = { ...(file.plans ?? {}), [String(f.n)]: stagePlan(f, file.flights[String(f.n)], file.plans?.[String(f.n)] ?? {}) };
+      writeCalibration(file);
+    }
     const r = run(f, file.flights[String(f.n)]);
     const { lines, misses } = report(f, r);
     total += misses;

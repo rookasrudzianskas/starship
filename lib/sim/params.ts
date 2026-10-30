@@ -1,5 +1,6 @@
-import type { Flight } from '../flights/catalog';
+import { getFlight, type Flight } from '../flights/catalog';
 import calibrationData from './data/calibration.json';
+import type { Scenario } from './types';
 
 /**
  * Per-flight tunables. Defaults come from the vehicle generation and the flight's observed milestones;
@@ -62,7 +63,10 @@ export interface FlightParams {
 type Partial2<T> = { [K in keyof T]?: T[K] };
 
 export interface CalibrationFile {
+  /** Fitted so the as-flown run reproduces each flight's milestones. */
   flights: Record<string, Partial2<FlightParams>>;
+  /** Changes for a run of the plan (asFlown = false) where the plan went elsewhere than the flight did. */
+  plans?: Record<string, Partial2<FlightParams>>;
 }
 
 const calibration = calibrationData as unknown as CalibrationFile;
@@ -117,9 +121,31 @@ export function defaultParams(f: Flight): FlightParams {
   };
 }
 
-/** Defaults merged with the calibrated values for this flight (and any explicit overrides). */
-export function flightParams(f: Flight, overrides?: Partial2<FlightParams>): FlightParams {
-  return { ...defaultParams(f), ...(calibration.flights[String(f.n)] ?? {}), ...(overrides ?? {}) };
+/**
+ * Flights whose as-flown fit is shaped by their failures throughout, so it says little about the plan
+ * (Flight 1 climbed on throttled-down engines and kept losing them): a run of the plan takes the
+ * parameters of the flight named here, the same vehicle generation flying the same plan.
+ */
+export const PLAN_PARAMS_FROM: Record<number, number> = { 1: 2 };
+
+/** The flight that went to orbit: a flight sent there by the director flies its orbit and deorbit. */
+const ORBITAL_FLIGHT = 14;
+
+/**
+ * Defaults merged with the calibrated values for this flight (and any explicit overrides). A run of the
+ * plan (`asFlown` false) also takes the plan's own adjustments (see CalibrationFile.plans).
+ */
+export function flightParams(f: Flight, overrides?: Partial2<FlightParams>, scenario: Pick<Scenario, 'asFlown' | 'shipMission'> = { asFlown: true }): FlightParams {
+  const src = scenario.asFlown ? f : getFlight(PLAN_PARAMS_FROM[f.n] ?? f.n);
+  const key = String(src.n);
+  const plan = scenario.asFlown ? undefined : calibration.plans?.[key];
+  const orbit: Partial2<FlightParams> = {};
+  if (scenario.shipMission === 'orbital' && f.plan.ship.mission !== 'orbital') {
+    const o = calibration.flights[String(ORBITAL_FLIGHT)] ?? {};
+    if (o.insertionPerigee !== undefined) orbit.insertionPerigee = o.insertionPerigee;
+    if (o.deorbitPerigee !== undefined) orbit.deorbitPerigee = o.deorbitPerigee;
+  }
+  return { ...defaultParams(src), ...(calibration.flights[key] ?? {}), ...(plan ?? {}), ...orbit, ...(overrides ?? {}) };
 }
 
 export type FlightParamOverrides = Partial2<FlightParams>;

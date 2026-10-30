@@ -26,6 +26,12 @@ const ZERO4 = [0, 0, 0, 0];
 const SHIP_FLAPS = [FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED];
 /** Speed (m/s) at which the scheduled flight-path angle reaches its final value. */
 const TURN_SPEED = 1500;
+/** Exponent of the pitch-over reduction with the thrust shortfall (engine-out lofting). */
+const LOFT = 3;
+/** Dynamic pressure at which the attached stack breaks up, Pa (more than twice any flight's max Q). */
+const Q_BREAKUP = 80_000;
+/** Angle of attack times dynamic pressure the ascent accepts from winds, Pa·rad (150 kPa·deg). */
+const QALPHA_MAX = 150_000 * DEG;
 const OMEGA = EARTH_OMEGA;
 const RE = EARTH_RADIUS;
 const D = DEG;
@@ -41,8 +47,9 @@ export function runStack(ctx: SimContext): StackOutcome {
   const gen = ctx.flight.generation;
   const bSpec = vehicleSpec('booster', gen, ctx.hotStageRing);
   const sSpec = vehicleSpec('ship', gen);
-  const bLoad = Math.min(bSpec.propMass * 1.03, p.boosterProp) * ctx.boosterLoad;
-  const booster = new VehicleRt(bSpec, p.boosterDry, bLoad, 0);
+  const bFull = Math.min(bSpec.propMass * 1.03, p.boosterProp);
+  const bLoad = bFull * ctx.boosterLoad;
+  const booster = new VehicleRt(bSpec, p.boosterDry, bLoad, 0, bFull);
   const payloadMass = ctx.payload ? ctx.payload.count * ctx.payload.unitMass : 0;
   const ship = new VehicleRt(sSpec, p.shipDry, Math.min(p.shipProp, sSpec.propMass * 1.05), payloadMass);
   const L = bSpec.length + sSpec.length;
@@ -112,7 +119,7 @@ export function runStack(ctx: SimContext): StackOutcome {
   const acts = ctx.actions;
   const stepOpts = { thrustScale: [1, 0.5], extra: null };
   const hP = v3();
-  const zRef = v3(), thrDir = v3(), up = v3(), east = v3(), north = v3(), hA = v3(), hV = v3(), tw = v3();
+  const zRef = v3(), thrDir = v3(), up = v3(), east = v3(), north = v3(), hA = v3(), hV = v3(), hW = v3(), tw = v3();
   const qT = new Float64Array(4);
   const xAx = v3();
   holdOnPad(t);
@@ -152,6 +159,14 @@ export function runStack(ctx: SimContext): StackOutcome {
     phase = PH_HOTSTAGE;
   };
 
+  /** Thrust the lit engines can deliver (user ceiling included) over the thrust the ascent plans, at most 1. */
+  const thrustRatio = () => {
+    const s0 = booster.spec.specs[0];
+    const planned = Math.min(p.boosterThrottle * booster.n * (s0.fVac - air.pressure * s0.exitArea), p.stackGLimit * GEE * body.mass);
+    const avail = booster.litThrustPotential(air.pressure) * Math.min(1, booster.ceiling);
+    return planned > 0 && avail < planned ? avail / planned : 1;
+  };
+
   const endStack = (kind: EndKind, at: number) => {
     end = { kind, t: at };
     phase = PH_DESTROYED;
@@ -167,8 +182,8 @@ export function runStack(ctx: SimContext): StackOutcome {
       switch (iv.kind) {
         case 'engine-out': {
           const v = iv.vehicle === 'booster' ? booster : ship;
-          if (iv.engine >= 0 && iv.engine < v.n && v.usable(iv.engine)) {
-            failEngines(v, [iv.engine], at);
+          // The intervention event is the callout; no separate engine-out event.
+          if (iv.engine >= 0 && iv.engine < v.n && v.fail(iv.engine, at)) {
             ctx.events.push(makeInterventionEvent(iv.vehicle, at, s, `Engine shut down: ${engineName(iv.vehicle, iv.engine)}`, 'ENGINE OUT'));
           }
           break;
@@ -300,9 +315,11 @@ export function runStack(ctx: SimContext): StackOutcome {
       enuAt(body.r, east, north, up);
       const az = p.azimuth * D;
       for (let i = 0; i < 3; i++) hA[i] = Math.sin(az) * east[i] + Math.cos(az) * north[i];
-      const va = air.vAir;
-      const vUp = va[0] * up[0] + va[1] * up[1] + va[2] * up[2];
-      for (let i = 0; i < 3; i++) hV[i] = va[i] - vUp * up[i];
+      // The schedule flies the Earth-relative velocity (the ground track); the air-relative velocity only
+      // sets the angle-of-attack limit, so a jet stream changes the loads rather than the whole ascent.
+      const vg = air.vGround;
+      const vUp = vg[0] * up[0] + vg[1] * up[1] + vg[2] * up[2];
+      for (let i = 0; i < 3; i++) hV[i] = vg[i] - vUp * up[i];
       const vh = Math.sqrt(hV[0] * hV[0] + hV[1] * hV[1] + hV[2] * hV[2]);
       // Steering plane: launch azimuth until the horizontal velocity is established, then the velocity
       // azimuth; once fast, the target orbital plane, with yaw nulling the inertial out-of-plane velocity
@@ -326,9 +343,19 @@ export function runStack(ctx: SimContext): StackOutcome {
         const gam = Math.atan2(vUp, vh);
         const sp = Math.min(1, V / TURN_SPEED);
         const bias = hsStart === null ? ctx.boosterPitchBias : 0;
-        const gRef = (90 - (90 - p.gammaEnd) * Math.pow(sp, p.turnShape) + bias) * D;
+        // Short of planned thrust (more engines out than the rest can make up for, or a throttle limit),
+        // the pitch-over is held back: the same schedule would bend a slower stack down into thick air.
+        const loft = hsStart === null ? thrustRatio() ** LOFT : 1;
+        const gRef = (90 - (90 - p.gammaEnd) * Math.pow(sp, p.turnShape) * loft + bias) * D;
         const aMax = (air.q >= 20_000 ? 3 : air.q <= 2_000 ? 10 : 10 - (7 * (air.q - 2_000)) / 18_000) * D;
-        el = clamp(gam + clamp(-2.5 * (gam - gRef), -aMax, aMax), -10 * D, 90 * D);
+        el = clamp(gam - 2.5 * (gam - gRef), gam - aMax, gam + aMax);
+        // Against the actual airflow a wind may add angle of attack, up to the structure's q·α limit.
+        const va = air.vAir;
+        const vaUp = va[0] * up[0] + va[1] * up[1] + va[2] * up[2];
+        for (let i = 0; i < 3; i++) hW[i] = va[i] - vaUp * up[i];
+        const gAir = Math.atan2(vaUp, Math.sqrt(hW[0] * hW[0] + hW[1] * hW[1] + hW[2] * hW[2]));
+        const aAir = Math.max(aMax, Math.min(10 * D, QALPHA_MAX / Math.max(air.q, 1)));
+        el = clamp(clamp(el, gAir - aAir, gAir + aAir), -10 * D, 90 * D);
       }
       for (let i = 0; i < 3; i++) thrDir[i] = Math.sin(el) * up[i] + Math.cos(el) * hA[i];
       // Roll: from facing the tower to belly-down (+Z opposite the downrange direction).
@@ -352,6 +379,9 @@ export function runStack(ctx: SimContext): StackOutcome {
       let thr = p.boosterThrottle;
       const d = Math.abs(t - p.bucketT);
       if (d < p.bucketWidth) thr *= 1 - p.bucketDepth * 0.5 * (1 + Math.cos((Math.PI * d) / p.bucketWidth));
+      // Engine-out compensation: the engines still running throttle up to restore the planned thrust.
+      const lit = booster.litTotal();
+      if (lit > 0 && lit < booster.n) thr *= booster.n / lit;
       const fmax = booster.maxThrust(air.pressure);
       if (fmax > 0) thr = Math.min(thr, (p.stackGLimit * GEE * body.mass) / fmax);
       booster.throttle = thr;
@@ -368,6 +398,11 @@ export function runStack(ctx: SimContext): StackOutcome {
       qMaxW.set(body.w);
     }
     if (air.depleted) booster.shutdownAll(t);
+    if (air.q > Q_BREAKUP) {
+      ctx.addEvent('anomaly', 'stack', t, stackEvent(), 'Aerodynamic loads exceed what the structure can take; the stack breaks up.');
+      endStack('lost', t);
+      break;
+    }
 
     // Staging trigger: booster propellant down to its return reserve.
     if (hsStart === null && !ctx.noSeparation && !ftsFired && booster.prop <= p.stageReserve * bLoad) startHotStaging(t);

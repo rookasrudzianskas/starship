@@ -243,6 +243,23 @@ export function qRotZ(out: Q4, angle: number): Q4 {
   return out;
 }
 
+/** Rotation by angle (rad) about the unit axis `a`. */
+export function qAxisAngle(out: Q4, a: V3, angle: number): Q4 {
+  const s = Math.sin(angle / 2);
+  out[0] = a[0] * s;
+  out[1] = a[1] * s;
+  out[2] = a[2] * s;
+  out[3] = Math.cos(angle / 2);
+  return out;
+}
+
+/** Normalised linear blend from `a` (s = 0) to `b` (s = 1) along the shorter arc; close to a slerp for small angles. */
+export function qNlerp(out: Q4, a: Q4, b: Q4, s: number): Q4 {
+  const k = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3] < 0 ? -s : s;
+  for (let i = 0; i < 4; i++) out[i] = (1 - s) * a[i] + k * b[i];
+  return qNormalize(out, out);
+}
+
 export function clamp(x: number, lo: number, hi: number): number {
   return x < lo ? lo : x > hi ? hi : x;
 }

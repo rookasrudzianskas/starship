@@ -50,6 +50,16 @@ export type AnomalyKind =
   | 'payload-door-fail' // payload door does not open: no deploy
   | 'relight-skip'; // planned in-space relight not attempted
 
+/** Flight phases an anomaly can be tied to (see Anomaly.phase), with the target that times each one. */
+export type AnomalyPhase = 'boostback' | 'booster-landing-burn' | 'entry' | 'ship-landing-burn';
+
+export const ANOMALY_PHASE_TARGET: Record<AnomalyPhase, keyof FlightTargets> = {
+  boostback: 'boostbackStart',
+  'booster-landing-burn': 'boosterLandingBurn',
+  entry: 'entry',
+  'ship-landing-burn': 'shipLandingBurn',
+};
+
 export interface Anomaly {
   t: number;
   vehicle: 'booster' | 'ship' | 'stack';
@@ -58,6 +68,14 @@ export interface Anomaly {
   engines?: number[];
   /** Or a number of engines for the sim to pick (outer ring first for the booster, RVac first for the ship). */
   count?: number;
+  /**
+   * Ties the anomaly to a phase of the run instead of the clock: it happens as long after the run reaches
+   * that phase as it did after the real one (`t` minus the phase's target time), and not at all if the run
+   * never gets there (a ship kept in orbit never re-enters, a skipped boostback cannot fail).
+   */
+  phase?: AnomalyPhase;
+  /** 'landing-burn-fail': altitude (m) at which the vehicle is lost, if known. */
+  alt?: number;
   note: string;
 }
 
@@ -127,7 +145,7 @@ export const FLIGHTS: Flight[] = [
     shipId: 'S24',
     headline: 'The full stack flew for the first time but never separated.',
     boosterSummary:
-      'Lifted off with engines already out and lost more on the way up. Steering failed, the stack tumbled and was destroyed near 39 km.',
+      'Lifted off with engines already out and lost more on the way up. Steering failed, the stack tumbled, peaked near 39 km and was destroyed.',
     shipSummary: 'Rode Super Heavy the whole way and shared its fate.',
     boosterEnd: 'termination',
     shipEnd: 'termination',
@@ -141,7 +159,8 @@ export const FLIGHTS: Flight[] = [
       shipApogeeKm: 39,
     },
     plan: {
-      booster: { recovery: 'expend', boostbackEngines: 0, landingEngines: [] },
+      // The plan: a partial return (boostback) and a splashdown in the Gulf.
+      booster: BLOCK1_BOOSTER,
       ship: {
         mission: 'suborbital',
         payloadKind: 'none',
@@ -159,7 +178,7 @@ export const FLIGHTS: Flight[] = [
       { t: 160, vehicle: 'stack', kind: 'no-separation', note: 'Staging never happens.' },
       { t: 165, vehicle: 'stack', kind: 'tumble', note: 'Thrust vector control is lost and the stack starts to cartwheel.' },
       { t: 199, vehicle: 'stack', kind: 'fts', note: 'Flight termination commanded; the tanks take time to rupture.' },
-      { t: 241, vehicle: 'stack', kind: 'breakup', note: 'The stack breaks up near apogee.' },
+      { t: 241, vehicle: 'stack', kind: 'breakup', note: 'The stack breaks up as it falls back.' },
     ],
   },
   {
@@ -201,8 +220,8 @@ export const FLIGHTS: Flight[] = [
       },
     },
     anomalies: [
-      { t: 180, vehicle: 'booster', kind: 'engine-out', count: 4, note: 'Engines start shutting down during the boostback burn.' },
-      { t: 201, vehicle: 'booster', kind: 'breakup', note: 'Super Heavy breaks apart over the Gulf.' },
+      { t: 180, vehicle: 'booster', kind: 'engine-out', count: 4, phase: 'boostback', note: 'Engines start shutting down during the boostback burn.' },
+      { t: 201, vehicle: 'booster', kind: 'breakup', phase: 'boostback', note: 'Super Heavy breaks apart over the Gulf.' },
       { t: 440, vehicle: 'ship', kind: 'engine-out', count: 2, note: 'A propellant vent leads to a fire in the aft section.' },
       { t: 453, vehicle: 'ship', kind: 'fts', note: 'Contact lost; the flight termination system fires.' },
     ],
@@ -253,11 +272,11 @@ export const FLIGHTS: Flight[] = [
       },
     },
     anomalies: [
-      { t: 205, vehicle: 'booster', kind: 'engine-out', count: 3, note: 'Several engines shut down early in the boostback burn.' },
-      { t: 414, vehicle: 'booster', kind: 'landing-burn-fail', note: 'Engines fail as the landing burn starts; the booster is lost about 460 m above the water.' },
+      { t: 205, vehicle: 'booster', kind: 'engine-out', count: 3, phase: 'boostback', note: 'Several engines shut down early in the boostback burn.' },
+      { t: 414, vehicle: 'booster', kind: 'landing-burn-fail', alt: 460, note: 'Engines fail as the landing burn starts; the booster is lost about 460 m above the water.' },
       { t: 1200, vehicle: 'ship', kind: 'roll', note: 'Attitude control is lost and the ship starts to roll.' },
       { t: 2350, vehicle: 'ship', kind: 'relight-skip', note: 'The relight is skipped because of the roll.' },
-      { t: 2870, vehicle: 'ship', kind: 'breakup', note: 'Lost during reentry over the Indian Ocean.' },
+      { t: 2870, vehicle: 'ship', kind: 'breakup', phase: 'entry', note: 'Lost during reentry over the Indian Ocean.' },
     ],
   },
   {
@@ -301,7 +320,7 @@ export const FLIGHTS: Flight[] = [
     },
     anomalies: [
       { t: 4, vehicle: 'booster', kind: 'engine-out', count: 1, note: 'One outer Raptor shuts down soon after liftoff.' },
-      { t: 180, vehicle: 'booster', kind: 'engine-out', count: 1, note: 'One engine does not relight for boostback.' },
+      { t: 180, vehicle: 'booster', kind: 'engine-out', count: 1, phase: 'boostback', note: 'One engine does not relight for boostback.' },
     ],
   },
   {
@@ -392,7 +411,7 @@ export const FLIGHTS: Flight[] = [
         landingEngines: 3,
       },
     },
-    anomalies: [{ t: 170, vehicle: 'booster', kind: 'catch-abort', note: 'Tower checks fail; the catch is called off.' }],
+    anomalies: [{ t: 170, vehicle: 'booster', kind: 'catch-abort', phase: 'boostback', note: 'Tower checks fail; the catch is called off.' }],
   },
   {
     n: 7,
@@ -537,7 +556,7 @@ export const FLIGHTS: Flight[] = [
       { t: 1050, vehicle: 'ship', kind: 'payload-door-fail', note: 'The payload door does not open.' },
       { t: 1700, vehicle: 'ship', kind: 'roll', note: 'Leaks spin the ship up; attitude control is lost.' },
       { t: 2150, vehicle: 'ship', kind: 'relight-skip', note: 'The relight is called off.' },
-      { t: 2802, vehicle: 'ship', kind: 'breakup', note: 'Lost during reentry over the Indian Ocean.' },
+      { t: 2802, vehicle: 'ship', kind: 'breakup', phase: 'entry', note: 'Lost during reentry over the Indian Ocean.' },
     ],
   },
   {
@@ -589,7 +608,9 @@ export const FLIGHTS: Flight[] = [
         landingEngines: 3,
       },
     },
-    anomalies: [{ t: 378, vehicle: 'booster', kind: 'engine-out', engines: [1], note: 'A centre engine is disabled on purpose for the landing burn test.' }],
+    anomalies: [
+      { t: 378, vehicle: 'booster', kind: 'engine-out', engines: [1], phase: 'booster-landing-burn', note: 'A centre engine is disabled on purpose for the landing burn test.' },
+    ],
   },
   {
     n: 11,
@@ -684,9 +705,9 @@ export const FLIGHTS: Flight[] = [
     },
     anomalies: [
       { t: 48, vehicle: 'booster', kind: 'engine-out', count: 1, note: 'One outer Raptor shuts down on the climb.' },
-      { t: 169, vehicle: 'booster', kind: 'boostback-cut', note: 'The boostback burn ends early.' },
+      { t: 169, vehicle: 'booster', kind: 'boostback-cut', phase: 'boostback', note: 'The boostback burn ends early.' },
       { t: 300, vehicle: 'ship', kind: 'engine-out', engines: [3], note: 'One Raptor Vacuum shuts down.' },
-      { t: 3960, vehicle: 'ship', kind: 'engine-out', engines: [2], note: 'One sea-level Raptor does not relight for landing.' },
+      { t: 3968, vehicle: 'ship', kind: 'engine-out', engines: [2], phase: 'ship-landing-burn', note: 'One sea-level Raptor does not relight for landing.' },
     ],
   },
   {
@@ -702,7 +723,7 @@ export const FLIGHTS: Flight[] = [
     boosterId: '',
     shipId: 'S40',
     headline: 'The first real Starlink V3 satellites went up.',
-    boosterSummary: 'Lit every engine for boostback but shut down early, so the booster came down hard in the Gulf.',
+    boosterSummary: 'Lit every engine for boostback but shut down early, so the booster fell short of its aim point and splashed down hard in the Gulf.',
     shipSummary: 'Put 20 Starlink V3 satellites out of its payload bay, fired a Raptor again in space, then came home in one piece to a gentle Indian Ocean splashdown.',
     boosterEnd: 'splashdown',
     shipEnd: 'splashdown',
@@ -739,7 +760,7 @@ export const FLIGHTS: Flight[] = [
         landingEngines: 3,
       },
     },
-    anomalies: [{ t: 170, vehicle: 'booster', kind: 'boostback-cut', note: 'The boostback burn shuts down early.' }],
+    anomalies: [{ t: 170, vehicle: 'booster', kind: 'boostback-cut', phase: 'boostback', note: 'The boostback burn shuts down early.' }],
   },
   {
     n: 14,
@@ -792,7 +813,11 @@ export const FLIGHTS: Flight[] = [
         landingEngines: 3,
       },
     },
-    anomalies: [{ t: 370, vehicle: 'ship', kind: 'engine-out', engines: [3], note: 'One Raptor Vacuum shuts down during the ascent burn.' }],
+    anomalies: [
+      // The booster's engine count reads 33 at max Q and 32 before staging.
+      { t: 100, vehicle: 'booster', kind: 'engine-out', count: 1, note: 'One outer Raptor shuts down on the climb.' },
+      { t: 370, vehicle: 'ship', kind: 'engine-out', engines: [3], note: 'One Raptor Vacuum shuts down during the ascent burn.' },
+    ],
   },
 ];
 

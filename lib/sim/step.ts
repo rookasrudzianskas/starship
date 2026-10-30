@@ -8,11 +8,12 @@ import {
   type AeroResult,
 } from './physics';
 import type { Body } from './runtime';
-import { EARTH_RADIUS } from './types';
+import { EARTH_OMEGA, EARTH_RADIUS } from './types';
 import { qAxis as qAxisFn, v3 } from './vec';
 
 // Module-local aliases: some loaders (tsx, vitest) turn imported bindings into getter calls.
 const RE = EARTH_RADIUS;
+const OMEGA = EARTH_OMEGA;
 const atmosphereInto = atmosphereIntoFn;
 const aeroForce = aeroForceFn;
 const airVelocity = airVelocityFn;
@@ -32,6 +33,8 @@ export interface AirData {
   aoa: number; // rad
   airspeed: number;
   heating: number;
+  /** Earth-relative velocity (v − ω×r) in the inertial frame, m/s: the air's motion without the wind. */
+  vGround: Float64Array;
   vAir: Float64Array; // inertial air-relative velocity, m/s
   aero: Float64Array; // aerodynamic force, N (inertial)
   thrust: number; // N along +Y
@@ -41,7 +44,7 @@ export interface AirData {
 export function newAirData(): AirData {
   return {
     alt: 0, pressure: 101_325, density: 1.225, sound: 340, q: 0, mach: 0, aoa: 0, airspeed: 0, heating: 0,
-    vAir: v3(), aero: v3(), thrust: 0, depleted: false,
+    vGround: v3(), vAir: v3(), aero: v3(), thrust: 0, depleted: false,
   };
 }
 
@@ -70,6 +73,10 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
   air.pressure = atm.pressure;
   air.density = atm.density;
   air.sound = atm.speedOfSound;
+  const vg = air.vGround;
+  vg[0] = body.v[0] + OMEGA * r[1];
+  vg[1] = body.v[1] - OMEGA * r[0];
+  vg[2] = body.v[2];
   airVelocity(air.vAir, r, body.v, alt, windPeak);
   qAxis(yAx, body.q, 1);
   if (alt < 180_000) aeroForce(air.aero, res, yAx, air.vAir, atm.density, atm.speedOfSound, body.aero);

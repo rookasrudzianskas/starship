@@ -1,5 +1,5 @@
 import { LOX_FRACTION, MIN_THROTTLE } from './engines';
-import { ENGINE_FAILED, ENGINE_LIT, ENGINE_OFF, type EngineChange, type EngineState, type VehicleId } from './types';
+import { ENGINE_FAILED, ENGINE_LIT, ENGINE_OFF, G0, type EngineChange, type EngineState, type VehicleId } from './types';
 import { centreOfMass, type AeroConfig, type VehicleSpec } from './vehicles';
 import { q4, v3 } from './vec';
 
@@ -7,11 +7,14 @@ import { q4, v3 } from './vec';
 export const SPOOL_UP = 1.5;
 export const SPOOL_DOWN = 0.6;
 const SPOOL_FAIL = 0.25;
+/** Engines left after a shutdown in the final approach must still give this many times the weight. */
+const HOLD_MARGIN = 1.25;
 const LIT = ENGINE_LIT;
 const OFF = ENGINE_OFF;
 const FAILED = ENGINE_FAILED;
 const LOXF = LOX_FRACTION;
 const MINT = MIN_THROTTLE;
+const GEE = G0;
 
 /** Mutable state of one vehicle (masses, engines). Position/attitude live in the Body that carries it. */
 export class VehicleRt {
@@ -23,6 +26,9 @@ export class VehicleRt {
   payload: number;
   readonly loxCap: number;
   readonly ch4Cap: number;
+  /** LOX and CH4 of this flight's full propellant load (what the gauges show as 100%), kg. */
+  readonly loxFull: number;
+  readonly ch4Full: number;
   readonly n: number;
   readonly state: Uint8Array;
   readonly spool: Float64Array;
@@ -41,8 +47,11 @@ export class VehicleRt {
   /** No engine is ramping: spoolStep has nothing to do until the next state change. */
   private settled = true;
   private nextEngineChange = -Infinity;
+  /** An engine was shut down by throttleTo: no spare is lit again afterwards. */
+  private shed = false;
 
-  constructor(spec: VehicleSpec, dry: number, prop: number, payload: number) {
+  /** `fullLoad` (kg) is the flight's full propellant load when `prop` is a partial one. */
+  constructor(spec: VehicleSpec, dry: number, prop: number, payload: number, fullLoad = prop) {
     this.id = spec.id;
     this.spec = spec;
     this.dry = dry;
@@ -51,6 +60,8 @@ export class VehicleRt {
     this.payload = payload;
     this.loxCap = spec.propMass * LOXF;
     this.ch4Cap = spec.propMass - this.loxCap;
+    this.loxFull = fullLoad * LOXF;
+    this.ch4Full = fullLoad - this.loxFull;
     this.n = spec.slots.length;
     this.state = new Uint8Array(this.n);
     this.spool = new Float64Array(this.n);
@@ -109,6 +120,12 @@ export class VehicleRt {
   anyLit(): boolean {
     for (let i = 0; i < this.n; i++) if (this.state[i] === LIT) return true;
     return false;
+  }
+
+  /** Number of engines commanded on (lit, whatever their spool state). */
+  litTotal(): number {
+    this.refresh();
+    return this.litCount;
   }
 
   /** True while any engine is still producing thrust (lit or tailing off). */
@@ -208,8 +225,9 @@ export class VehicleRt {
 
   /**
    * Final-approach engine management: sets the throttle for `need` newtons and, when even the minimum
-   * throttle is too much, shuts down one engine (never the last); lights a spare from `spares` when
-   * the lit engines cannot deliver it.
+   * throttle is too much, shuts down one engine (never below what holds the vehicle up with margin);
+   * lights a spare from `spares` when the lit engines cannot deliver it, unless an engine has already
+   * been shed (the count only ever steps down in the final seconds).
    */
   throttleTo(need: number, p: number, t: number, spares: readonly number[], mayShed = true): void {
     let litCount = 0;
@@ -223,10 +241,17 @@ export class VehicleRt {
     const ceil = Math.min(1, this.ceiling);
     const potential = this.litThrustPotential(p) * ceil;
     // Hysteresis: shed only well below the minimum, relight a spare only near full throttle.
-    if (mayShed && litCount > 1 && need < MINT * potential * 0.8 && t >= this.nextEngineChange) {
+    if (
+      mayShed &&
+      litCount > 1 &&
+      need < MINT * potential * 0.8 &&
+      (potential * (litCount - 1)) / litCount >= HOLD_MARGIN * this.mass * GEE &&
+      t >= this.nextEngineChange
+    ) {
       this.shutdown(lastLit, t);
       this.nextEngineChange = t + 1;
-    } else if (need > potential * 0.9 && t >= this.nextEngineChange) {
+      this.shed = true;
+    } else if (!this.shed && need > potential * 0.9 && t >= this.nextEngineChange) {
       this.nextEngineChange = t + 1;
       for (const i of spares) {
         if (this.state[i] === OFF) {

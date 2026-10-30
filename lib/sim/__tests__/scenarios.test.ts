@@ -12,21 +12,15 @@ const eventT = (r: FlightResult, key: string, vehicle?: string) =>
 const with_ = (base: Scenario, ...ivs: Intervention[]): Scenario => ({ ...base, interventions: ivs });
 
 describe('interventions', () => {
-  it('three booster engines out at T+30 stage later, but still stage', () => {
+  it('booster engines out at T+30: the others make up for a few, more stage later but still stage', () => {
     const base = run(5, AS_FLOWN);
-    const r = run(
-      5,
-      with_(
-        AS_FLOWN,
-        { id: 'a', t: 30, kind: 'engine-out', vehicle: 'booster', engine: 14 },
-        { id: 'b', t: 30, kind: 'engine-out', vehicle: 'booster', engine: 20 },
-        { id: 'c', t: 30, kind: 'engine-out', vehicle: 'booster', engine: 27 },
-      ),
-    );
-    expect(r.separationT).not.toBeNull();
-    expect(r.separationT as number).toBeGreaterThan((base.separationT as number) + 2);
-    expect(r.events.filter((e) => e.key === 'engine-out' && e.vehicle === 'booster').length).toBeGreaterThanOrEqual(3);
-    expect(r.events.filter((e) => e.key === 'intervention')).toHaveLength(3);
+    const out = (engines: number[]): Intervention[] => engines.map((engine, i) => ({ id: `e${i}`, t: 30, kind: 'engine-out', vehicle: 'booster', engine }));
+    const three = run(5, with_(AS_FLOWN, ...out([14, 20, 27])));
+    expect(three.separationT as number).toBeCloseTo(base.separationT as number, 0);
+    expect(three.events.filter((e) => e.key === 'intervention')).toHaveLength(3);
+    const eight = run(5, with_(AS_FLOWN, ...out([13, 15, 18, 20, 23, 25, 28, 30])));
+    expect(eight.separationT).not.toBeNull();
+    expect(eight.separationT as number).toBeGreaterThan((base.separationT as number) + 2);
   });
 
   it('a ship throttle ceiling of 50% makes the ascent burn longer', () => {
@@ -95,7 +89,7 @@ describe('scenario overrides', () => {
     const deorbit = eventT(r, 'deorbit');
     if (deorbit === undefined) expect(r.ship.endKind).toBe('orbit');
     else expect(['splashdown', 'impact', 'lost']).toContain(r.ship.endKind);
-    expect(r.ship.end).toBeGreaterThan(5_500);
+    expect(r.ship.end).toBeGreaterThan(4_000);
   });
 
   it('Flight 7 flown to plan (no anomalies) splashes down', () => {

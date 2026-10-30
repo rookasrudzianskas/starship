@@ -1,0 +1,309 @@
+import { describe, expect, it } from 'vitest';
+import { getFlight, PADS } from '../../flights/catalog';
+import { engineStatesAt } from '../engines';
+import { ecefToLatLonAlt, latLonAltToEcef, surfaceDistance } from '../geo';
+import { isLand } from '../land';
+import { simulateFlight } from '../simulate';
+import { ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Intervention, type Scenario, type Track } from '../types';
+
+/**
+ * Flight director scenarios: whatever the user does, the outcome stays physically sensible.
+ */
+const AS_FLOWN: Scenario = { asFlown: true, interventions: [] };
+const PLAN: Scenario = { asFlown: false, interventions: [] };
+const run = (flight: number, s: Scenario) => simulateFlight(flight, s);
+const ev = (r: FlightResult, key: string, vehicle?: string) => r.events.find((e) => e.key === key && (!vehicle || e.vehicle === vehicle));
+/** `k` outer-ring booster engines out at time t, spread around the ring. */
+const outerOut = (k: number, t: number): Intervention[] =>
+  Array.from({ length: k }, (_, i) => ({ id: `e${i}`, t, kind: 'engine-out' as const, vehicle: 'booster' as const, engine: 13 + Math.round((i * 20) / k) }));
+
+function litAt(tl: EngineTimeline, t: number): number {
+  const st = engineStatesAt(tl, t, new Uint8Array(tl.slots.length));
+  return st.reduce((n, s) => n + (s === ENGINE_LIT ? 1 : 0), 0);
+}
+
+function indexAt(tr: Track, t: number): number {
+  let i = 0;
+  while (i < tr.n - 1 && tr.t[i + 1] <= t) i++;
+  return i;
+}
+
+function endLatLon(tr: Track): { lat: number; lon: number } {
+  const i = tr.n - 1;
+  return ecefToLatLonAlt(tr.pos[3 * i], tr.pos[3 * i + 1], tr.pos[3 * i + 2]);
+}
+
+/** Angle (deg) between the body +Y axis and the local vertical at sample i. */
+function tiltAt(tr: Track, i: number): number {
+  const x = tr.quat[4 * i], y = tr.quat[4 * i + 1], z = tr.quat[4 * i + 2], w = tr.quat[4 * i + 3];
+  const yx = 2 * (x * y - z * w), yy = 1 - 2 * (x * x + z * z), yz = 2 * (y * z + x * w);
+  const px = tr.pos[3 * i], py = tr.pos[3 * i + 1], pz = tr.pos[3 * i + 2];
+  const l = Math.hypot(px, py, pz);
+  return (Math.acos(Math.min(1, (yx * px + yy * py + yz * pz) / l)) * 180) / Math.PI;
+}
+
+describe('engine-outs on the climb', () => {
+  it('a V3 booster makes up for engines out by throttling up, then lofts, and never dives into thick air', () => {
+    const nominal = run(14, AS_FLOWN);
+    for (const k of [6, 9, 12]) {
+      const r = run(14, { ...AS_FLOWN, interventions: outerOut(k, 20) });
+      expect(r.separationT, `${k} out`).not.toBeNull();
+      const i = indexAt(r.booster, r.separationT as number);
+      expect(r.booster.alt[i], `${k} out: staging altitude`).toBeGreaterThan(45_000);
+      let qMax = 0;
+      for (let j = 0; j <= i; j++) qMax = Math.max(qMax, r.booster.q[j]);
+      expect(qMax, `${k} out: max q`).toBeLessThan(40_000);
+    }
+    // Six out of 33 at a 78% throttle: the other 27 restore the planned thrust, so the climb is unchanged.
+    const six = run(14, { ...AS_FLOWN, interventions: outerOut(6, 20) });
+    expect(six.separationT as number).toBeCloseTo(nominal.separationT as number, 0);
+  });
+
+  it('a stack too weak to climb breaks up from aerodynamic loads instead of flying on at hypersonic speed', () => {
+    const r = run(14, { ...AS_FLOWN, interventions: outerOut(16, 20) });
+    expect(r.separationT).toBeNull();
+    expect(r.booster.endKind).toBe('lost');
+    expect(r.events.some((e) => e.key === 'anomaly' && /Aerodynamic loads/.test(e.note ?? ''))).toBe(true);
+    let qMax = 0;
+    for (let j = 0; j < r.booster.n; j++) qMax = Math.max(qMax, r.booster.q[j]);
+    expect(qMax).toBeLessThan(85_000);
+  });
+
+  it('one event per engine the user shuts down', () => {
+    const r = run(5, { ...AS_FLOWN, interventions: outerOut(3, 30) });
+    expect(r.events.filter((e) => e.key === 'intervention')).toHaveLength(3);
+    expect(r.events.filter((e) => e.key === 'engine-out')).toHaveLength(0);
+  });
+
+  it('a light jet stream changes the loads, not the whole ascent', () => {
+    const calm = run(14, AS_FLOWN);
+    const windy = run(14, { ...AS_FLOWN, wind: 30 });
+    const alt = (r: FlightResult) => r.booster.alt[indexAt(r.booster, r.separationT as number)];
+    expect(Math.abs(alt(windy) - alt(calm))).toBeLessThan(2_000);
+    expect(Math.abs(windy.records.boosterApogee - calm.records.boosterApogee)).toBeLessThan(5_000);
+  });
+});
+
+describe('booster return', () => {
+  it('an ascent steering bias does not carry into the boostback, which keeps the landing propellant', () => {
+    const nominal = run(10, AS_FLOWN);
+    const r = run(10, { ...AS_FLOWN, interventions: [{ id: 'p', t: 30, kind: 'pitch', vehicle: 'booster', deg: -10 }] });
+    const bb = ev(r, 'boostback')?.t as number;
+    const end = ev(r, 'boostback-end')?.t as number;
+    expect(end - bb).toBeLessThanOrEqual(120);
+    expect(r.records.boosterTopSpeed).toBeLessThan(1.6 * nominal.records.boosterTopSpeed);
+    const lb = ev(r, 'booster-landing-burn');
+    if (lb) expect(litAt(r.boosterEngines, lb.t + 0.1)).toBeGreaterThan(0);
+  });
+
+  it('Flight 1 flown to plan boosts back, and its recovery choices take effect', () => {
+    expect(ev(run(1, PLAN), 'boostback')).toBeDefined();
+    expect(run(1, { ...PLAN, boosterRecovery: 'catch' }).booster.endKind).toBe('catch');
+    expect(run(1, { ...PLAN, boosterRecovery: 'splashdown' }).booster.endKind).toBe('splashdown');
+    const expended = run(1, { ...PLAN, boosterRecovery: 'expend' });
+    expect(ev(expended, 'boostback')).toBeUndefined();
+    expect(expended.booster.endKind).toBe('impact');
+  });
+
+  it('the tower takes a booster only upright and lined up, and eases it into the arms', () => {
+    for (const [n, s] of [
+      [5, AS_FLOWN],
+      [7, AS_FLOWN],
+      [8, AS_FLOWN],
+      [10, { ...AS_FLOWN, boosterRecovery: 'catch' }],
+      [5, { ...AS_FLOWN, wind: 90 }],
+    ] as Array<[number, Scenario]>) {
+      const r = run(n, s);
+      const b = r.booster;
+      expect(b.endKind, `F${n}`).toBe('catch');
+      const caught = b.phase.indexOf(Phase.Caught);
+      expect(tiltAt(b, caught - 1), `F${n} tilt at capture`).toBeLessThan(3);
+      const mount = latLonAltToEcef(PADS[getFlight(n).pad].lat, PADS[getFlight(n).pad].lon, 0);
+      const p = [b.pos[3 * (caught - 1)], b.pos[3 * (caught - 1) + 1], b.pos[3 * (caught - 1) + 2]];
+      expect(surfaceDistance(Float64Array.from(p), Float64Array.from(mount)), `F${n} off the arms`).toBeLessThan(2);
+      // No jump: consecutive samples through the settle stay within a few centimetres per step.
+      for (let i = caught - 1; i < Math.min(b.n - 1, caught + 30); i++) {
+        const d = Math.hypot(b.pos[3 * i + 3] - b.pos[3 * i], b.pos[3 * i + 4] - b.pos[3 * i + 1], b.pos[3 * i + 5] - b.pos[3 * i + 2]);
+        expect(d, `F${n} settle step`).toBeLessThan(0.2);
+      }
+    }
+  });
+
+  it('a booster that cannot reach the tower, or is too heavy for it, sets down in the Gulf instead', () => {
+    const short = run(13, { ...AS_FLOWN, boosterRecovery: 'catch' });
+    expect(short.booster.endKind).toBe('splashdown');
+    expect(ev(short, 'boostback-end')?.note).toMatch(/Out of reach/);
+    const heavy = run(5, { ...AS_FLOWN, interventions: [{ id: 's', t: 60, kind: 'stage-now' }] });
+    expect(heavy.booster.endKind).toBe('splashdown');
+    expect(ev(heavy, 'boostback')?.note).toMatch(/Too heavy/);
+    const lb = ev(heavy, 'booster-landing-burn')?.t as number;
+    expect(heavy.booster.end - lb).toBeLessThan(60);
+  });
+
+  it('a splashed-down booster tips over from the way it leans, without snapping upright', () => {
+    const b = run(13, AS_FLOWN).booster;
+    const s = b.phase.indexOf(Phase.Splashed);
+    for (let i = Math.max(1, s - 2); i < s + 10; i++) expect(Math.abs(tiltAt(b, i) - tiltAt(b, i - 1)), `step ${i}`).toBeLessThan(2);
+  });
+});
+
+describe('ship', () => {
+  it('satellites leave the bay only in space, before entry', () => {
+    for (const [n, s] of [
+      [14, { ...AS_FLOWN, shipMission: 'suborbital' }],
+      [10, { ...AS_FLOWN, payloadCount: 40 }],
+      [7, { ...PLAN, payloadCount: 30 }],
+      [5, { ...AS_FLOWN, payloadCount: 30 }],
+    ] as Array<[number, Scenario]>) {
+      const r = run(n, s);
+      const entry = ev(r, 'entry', 'ship')?.t ?? Infinity;
+      for (const p of r.payload) {
+        expect(Math.hypot(...p.pos) - 6_371_000, `F${n} release altitude`).toBeGreaterThan(150_000);
+        expect(p.t, `F${n} release time`).toBeLessThan(entry);
+      }
+      const end = ev(r, 'payload-end');
+      if (r.payload.length > 0) expect(end?.t ?? Infinity).toBeLessThan(entry);
+    }
+    const all = run(14, { ...AS_FLOWN, shipMission: 'suborbital' });
+    expect(all.payload).toHaveLength(26);
+  });
+
+  it('a ship that comes down on land is not a splashdown', () => {
+    const r = run(9, { ...PLAN, payloadCount: 40 });
+    const p = endLatLon(r.ship);
+    if (isLand(p.lat, p.lon)) {
+      expect(r.ship.endKind).toBe('impact');
+      expect(ev(r, 'ship-end')?.note).toMatch(/land/);
+    }
+    // Every splashdown in a varied set is at sea.
+    for (const [n, s] of [
+      [6, { ...PLAN, interventions: [{ id: 's', t: 109.5, kind: 'stage-now' }] }],
+      [9, { ...PLAN, interventions: [{ id: 'p', t: 30, kind: 'pitch', vehicle: 'booster', deg: -4 }, { id: 'e', t: 300, kind: 'engine-out', vehicle: 'ship', engine: 5 }] }],
+      [10, AS_FLOWN],
+      [14, AS_FLOWN],
+    ] as Array<[number, Scenario]>) {
+      const q = run(n, s);
+      for (const tr of [q.booster, q.ship]) {
+        if (tr.endKind !== 'splashdown') continue;
+        const e = endLatLon(tr);
+        expect(isLand(e.lat, e.lon), `F${n} ${tr.vehicle} splashdown at ${e.lat.toFixed(2)}, ${e.lon.toFixed(2)}`).toBe(false);
+      }
+    }
+  });
+
+  it('Flights 1 and 2 flown to plan splash down off Kauai about 90 minutes after launch', () => {
+    for (const n of [1, 2]) {
+      const r = run(n, PLAN);
+      expect(r.separationT as number, `F${n} staging`).toBeLessThan(170);
+      expect(r.ship.endKind, `F${n}`).toBe('splashdown');
+      const zone = getFlight(n).plan.ship.landing;
+      const i = r.ship.n - 1;
+      const d = surfaceDistance(Float64Array.from([r.ship.pos[3 * i], r.ship.pos[3 * i + 1], r.ship.pos[3 * i + 2]]), Float64Array.from(latLonAltToEcef(zone.lat, zone.lon, 0)));
+      expect(d, `F${n} miss`).toBeLessThan(150_000);
+      expect(Math.abs((ev(r, 'ship-end')?.t as number) - 5400), `F${n} landing time`).toBeLessThan(600);
+    }
+  });
+
+  it('a flight sent to orbit deorbits on the pass that brings it down at its zone', () => {
+    for (const n of [5, 10]) {
+      const r = run(n, { ...AS_FLOWN, shipMission: 'orbital' });
+      expect(r.ship.endKind, `F${n}`).toBe('splashdown');
+      const i = r.ship.n - 1;
+      const d = surfaceDistance(Float64Array.from([r.ship.pos[3 * i], r.ship.pos[3 * i + 1], r.ship.pos[3 * i + 2]]), Float64Array.from(latLonAltToEcef(24.5, -157.5, 0)));
+      expect(d, `F${n} miss`).toBeLessThan(300_000);
+    }
+  });
+
+  it('a ship left in orbit is still in orbit, not lost', () => {
+    const r = run(14, { ...AS_FLOWN, interventions: [{ id: 'k', t: 3500, kind: 'skip-burn', vehicle: 'ship' }] });
+    expect(r.ship.endKind).toBe('orbit');
+    expect(ev(r, 'ship-end')?.label).toBe('Still in orbit');
+  });
+
+  it('a reentry anomaly waits for the reentry: a ship kept in orbit does not break up', () => {
+    const r = run(9, { ...AS_FLOWN, shipMission: 'orbital' });
+    expect(r.events.some((e) => e.note === 'Lost during reentry over the Indian Ocean.')).toBe(false);
+    expect(r.ship.endKind).toBe('orbit');
+    // As flown, the anomaly keeps its timing.
+    const flown = run(9, AS_FLOWN);
+    expect(ev(flown, 'ship-end')?.t as number).toBeCloseTo(2802, -1);
+  });
+
+  it('burn callouts only with engines lit, and in-space burns keep the landing reserve', () => {
+    const scenarios: Array<[number, Scenario]> = [
+      [1, { ...PLAN, shipMission: 'orbital', payloadCount: 7, interventions: [{ id: 'k', t: 315, kind: 'skip-burn', vehicle: 'booster' }] }],
+      [5, { ...PLAN, shipMission: 'orbital', payloadCount: 37, wind: 85 }],
+      [12, AS_FLOWN],
+      [14, AS_FLOWN],
+    ];
+    for (const [n, s] of scenarios) {
+      const r = run(n, s);
+      for (const e of r.events) {
+        if (!['relight', 'orbit-insertion', 'deorbit', 'ship-landing-burn'].includes(e.key)) continue;
+        expect(litAt(r.shipEngines, e.t + 1e-6), `F${n} ${e.key} at ${e.t}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('peak heating is called out only once heating has passed its peak', () => {
+    const r = run(3, AS_FLOWN);
+    const peak = ev(r, 'peak-heating');
+    if (peak) expect(peak.t).toBeLessThan(r.ship.end - 5);
+    expect(run(10, AS_FLOWN).events.some((e) => e.key === 'peak-heating')).toBe(true);
+  });
+});
+
+describe('engines and samples', () => {
+  it('the engine count only steps down in the final seconds of a landing', () => {
+    for (const n of [4, 7, 10, 14]) {
+      const r = run(n, AS_FLOWN);
+      for (const [tl, key, end] of [
+        [r.shipEngines, 'ship-landing-burn', r.ship.end],
+        [r.boosterEngines, 'booster-landing-burn', r.booster.end],
+      ] as Array<[EngineTimeline, string, number]>) {
+        const lb = ev(r, key)?.t;
+        if (lb === undefined) continue;
+        let prev = Infinity;
+        for (let t = lb + 1; t <= end; t += 0.05) {
+          const lit = litAt(tl, t);
+          expect(lit, `F${n} ${key} at ${t.toFixed(2)}`).toBeLessThanOrEqual(prev);
+          prev = lit;
+        }
+      }
+    }
+  });
+
+  it('samples stay dense while the engines tail off after cut-off', () => {
+    const r = run(3, AS_FLOWN);
+    const seco = ev(r, 'seco')?.t as number;
+    const s = r.ship;
+    // Through the 0.6 s tail-off: at most 0.1 s apart.
+    for (let i = indexAt(s, seco); s.t[i + 1] < seco + 0.55; i++) expect(s.t[i + 1] - s.t[i]).toBeLessThan(0.11);
+  });
+
+  it('propellant gauges start full', () => {
+    for (const n of [1, 5, 14]) {
+      const r = run(n, AS_FLOWN);
+      expect(r.ship.lox[0]).toBeCloseTo(1, 5);
+      expect(r.booster.ch4[0]).toBeCloseTo(1, 5);
+    }
+    expect(run(5, { ...AS_FLOWN, boosterLoad: 0.9 }).booster.lox[0]).toBeCloseTo(0.9, 5);
+  });
+});
+
+describe('catalog consistency', () => {
+  it('Flight 12 loses its sea-level Raptor as the landing burn lights', () => {
+    const r = run(12, AS_FLOWN);
+    const lb = ev(r, 'ship-landing-burn')?.t as number;
+    const out = r.events.find((e) => e.key === 'anomaly' && /relight for landing/.test(e.note ?? ''));
+    expect(out?.t).toBeCloseTo(lb, 6);
+    expect(litAt(r.shipEngines, lb + 1)).toBe(2);
+  });
+
+  it('Flight 3 loses its booster about 460 m above the water', () => {
+    const r = run(3, AS_FLOWN);
+    const end = ev(r, 'booster-end');
+    expect(end?.alt).toBeGreaterThan(380);
+    expect(end?.alt).toBeLessThan(540);
+  });
+});

@@ -6,11 +6,12 @@ import { enuAt as enuAtFn, inertialToEcef } from './geo';
 import { entryAoA, predictEntry, type EntryPrediction } from './guidance/entry';
 import { newPeg, pegStep } from './guidance/peg';
 import { planeHeading } from './guidance/plane';
+import { isLand } from './land';
 import { lossKind } from './outcome';
 import { SPOOL_DOWN, type Body, type VehicleRt } from './runtime';
 import { coastBody, newAirData, stepBody as stepBodyFn } from './step';
 import { FLAPS_STOWED } from './vehicles';
-import { tipOver, type TipState } from './surface';
+import { newTipState, startTip, tipOver, type TipState } from './surface';
 import { EARTH_MU, EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type EndKind, type PhaseCode } from './types';
 import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, v3 } from './vec';
 
@@ -29,6 +30,16 @@ const qLook = qLookFn;
 
 /** Planned net deceleration of the ship's landing burn after the flip, m/s². */
 const SHIP_LANDING_DECEL = 4;
+/** Satellites only leave the bay above this altitude, coasting, before entry, m. */
+const DEPLOY_ALT = 150_000;
+/** Closest spacing between two satellite releases when a larger load has to fit a shorter coast, s. */
+const DEPLOY_MIN_SPACING = 15;
+/**
+ * From the start of a deorbit burn to splashdown, on the calibrated Flight 14: the arc travelled in the
+ * orbital plane (rad) and the time taken (s). Used to pick the pass for orbits a flight was not planned for.
+ */
+const DEORBIT_ARC = 198 * DEG;
+const DEORBIT_SPAN = 3342;
 
 type Mode = 'hotstage' | 'ascent' | 'coast' | 'burn' | 'entry' | 'flip' | 'landing' | 'free' | 'splashed' | 'done';
 type BurnKind = 'relight' | 'insertion' | 'deorbit';
@@ -79,9 +90,11 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   // Coast and burns
   const burns: Burn[] = [];
   if (plan.relight && !orbital) burns.push({ kind: 'relight', t: plan.relight.t, duration: plan.relight.duration, done: false });
+  // Deorbit: at the planned time on a flight planned for orbit; otherwise chosen once the orbit is reached.
+  const deorbitBurn: Burn = { kind: 'deorbit', t: plan.mission === 'orbital' && plan.deorbit ? plan.deorbit.t : Infinity, duration: 120, done: false };
   if (orbital) {
     burns.push({ kind: 'insertion', t: plan.insertion?.t ?? NaN, duration: 120, done: false });
-    burns.push({ kind: 'deorbit', t: plan.deorbit?.t ?? 7938, duration: 120, done: false });
+    burns.push(deorbitBurn);
   }
   let burn: Burn | null = null;
   let burnEnd = Infinity;
@@ -92,12 +105,21 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   let entryDone = false;
   let peakHeat = 0;
   let peakHeatT = 0;
+  /** Lowest heating since the peak: the peak is only called out once heating has clearly fallen from it. */
+  let heatAfterPeak = 0;
   const peakR = v3(), peakV = v3();
+  // Payload deploy: one satellite every paySpacing seconds, only while coasting above DEPLOY_ALT; the
+  // window is fitted to the coast at SECO, once the path is known.
   const pay = ctx.payload;
   const payOn = !!pay && !ctx.payloadDoorFail;
   let payIdx = 0;
+  let payFitted = false;
   let payStarted = false;
   let payEnded = false;
+  let payStartT = Infinity;
+  let payNext = Infinity;
+  let paySpacing = 0;
+  let payLatest = Infinity;
 
   // Entry guidance (predictor–corrector on cos(bank))
   let cosBank = 0.5;
@@ -115,7 +137,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   let splashT = 0;
   let destroyT = Infinity;
   let landingFailT = Infinity;
-  const tip: TipState = { up: v3(), dir: v3(), base: v3(), comH: 0, t0: 0 };
+  const tip: TipState = newTipState();
 
   const up = v3(), east = v3(), north = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
   const hp = v3();
@@ -126,7 +148,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const ev = () => eventState(body, 0, t);
   const record = (force: boolean) => {
     const fine = mode === 'hotstage' || mode === 'flip' || mode === 'landing' || mode === 'splashed' || mode === 'free' || t - tSep < 10;
-    const vac = air.alt > 100_000 && !part.anyLit();
+    // Sparse only once the engines have stopped producing thrust (not while they tail off).
+    const vac = air.alt > 100_000 && !part.producingThrust();
     const interval = fine ? 0.05 : vac ? 2 : 0.1;
     if (!force && t - lastRec < interval - 1e-9) return;
     ex.phase = phase;
@@ -137,10 +160,10 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     lastPhase = phase;
   };
 
-  const finish = (kind: EndKind, at: number, destroyed: boolean) => {
+  const finish = (kind: EndKind, at: number, destroyed: boolean, note?: string) => {
     ended = true;
     part.shutdownAll(at);
-    ctx.events.push(makeEndEvent('ship', kind, at, ev()));
+    ctx.events.push(makeEndEvent('ship', kind, at, ev(), note));
     ctx.shipEnd = { kind, t: at };
     if (destroyed) {
       phase = Phase.Destroyed;
@@ -180,9 +203,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       if (iv.kind === 'stage-now' || iv.vehicle !== 'ship') return;
       switch (iv.kind) {
         case 'engine-out':
-          if (iv.engine >= 0 && iv.engine < part.n && part.usable(iv.engine)) {
+          if (iv.engine >= 0 && iv.engine < part.n && part.fail(iv.engine, at)) {
             ctx.events.push(makeInterventionEvent('ship', at, ev(), `Engine shut down: ${engineName('ship', iv.engine)}`, 'ENGINE OUT'));
-            failEngines([iv.engine], at);
           }
           break;
         case 'throttle':
@@ -221,8 +243,11 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         loseControl(an.kind);
         break;
       case 'payload-door-fail':
+        if (pay) ctx.addEvent('anomaly', 'ship', at, ev(), an.note);
+        break;
       case 'relight-skip':
-        ctx.addEvent('anomaly', 'ship', at, ev(), an.note);
+        // Only news when this run plans a relight (an orbital mission does not).
+        if (burns.some((b) => b.kind === 'relight')) ctx.addEvent('anomaly', 'ship', at, ev(), an.note);
         break;
       case 'breakup':
         ctx.addEvent('anomaly', 'ship', at, ev(), an.note);
@@ -261,11 +286,14 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       return;
     }
     if (b.kind === 'relight' && ctx.relightSkip) return;
+    // In-space burns never dip into the landing reserve.
+    if (part.prop <= p.shipReserve) return;
     const sl = [0, 1, 2].filter((i) => part.usable(i));
     const vac = [3, 4, 5].filter((i) => part.usable(i));
     const set = b.kind === 'relight' ? sl.slice(0, 1) : vac.length > 0 ? vac : sl;
     if (set.length === 0) return;
     part.setEngines(set, t);
+    if (!part.anyLit()) return;
     part.throttle = b.kind === 'relight' ? p.relightThrottle : 0.6;
     burn = b;
     burnEnd = t + b.duration;
@@ -285,6 +313,59 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const nextBurn = (): Burn | null => {
     for (const b of burns) if (!b.done) return b;
     return null;
+  };
+
+  /** Fits the deploy window into the coast: the planned cadence, squeezed (down to a limit) to end in time. */
+  const fitDeploy = () => {
+    if (!pay) return;
+    payStartT = Math.max(pay.start, t + 60);
+    // Last moment for a release: before the deorbit burn in orbit, else before the path drops below DEPLOY_ALT.
+    payLatest = orbital ? Math.min(tCap, deorbitBurn.t) - 120 : t + timeToDescend(body.r, body.v, RE + DEPLOY_ALT) - 30;
+    paySpacing = (pay.end - pay.start) / (pay.count + 1);
+    const room = (payLatest - payStartT) / (pay.count + 1);
+    if (room < paySpacing) paySpacing = Math.max(DEPLOY_MIN_SPACING, room);
+    payNext = payStartT + paySpacing;
+  };
+
+  /** Ends the deploy, noting how many satellites left the bay when it had to stop early. */
+  const endDeploy = () => {
+    if (!pay || !payStarted || payEnded) return;
+    payEnded = true;
+    ctx.addEvent('payload-end', 'ship', t, ev(), payIdx < pay.count ? `${payIdx} of ${pay.count} satellites deployed` : undefined);
+  };
+
+  /**
+   * Deorbit time for an orbit the flight was not planned for: the pass whose ground track, DEORBIT_ARC on
+   * from the burn, comes closest to the landing zone (near-circular orbit, Earth turning underneath).
+   */
+  const chooseDeorbit = (): number => {
+    const r = body.r, v = body.v;
+    const rl = Math.sqrt(r[0] ** 2 + r[1] ** 2 + r[2] ** 2);
+    const hx = r[1] * v[2] - r[2] * v[1], hy = r[2] * v[0] - r[0] * v[2], hz = r[0] * v[1] - r[1] * v[0];
+    const hl = Math.sqrt(hx * hx + hy * hy + hz * hz);
+    const a = -MU / (2 * ((v[0] ** 2 + v[1] ** 2 + v[2] ** 2) / 2 - MU / rl));
+    if (!(a > 0) || hl <= 0) return Infinity;
+    const n = Math.sqrt(MU / (a * a * a));
+    // In-plane basis: the current position and the direction of motion.
+    const ux = r[0] / rl, uy = r[1] / rl, uz = r[2] / rl;
+    const wx = (hy * uz - hz * uy) / hl, wy = (hz * ux - hx * uz) / hl, wz = (hx * uy - hy * ux) / hl;
+    const ll = Math.sqrt(landing[0] ** 2 + landing[1] ** 2 + landing[2] ** 2);
+    let best = -2;
+    let bestT = Infinity;
+    for (let td = t + 120; td <= tCap - DEORBIT_SPAN - 600; td += 15) {
+      const ang = n * (td - t) + DEORBIT_ARC;
+      const c = Math.cos(ang), sn = Math.sin(ang);
+      const px = c * ux + sn * wx, py = c * uy + sn * wy, pz = c * uz + sn * wz;
+      // Into the Earth-fixed frame at splashdown.
+      const th = OMEGA * (td + DEORBIT_SPAN);
+      const ex = Math.cos(th) * px + Math.sin(th) * py, ey = -Math.sin(th) * px + Math.cos(th) * py;
+      const cosD = (ex * landing[0] + ey * landing[1] + pz * landing[2]) / ll;
+      if (cosD > best) {
+        best = cosD;
+        bestT = td;
+      }
+    }
+    return bestT;
   };
 
   part.throttle = 1;
@@ -315,12 +396,15 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     if (mode === 'ascent' && phase === Phase.HotStage && (rvacLit || t > tSep + 4)) phase = Phase.Ascent;
     const active = burn as Burn | null;
     if (modeIs('burn') && active) {
-      let done = t >= burnEnd - 1e-9 || !part.anyLit();
+      let done = t >= burnEnd - 1e-9 || !part.anyLit() || part.prop <= p.shipReserve;
       // Insertion stops at the target perigee, capped just below the burn altitude (a prograde burn
       // cannot lift the perigee above the point where it is made); deorbit at the target perigee.
       if (active.kind === 'insertion' && apsisAlt(false) >= Math.min(p.insertionPerigee, air.alt - 3_000, apsisAlt(true) - 15_000)) done = true;
       if (active.kind === 'deorbit' && apsisAlt(false) <= p.deorbitPerigee) done = true;
-      if (done) endBurn();
+      if (done) {
+        endBurn();
+        if (active.kind === 'insertion' && deorbitBurn.t === Infinity) deorbitBurn.t = chooseDeorbit();
+      }
     }
     if (mode === 'coast' && !uncontrolled) {
       const b = nextBurn();
@@ -329,13 +413,18 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         if (t >= bt - 1e-9) startBurn(b);
       }
     }
-    if (payOn && pay && mode !== 'ascent' && mode !== 'hotstage' && secoT > 0) {
-      if (!payStarted && t >= pay.start - 1e-9) {
+    if (payOn && pay && secoT > 0 && !payEnded && !ended) {
+      if (!payFitted) {
+        payFitted = true;
+        fitDeploy();
+      }
+      // Coasting in space (not during a burn, never once the air thickens or entry has begun).
+      const canRelease = mode === 'coast' && !entryDone && air.alt > DEPLOY_ALT;
+      if (!payStarted && t >= payStartT - 1e-9 && t <= payLatest && canRelease) {
         payStarted = true;
         ctx.addEvent('payload-start', 'ship', t, ev());
       }
-      const spacing = (pay.end - pay.start) / (pay.count + 1);
-      while (payStarted && payIdx < pay.count && t >= pay.start + spacing * (payIdx + 1) - 1e-9) {
+      if (payStarted && payIdx < pay.count && t >= payNext - 1e-9 && t <= payLatest && canRelease) {
         // Released from the payload bay, pushed out at ~0.75 m/s through the door (−Z side).
         bodyPointEcef(body, 0, t, rE, vE);
         qAxis(zAx, body.q, 2);
@@ -351,11 +440,11 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         });
         part.payload = Math.max(0, part.payload - pay.unitMass);
         payIdx++;
+        // On schedule, or catching up at twice the pace after a pause (a burn).
+        payNext = Math.max(payNext + paySpacing, t + 0.5 * paySpacing);
       }
-      if (payStarted && !payEnded && t >= pay.end - 1e-9) {
-        payEnded = true;
-        ctx.addEvent('payload-end', 'ship', t, ev());
-      }
+      if (payStarted && payIdx >= pay.count && t >= payNext - 1e-9) endDeploy();
+      else if (payStarted && (t > payLatest || entryDone || (air.alt <= DEPLOY_ALT && vr < 0))) endDeploy();
     }
     if (!apogeeDone && secoT > 0 && prevVr > 0 && vr <= 0) {
       apogeeDone = true;
@@ -368,6 +457,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       mode = 'entry';
       phase = Phase.Entry;
       ctx.addEvent('entry', 'ship', t, ev());
+      ctx.armPhase('entry', t);
     }
     if (mode === 'entry' && air.mach < 1 && air.alt < 30_000) phase = Phase.BellyFlop;
     if (t >= cutT) {
@@ -407,11 +497,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     const nb = mode === 'coast' ? nextBurn() : null;
     if (nb && !Number.isNaN(nb.t)) tNext = Math.min(tNext, nb.t);
     if (nb && !Number.isNaN(nb.t) && nb.t - t < 90 && nb.t > t) dt = Math.min(dt, 0.5);
-    if (payOn && pay && secoT > 0) {
-      if (!payStarted) tNext = Math.min(tNext, pay.start);
-      else if (payIdx < pay.count) tNext = Math.min(tNext, pay.start + ((pay.end - pay.start) / (pay.count + 1)) * (payIdx + 1));
-      else if (!payEnded) tNext = Math.min(tNext, pay.end);
-    }
+    if (payOn && pay && payFitted && !payEnded) tNext = Math.min(tNext, payStarted ? payNext : payStartT);
     if (tNext > t + 1e-9 && tNext - t < dt) dt = tNext - t;
 
     if (mode === 'splashed') {
@@ -567,15 +653,21 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
               phase = Phase.BellyFlop;
             } else {
               part.setEngines(sl, t);
-              part.throttle = 0.7;
-              landingStarted = true;
-              mode = 'flip';
-              phase = Phase.ShipFlip;
-              ctx.addEvent('ship-flip', 'ship', t, ev());
-              ctx.addEvent('ship-landing-burn', 'ship', t, ev());
-              if (ctx.shipLandingFail) {
-                landingFailT = t + 0.5;
-                destroyT = t + 1.5;
+              if (!part.anyLit()) {
+                // Nothing left to light (tanks dry): no landing burn, the belly flop goes all the way down.
+                landingSet = [];
+              } else {
+                part.throttle = 0.7;
+                landingStarted = true;
+                mode = 'flip';
+                phase = Phase.ShipFlip;
+                ctx.addEvent('ship-flip', 'ship', t, ev());
+                ctx.addEvent('ship-landing-burn', 'ship', t, ev());
+                ctx.armPhase('ship-landing-burn', t);
+                if (ctx.shipLandingFail) {
+                  landingFailT = t + 0.5;
+                  destroyT = t + 1.5;
+                }
               }
             }
           }
@@ -629,7 +721,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       peakHeatT = t;
       peakR.set(body.r);
       peakV.set(body.v);
-    }
+      heatAfterPeak = peakHeat;
+    } else if (air.heating < heatAfterPeak) heatAfterPeak = air.heating;
 
     // Contact with the sea.
     if (air.alt < 2_000) {
@@ -641,29 +734,49 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       if (Math.min(baseAlt, nose) <= 0) {
         qAxis(zAx, body.q, 2);
         const vRel = Math.sqrt((body.v[0] + OMEGA * body.r[1]) ** 2 + (body.v[1] - OMEGA * body.r[0]) ** 2 + body.v[2] ** 2);
-        if (vRel < 15 && baseAlt <= nose) {
+        inertialToEcef(tmp2, tmp, t);
+        const r2 = Math.sqrt(tmp2[0] ** 2 + tmp2[1] ** 2 + tmp2[2] ** 2);
+        const onLand = isLand((Math.asin(tmp2[2] / r2) * 180) / Math.PI, (Math.atan2(tmp2[1], tmp2[0]) * 180) / Math.PI);
+        if (vRel < 15 && baseAlt <= nose && !onLand) {
           enuAt(body.r, east, north, up);
           splashT = t;
           finish('splashdown', t, false);
           mode = 'splashed';
           phase = Phase.Splashed;
-          const k = zAx[0] * up[0] + zAx[1] * up[1] + zAx[2] * up[2];
-          for (let i = 0; i < 3; i++) tip.dir[i] = zAx[i] - k * up[i];
-          tip.up.set(up);
-          tip.base.set(tmp);
-          tip.comH = com;
-          tip.t0 = t;
+          startTip(tip, body, up, tmp, com, t);
           record(true);
-        } else finish(landingStarted ? 'lost' : 'impact', t, true);
+        } else if (onLand) finish('impact', t, true, 'Came down on land.');
+        else finish(landingStarted ? 'lost' : 'impact', t, true);
       }
     }
   }
-  if (peakHeat > 0.05) {
+  if (peakHeat > 0.05 && heatAfterPeak < 0.9 * peakHeat) {
     body.r.set(peakR);
     body.v.set(peakV);
     ctx.addEvent('peak-heating', 'ship', peakHeatT, eventState(body, 0, peakHeatT));
   }
   if (!ended) ctx.shipEnd = { kind: 'lost', t };
+}
+
+/**
+ * Seconds until a coasting path (two-body, inertial r and v) next descends through radius rd: 0 when it never
+ * rises above rd or is already below it and falling, Infinity when it never comes down that far.
+ */
+function timeToDescend(r: Float64Array, v: Float64Array, rd: number): number {
+  const rl = Math.sqrt(r[0] ** 2 + r[1] ** 2 + r[2] ** 2);
+  const eps = (v[0] ** 2 + v[1] ** 2 + v[2] ** 2) / 2 - MU / rl;
+  if (eps >= 0) return Infinity;
+  const a = -MU / (2 * eps);
+  const eCos = 1 - rl / a; // e cos E
+  const eSin = (r[0] * v[0] + r[1] * v[1] + r[2] * v[2]) / Math.sqrt(MU * a); // e sin E
+  const e = Math.sqrt(eCos * eCos + eSin * eSin);
+  if (a * (1 + e) <= rd) return 0;
+  if (a * (1 - e) >= rd) return Infinity;
+  let e0 = Math.atan2(eSin, eCos);
+  if (e0 < 0) e0 += 2 * Math.PI;
+  const ed = 2 * Math.PI - Math.acos(clamp((1 - rd / a) / e, -1, 1));
+  if (e0 >= ed) return 0;
+  return (ed - e * Math.sin(ed) - (e0 - e * Math.sin(e0))) / Math.sqrt(MU / (a * a * a));
 }
 
 const eu = v3(), es = v3(), el = v3();
