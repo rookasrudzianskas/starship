@@ -4,6 +4,7 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import type { FlightEvent, FlightResult, Track } from '@/lib/sim/types';
 // Relative so the lines can be unit tested (vitest has no @/ alias).
+import { Phase } from '../../sim/types';
 import { sampleIndex } from '../../telemetry';
 import type { CoastPrediction } from './coast';
 import type { V3 } from './geo';
@@ -138,9 +139,19 @@ class PathLine {
     this.geometry.instanceCount = this.count;
   }
 
-  /** Fill from a track, keeping at most `maxPoints`. */
+  /**
+   * Fill from a track up to where the vehicle comes down (in the water, or in the tower's arms), keeping at most
+   * `maxPoints`: what follows is the vehicle settling there, which would trail off it as a stray arc.
+   */
   setTrack(track: Track, origin: V3, maxPoints = 3000): void {
-    this.setPath(track.pos, track.n, origin, Math.max(1, Math.floor(track.n / maxPoints)), track.t);
+    let n = track.n;
+    for (let i = 0; i < track.n; i++) {
+      if (track.phase[i] === Phase.Splashed || track.phase[i] === Phase.Caught) {
+        n = i + 1;
+        break;
+      }
+    }
+    this.setPath(track.pos, n, origin, Math.max(1, Math.floor(n / maxPoints)), track.t);
   }
 
   /**

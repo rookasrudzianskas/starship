@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InterleavedBufferAttribute } from 'three';
 import type { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
-import type { FlightResult, Track } from '../../../sim/types';
+import { Phase, type FlightResult, type Track } from '../../../sim/types';
 import { createCoastPrediction, predictCoast } from '../coast';
 import { impactFade, TrajectoryLines } from '../paths';
 
@@ -18,7 +18,7 @@ function track(n: number): Track {
     pos[i * 3 + 2] = 0;
     t[i] = i;
   }
-  return { n, pos, t, start: 0, end: n - 1 } as unknown as Track;
+  return { n, pos, t, phase: new Uint8Array(n), start: 0, end: n - 1 } as unknown as Track;
 }
 
 function at(tr: Track, time: number): [number, number, number] {
@@ -66,6 +66,16 @@ describe('TrajectoryLines', () => {
     expect(segment(flown, 1000).slice(3)).toEqual(rel(at(booster, 2002)));
     lines.update(-5, origin, show, { booster: null, ship: null });
     expect(flown.instanceCount).toBe(0);
+  });
+
+  it('ends the lines where the vehicle comes down, not with it settling in the water', () => {
+    const landed = track(200);
+    landed.phase.fill(Phase.Splashed, 150);
+    const l = new TrajectoryLines(origin);
+    l.setResult({ booster: landed, ship: landed, scenarioKey: 'b' } as unknown as FlightResult, null);
+    const g = l.planned.booster.line.geometry as LineGeometry;
+    expect(g.instanceCount).toBe(150);
+    expect(segment(g, 149).slice(3)).toEqual(rel(at(landed, 150)));
   });
 
   it('rewrites the coast line in place, with dashes measured along it', () => {
