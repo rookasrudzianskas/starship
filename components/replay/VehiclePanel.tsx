@@ -4,7 +4,7 @@ import { useCallback, useMemo, useSyncExternalStore } from 'react';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatAltitude, formatEventTime, formatSpeed, formatVerticalSpeed } from '@/lib/format';
 import { G0, type EndKind, type VehicleId } from '@/lib/sim/types';
-import { isModified, useReplay } from '@/lib/store/replay';
+import { isModified, takesCommands, useReplay } from '@/lib/store/replay';
 import { countLit, emptyReading, engineChangesBy, engineStatesAfter, isStacked, readVehicle } from '@/lib/telemetry';
 import { AttitudeDial, EngineMap, PropellantGauge } from './instruments';
 import styles from './replay.module.css';
@@ -105,7 +105,9 @@ export function VehiclePanel({ vehicle, className }: Props) {
   const scenario = useReplay((s) => s.scenario);
   const settings = useReplay((s) => s.settings);
   const flightN = useReplay((s) => s.flight);
-  const directorOpen = useReplay((s) => s.panel === 'director');
+  // With the flight director open, an engine is shut down by clicking it, for as long as the vehicle takes commands.
+  // Read from the store's clock, not the panel's slower one, so a click is never taken after the flight is over.
+  const canFail = useReplay((s) => s.panel === 'director' && s.result !== null && takesCommands(s.result, vehicle, s.t));
   const flight = getFlight(flightN);
   const right = vehicle === 'ship';
   const id = vehicle === 'booster' ? flight.boosterId : flight.shipId;
@@ -129,7 +131,7 @@ export function VehiclePanel({ vehicle, className }: Props) {
   const failEngine = useCallback(
     (engine: number) => {
       const s = useReplay.getState();
-      s.addIntervention({ t: s.t, kind: 'engine-out', vehicle, engine });
+      if (s.result && takesCommands(s.result, vehicle, s.t)) s.addIntervention({ t: s.t, kind: 'engine-out', vehicle, engine });
     },
     [vehicle],
   );
@@ -143,7 +145,6 @@ export function VehiclePanel({ vehicle, className }: Props) {
   const speed = formatSpeed(reading.speed, settings.speedUnit);
   const alt = formatAltitude(reading.alt, settings.altUnit);
   const dim = stackedShip || ended || !result;
-  const canFail = directorOpen && result !== null && !ended && t < (track?.end ?? 0);
 
   const outcomeText =
     !isModified(scenario) || !track

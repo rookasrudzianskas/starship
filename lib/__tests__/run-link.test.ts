@@ -71,6 +71,11 @@ describe('scenario codes', () => {
     });
   });
 
+  it('keeps steering within the flight director limit', () => {
+    const s = decodeScenario('60pb20_61ps-20_62pb-3.5_63pb22_64ps-20.5', 14);
+    expect(s.interventions.map((i) => (i.kind === 'pitch' ? i.deg : null))).toEqual([20, -20, -3.5]);
+  });
+
   it('treats the real payload as no change', () => {
     const real = getFlight(14).plan.ship.payloadCount;
     expect(decodeScenario(`N${real}`, 14)).toBe(AS_FLOWN);

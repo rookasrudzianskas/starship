@@ -14,7 +14,7 @@
 import type { BoosterRecovery, Intervention, Scenario, ShipMission, VehicleId } from '@/lib/sim/types';
 import { FLIGHTS, getFlight, LATEST_FLIGHT } from '../flights/catalog';
 import { engineLayout } from '../sim/engines';
-import { AS_FLOWN, isModified, newInterventionId, type CameraMode, type FollowMode, type ReplayState } from './replay';
+import { AS_FLOWN, isModified, MAX_STEERING_BIAS, newInterventionId, type CameraMode, type FollowMode, type ReplayState } from './replay';
 
 export interface RunLink {
   flight: number;
@@ -118,7 +118,7 @@ export function decodeScenario(code: string, flight: number): Scenario {
     } else if (kind === 'h') {
       if (value >= 40 && value <= 100) s.interventions.push({ id, t, kind: 'throttle', vehicle, value: value / 100 });
     } else if (kind === 'p') {
-      if (Math.abs(value) <= 90) s.interventions.push({ id, t, kind: 'pitch', vehicle, deg: value });
+      if (Math.abs(value) <= MAX_STEERING_BIAS) s.interventions.push({ id, t, kind: 'pitch', vehicle, deg: value });
     } else if (arg === undefined) {
       s.interventions.push({ id, t, kind: kind === 'x' ? 'terminate' : 'skip-burn', vehicle });
     }

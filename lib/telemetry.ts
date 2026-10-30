@@ -175,6 +175,21 @@ export function isStacked(result: FlightResult, t: number): boolean {
   return result.separationT === null || t < result.separationT;
 }
 
+/** The simulation's time step near the ground and in the air, s (lib/sim: stack.ts, booster.ts, ship.ts). */
+const SIM_STEP = 0.02;
+
+/**
+ * Until when a command can still reach a vehicle, s. The simulation takes no more commands once the vehicle's flight
+ * is over: from its end event (down in the water or in the arms, or lost), not the end of its track, which runs on
+ * for a tip-over in the water or a few seconds held in the arms. A touchdown is found at the end of a step, so the
+ * vehicle may already be down a step earlier: commands in that last step would come too late as well.
+ */
+export function commandsUntil(result: FlightResult, vehicle: VehicleId): number {
+  const key = vehicle === 'booster' ? 'booster-end' : 'ship-end';
+  for (const e of result.events) if (e.key === key) return e.t - SIM_STEP;
+  return (vehicle === 'booster' ? result.booster : result.ship).end - SIM_STEP;
+}
+
 /** Ambient pressure for an altitude (exponential fit, Pa); good enough for visuals. */
 export function ambientPressureApprox(altM: number): number {
   return 101325 * Math.exp(-Math.max(0, altM) / 7200);

@@ -5,11 +5,13 @@ import { IconClose, IconUndo } from '@/components/icons';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatEventTime } from '@/lib/format';
 import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipMission, type VehicleId } from '@/lib/sim/types';
-import { isModified, useReplay } from '@/lib/store/replay';
+import { isModified, MAX_STEERING_BIAS, takesCommands, useReplay } from '@/lib/store/replay';
 import { engineStates, isStacked } from '@/lib/telemetry';
 import styles from './director.module.css';
 
 const VEHICLE_NAME: Record<VehicleId, string> = { booster: 'Super Heavy', ship: 'Starship' };
+/** Degrees each steering button adds to the bias. */
+const BIAS_STEP = 2;
 
 function describe(i: Intervention, engineCount: (v: VehicleId) => number): string {
   switch (i.kind) {
@@ -138,7 +140,8 @@ function commandTime(): number {
 function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
   // Display-level selections: the block re-renders when an action becomes (un)available, not every frame.
   const hasResult = useReplay((s) => s.result !== null);
-  const alive = useReplay((s) => s.result !== null && s.t <= (vehicle === 'booster' ? s.result.booster : s.result.ship).end);
+  // Until the vehicle's flight ends, not its track: a click is never taken and then ignored.
+  const alive = useReplay((s) => s.result !== null && takesCommands(s.result, vehicle, s.t));
   const stacked = useReplay((s) => s.result !== null && isStacked(s.result, s.t));
   const flying = useReplay((s) => s.t >= 0);
   const canStage = useReplay((s) => s.t >= 20);
@@ -224,11 +227,23 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
           Steering bias <b>{bias > 0 ? '+' : ''}{bias}°</b>
         </span>
         <div className={styles.actions}>
-          <button type="button" className={styles.action} disabled={!alive || !flying} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: bias - 2 })}>
-            Nose down 2°
+          <button
+            type="button"
+            className={styles.action}
+            disabled={!alive || !flying || bias <= -MAX_STEERING_BIAS}
+            title={`Steer ${BIAS_STEP}° further nose down, to −${MAX_STEERING_BIAS}° at most`}
+            onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: Math.max(-MAX_STEERING_BIAS, bias - BIAS_STEP) })}
+          >
+            Nose down {BIAS_STEP}°
           </button>
-          <button type="button" className={styles.action} disabled={!alive || !flying} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: bias + 2 })}>
-            Nose up 2°
+          <button
+            type="button"
+            className={styles.action}
+            disabled={!alive || !flying || bias >= MAX_STEERING_BIAS}
+            title={`Steer ${BIAS_STEP}° further nose up, to +${MAX_STEERING_BIAS}° at most`}
+            onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: Math.min(MAX_STEERING_BIAS, bias + BIAS_STEP) })}
+          >
+            Nose up {BIAS_STEP}°
           </button>
           <button type="button" className={styles.action} disabled={!alive || bias === 0} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: 0 })}>
             Centre

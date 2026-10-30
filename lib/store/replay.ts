@@ -2,8 +2,9 @@
 
 import { create } from 'zustand';
 import type { AltUnit, SpeedUnit } from '@/lib/format';
-import type { FlightEvent, FlightResult, Intervention, Scenario } from '@/lib/sim/types';
+import type { FlightEvent, FlightResult, Intervention, Scenario, VehicleId } from '@/lib/sim/types';
 import { LATEST_FLIGHT } from '../flights/catalog';
+import { commandsUntil } from '../telemetry';
 
 export type CameraMode = 'webcast' | 'chase' | 'free' | 'globe';
 export type FollowMode = 'both' | 'booster' | 'ship';
@@ -47,6 +48,22 @@ export const COAST_EXIT = 5;
 
 /** The real flight: no changes. */
 export const AS_FLOWN: Scenario = { asFlown: true, interventions: [] };
+
+/**
+ * Largest steering bias the flight director sets, degrees either way. The simulation takes any value, but a stronger
+ * bias only tumbles a vehicle or breaks it up at once.
+ */
+export const MAX_STEERING_BIAS = 20;
+
+/** A command's time as the scenario keeps it: whole milliseconds, so a link to the run (lib/store/runLink.ts) reproduces it exactly. */
+export function commandTimeOf(t: number): number {
+  return Math.round(t * 1000) / 1000;
+}
+
+/** A command issued with the clock at t still reaches the vehicle (the flight director's controls are enabled while it does). */
+export function takesCommands(result: FlightResult, vehicle: VehicleId, t: number): boolean {
+  return commandTimeOf(Math.max(t, result.tStart)) < commandsUntil(result, vehicle);
+}
 
 const SETTINGS_KEY = 'starship-telemetry:settings';
 /** A screen whose shorter side is under this many CSS pixels is a phone's (tablets start at about 740). */
@@ -335,8 +352,7 @@ export const useReplay = create<ReplayState>()((set, get) => ({
   },
 
   addIntervention(i) {
-    // Whole milliseconds, so a link to the run (lib/store/runLink.ts) reproduces it exactly.
-    const intervention = { ...i, t: Math.round(i.t * 1000) / 1000, id: newInterventionId() } as Intervention;
+    const intervention = { ...i, t: commandTimeOf(i.t), id: newInterventionId() } as Intervention;
     const s = get();
     set({
       scenario: { ...s.scenario, interventions: [...s.scenario.interventions, intervention].sort((a, b) => a.t - b.t) },
