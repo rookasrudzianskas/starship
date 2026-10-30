@@ -259,7 +259,13 @@ export function ReplayApp() {
 
   // Keyboard shortcuts.
   useEffect(() => {
+    /** The button last pressed with the mouse or a finger, until the keyboard moves focus on. */
+    let clickedButton: Element | null = null;
+    const onPointerDown = (e: PointerEvent) => {
+      clickedButton = e.target instanceof Element ? e.target.closest('button') : null;
+    };
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') clickedButton = null;
       // A key a control has already used (the timeline, the engine map) is not a shortcut as well.
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target instanceof Element ? e.target : null;
@@ -274,13 +280,17 @@ export function ReplayApp() {
       if (st.panel === 'help' && key !== 'Escape' && key !== '?') return;
       let handled = true;
       switch (key) {
-        case ' ':
-          if (target?.closest('button')) {
+        case ' ': {
+          // Space presses a button reached with the keyboard. A button just clicked is not pressed again (another
+          // engine out, the next speed): Space plays or pauses, as it does in Safari, which does not focus it.
+          const button = target?.closest('button');
+          if (button && button !== clickedButton) {
             handled = false;
             break;
           }
           st.toggle();
           break;
+        }
         case 'ArrowLeft':
           st.seek(st.t - (e.shiftKey ? 10 : 1));
           break;
@@ -359,8 +369,12 @@ export function ReplayApp() {
       }
       if (handled) e.preventDefault();
     };
+    window.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKey);
+    };
   }, [share]);
 
   const vehicles = [flight.boosterId ? `Super Heavy ${flight.boosterId}` : 'Super Heavy', flight.shipId ? `Starship ${flight.shipId}` : 'Starship'];
