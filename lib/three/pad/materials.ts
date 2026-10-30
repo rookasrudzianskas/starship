@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import type { SharedScope } from '@/lib/three/vehicles/procedural';
 import {
   CAST_KEY,
+  CLADDING_KEY,
   CONCRETE_KEY,
   makeCastConcreteTexture,
+  makeCladdingTexture,
   makeConcreteTexture,
   makePlateTexture,
   makeRingSteelTexture,
@@ -30,8 +32,10 @@ export interface PadMaterials {
   concrete: THREE.MeshStandardMaterial;
   /** Cast-in-place concrete (legs, walls, footings). Vertex colours carry soot. */
   cast: THREE.MeshStandardMaterial;
-  /** White painted tanks and buildings. Vertex colours. */
+  /** White painted tanks, roofs and fittings. Vertex colours. */
   white: THREE.MeshStandardMaterial;
+  /** Painted sheet-metal walls of buildings and containers. Vertex colours. */
+  cladding: THREE.MeshStandardMaterial;
   /** Perforated water-cooled deflector steel. Vertex colours carry soot. */
   plate: THREE.MeshStandardMaterial;
   /** Red aviation obstruction lights. */
@@ -44,6 +48,7 @@ export function createPadMaterials(scope: SharedScope): PadMaterials {
   const plateMap = scope.get(PLATE_KEY, makePlateTexture);
   const ringMap = scope.get(RING_STEEL_KEY, makeRingSteelTexture);
   const castMap = scope.get(CAST_KEY, makeCastConcreteTexture);
+  const claddingMap = scope.get(CLADDING_KEY, makeCladdingTexture);
 
   const paint = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.62, metalness: 0.12 });
   paint.name = 'pad-paint';
@@ -68,13 +73,15 @@ export function createPadMaterials(scope: SharedScope): PadMaterials {
   cast.name = 'pad-cast-concrete';
   const white = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.55, metalness: 0 });
   white.name = 'pad-white';
+  const cladding = new THREE.MeshStandardMaterial({ color: 0xffffff, map: claddingMap, vertexColors: true, roughness: 0.6, metalness: 0.1 });
+  cladding.name = 'pad-cladding';
   const plate = new THREE.MeshStandardMaterial({ color: 0xffffff, map: plateMap, vertexColors: true, roughness: 0.62, metalness: 0.45 });
   plate.name = 'pad-plate';
   const lights = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 0.025, 0.012), toneMapped: true });
   lights.name = 'pad-lights';
 
-  const all = [paint, paintInst, steel, steelInst, tank, concrete, cast, white, plate, lights];
-  return { paint, paintInst, steel, steelInst, tank, concrete, cast, white, plate, lights, list: () => all };
+  const all = [paint, paintInst, steel, steelInst, tank, concrete, cast, white, cladding, plate, lights];
+  return { paint, paintInst, steel, steelInst, tank, concrete, cast, white, cladding, plate, lights, list: () => all };
 }
 
 /** Painted-steel palette (sRGB hex). */

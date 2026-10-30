@@ -188,21 +188,49 @@ function buildTankFarm(B: StaticBuilders, side: number): void {
   }
 }
 
-function building(B: MeshBuilder, x0: number, z0: number, x1: number, z1: number, h: number, wall: number, roof: number): void {
-  B.color(wall);
-  B.box(x0, 0, z0, x1, APRON_Y + h, z1);
-  B.color(roof);
-  B.box(x0 - 0.15, APRON_Y + h, z0 - 0.15, x1 + 0.15, APRON_Y + h + 0.5, z1 + 0.15);
+/** A clad steel building: walls of sheet metal, a slightly overhanging roof and a flashing round its top. */
+function building(B: StaticBuilders, x0: number, z0: number, x1: number, z1: number, h: number, wall: number, roof: number): void {
+  B.cladding.color(wall);
+  B.cladding.box(x0, 0, z0, x1, APRON_Y + h, z1);
+  B.white.color(roof);
+  B.white.box(x0 - 0.15, APRON_Y + h, z0 - 0.15, x1 + 0.15, APRON_Y + h + 0.5, z1 + 0.15);
+  B.white.color(0x6f7378);
+  B.white.box(x0 - 0.2, APRON_Y + h - 0.25, z0 - 0.2, x1 + 0.2, APRON_Y + h, z1 + 0.2);
+}
+
+/**
+ * A door from x0 to x1 in an east–west wall at z (`out` +1 where the wall faces north, −1 where it faces south): a
+ * slatted roll-up door under the box its curtain coils into, or a single personnel door.
+ */
+function door(B: StaticBuilders, x0: number, x1: number, z: number, out: number, h: number, rollUp: boolean): void {
+  const xa = Math.min(x0, x1);
+  const xb = Math.max(x0, x1);
+  const slab = (za: number, zb: number) => [Math.min(z + za * out, z + zb * out), Math.max(z + za * out, z + zb * out)];
+  const [p0, p1] = slab(-0.02, 0.06);
+  B.paint.color(rollUp ? 0x8c939a : 0x55606b);
+  B.paint.box(xa, APRON_Y, p0, xb, APRON_Y + h, p1);
+  if (!rollUp) return;
+  const [s0, s1] = slab(0.06, 0.1);
+  B.paint.color(0x737a81);
+  for (let y = 0.6; y < h; y += 0.6) B.paint.box(xa + 0.05, APRON_Y + y - 0.04, s0, xb - 0.05, APRON_Y + y + 0.04, s1);
+  const [h0, h1] = slab(-0.02, 0.5);
+  B.paint.color(0x5d6369);
+  B.paint.box(xa - 0.2, APRON_Y + h, h0, xb + 0.2, APRON_Y + h + 0.7, h1);
 }
 
 function buildBuildings(B: StaticBuilders, side: number): void {
   // Pad control / electrical building, workshop, small sheds.
-  building(B.white, -side * 84, -70, -side * 60, -56, 9, 0xe4e5e3, 0x9a9ea2);
-  building(B.white, side * 30, -90, side * 62, -74, 12, 0xd2d4d5, 0x7f8388);
-  building(B.white, -side * 30, 40, -side * 18, 50, 5, 0xdfe0de, 0x8e9296);
-  // Darker blue-grey band on the workshop (doors) and roof units.
-  B.paint.color(0x3e4d5e);
-  B.paint.box(Math.min(side * 36, side * 48), APRON_Y, -74.2, Math.max(side * 36, side * 48), APRON_Y + 8, -73.9);
+  building(B, -side * 84, -70, -side * 60, -56, 9, 0xe4e5e3, 0x9a9ea2);
+  building(B, side * 30, -90, side * 62, -74, 12, 0xd2d4d5, 0x7f8388);
+  building(B, -side * 30, 40, -side * 18, 50, 5, 0xdfe0de, 0x8e9296);
+  // Roll-up doors on the workshop towards the mount and on its far side, the others' doors to the south.
+  door(B, side * 36, side * 42, -74, 1, 7.5, true);
+  door(B, side * 44, side * 50, -74, 1, 7.5, true);
+  door(B, side * 40, side * 47, -90, -1, 6, true);
+  door(B, side * 52, side * 53.1, -90, -1, 2.2, false);
+  door(B, -side * 73, -side * 78, -70, -1, 4.5, true);
+  door(B, -side * 66, -side * 67.1, -70, -1, 2.2, false);
+  door(B, -side * 22, -side * 23.1, 40, -1, 2.2, false);
   B.steelDetail.color(0x9fa3a7);
   for (let i = 0; i < 4; i++) {
     const x = -side * (64 + i * 5);
@@ -233,8 +261,8 @@ function buildBuildings(B: StaticBuilders, side: number): void {
     const x = (hash3i(i, 1, 21) - 0.5) * 150;
     const z = -40 - hash3i(i, 2, 21) * 45;
     if (Math.abs(x) < 30) continue;
-    B.white.color(hash3i(i, 3, 21) > 0.5 ? 0xd8dad9 : 0xa9adb0);
-    B.white.boxRotY(x, APRON_Y + 1.3, z, 6, 2.6, 2.5, hash3i(i, 4, 21) * Math.PI);
+    B.cladding.color(hash3i(i, 3, 21) > 0.5 ? 0xd8dad9 : 0xa9adb0);
+    B.cladding.boxRotY(x, APRON_Y + 1.3, z, 6, 2.6, 2.5, hash3i(i, 4, 21) * Math.PI);
   }
 }
 

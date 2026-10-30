@@ -31,7 +31,7 @@ const APRON_ORDER = -30;
  * its chopstick arms are driven by PadState.armsHeight (arms' underside above the ground) and
  * PadState.armsOpen (0 closed around a 9 m booster, 1 swung fully open). PadState.deluge drives water
  * spray and steam at the mount base. Static structures are merged per material; lattice members are
- * instanced (about 17 draw calls on 'high', 14 on 'low', plus the deluge sprites while active).
+ * instanced (about 18 draw calls on 'high', 15 on 'low', plus the deluge sprites while active).
  */
 export function createPad(pad: PadId, quality: Quality): PadModel {
   const site = PADS[pad];
@@ -52,6 +52,7 @@ export function createPad(pad: PadId, quality: Quality): PadModel {
     concrete: new MeshBuilder(true),
     cast: new MeshBuilder(),
     white: new MeshBuilder(),
+    cladding: new MeshBuilder(),
     plate: new MeshBuilder(),
     tank: new MeshBuilder(),
     lights: new MeshBuilder(),
@@ -100,6 +101,7 @@ export function createPad(pad: PadId, quality: Quality): PadModel {
   addStatic(B.plate, mats.plate, 'pad-deflector', false);
   addStatic(B.tank, mats.tank, 'pad-tanks', false);
   addStatic(B.white, mats.white, 'pad-white', false);
+  addStatic(B.cladding, mats.cladding, 'pad-cladding', false);
   addStatic(B.lights, mats.lights, 'pad-aviation-lights', false, false);
   addStatic(B.paintDetail, mats.paint, 'pad-steelwork-detail', true);
   addStatic(B.steelDetail, mats.steel, 'pad-steel-detail', true);

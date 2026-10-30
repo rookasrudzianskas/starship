@@ -46,6 +46,7 @@ export interface StaticBuilders {
   concrete: MeshBuilder;
   cast: MeshBuilder;
   white: MeshBuilder;
+  cladding: MeshBuilder;
   plate: MeshBuilder;
   tank: MeshBuilder;
   lights: MeshBuilder;
@@ -341,8 +342,8 @@ export function buildTower(spec: TowerSpec, B: StaticBuilders, mats: PadMaterial
   B.cast.color(0xd4d2cc);
   B.cast.box(ox - h - 2.5, -0.5, oz - h - 2.5, ox + h + 2.5, 1.2, oz + h + 2.5);
   // Hoist drawworks house at the north foot of the tower.
-  B.white.color(0xd9dadb);
-  B.white.box(ox - 7, 0, oz + h + 3, ox + 7, 7, oz + h + 13);
+  B.cladding.color(0xd9dadb);
+  B.cladding.box(ox - 7, 0, oz + h + 3, ox + 7, 7, oz + h + 13);
   B.white.color(0x8b8f94);
   B.white.box(ox - 7.3, 7, oz + h + 2.7, ox + 7.3, 7.6, oz + h + 13.3);
 

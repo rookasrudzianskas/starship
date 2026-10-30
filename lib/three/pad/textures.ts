@@ -11,6 +11,7 @@ export const CONCRETE_KEY = 'pad:concrete';
 export const PLATE_KEY = 'pad:plate';
 export const RING_STEEL_KEY = 'pad:ringSteel';
 export const CAST_KEY = 'pad:castConcrete';
+export const CLADDING_KEY = 'pad:cladding';
 
 /** Concrete patch size in metres (four 6 m slabs each way). */
 const CONCRETE_M = 24;
@@ -18,6 +19,12 @@ const CONCRETE_M = 24;
 const PLATE_M = 4;
 const RING_STEEL_M = 7.2;
 const CAST_M = 4.8;
+/**
+ * Width and height in metres of the wall cladding texture: one and a half storeys tall, so the dust along the foot of
+ * a wall (v = 0 at the ground) does not repeat up the walls of the low buildings.
+ */
+const CLADDING_W = 6;
+const CLADDING_H = 12;
 
 /** Upsamples a tileable fbm field drawn at `n`² into the target canvas (smooth large-scale variation). */
 function drawFbmBase(
@@ -286,5 +293,73 @@ function drawCastConcrete(): HTMLCanvasElement {
 export function makeCastConcreteTexture(): THREE.CanvasTexture {
   const t = canvasTexture(generatedOnce(CAST_KEY, drawCastConcrete), { srgb: true, repeat: true, anisotropy: 8 });
   t.repeat.set(1 / CAST_M, 1 / CAST_M);
+  return t;
+}
+
+/**
+ * Painted sheet-metal wall cladding (sheds, workshops, containers): ribs every 0.3 m in 1.2 m sheets, a lap every
+ * 3 m with dirt streaking down from it, and dust thrown up along the foot of the wall. 256 × 512 = 6 × 12 m, row 0 at
+ * the ground. At a distance the ribs blend into a slightly darker tone while the laps, streaks and dust still show.
+ */
+function drawCladding(): HTMLCanvasElement {
+  const W = 256;
+  const H = 512;
+  const px = W / CLADDING_W;
+  const c = makeCanvas(W, H);
+  const ctx = context2d(c);
+  ctx.fillStyle = 'rgb(226,227,226)';
+  ctx.fillRect(0, 0, W, H);
+  const rnd = seededRandom(404);
+  // Faint differences in fade between sheets, and broad weathering.
+  const sheet = 1.2 * px;
+  for (let i = 0; i < CLADDING_W / 1.2; i++) {
+    for (let j = 0; j < CLADDING_H / 3; j++) {
+      const a = 0.02 + 0.03 * rnd();
+      ctx.fillStyle = rnd() > 0.5 ? `rgba(255,255,250,${a})` : `rgba(60,58,54,${a})`;
+      ctx.fillRect(i * sheet, j * 3 * px, sheet, 3 * px);
+    }
+  }
+  for (let i = 0; i < 10; i++) stain(ctx, rnd() * W, rnd() * H, 30 + rnd() * 60, `rgba(90,86,76,${0.03 + rnd() * 0.04})`);
+  // Ribs: a lit shoulder, then the shaded flank of each trapezoidal rib.
+  const rib = 0.3 * px;
+  for (let x = 0; x < W; x += rib) {
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.fillRect(x, 0, 1.5, H);
+    ctx.fillStyle = 'rgba(0,0,0,0.11)';
+    ctx.fillRect(x + 1.5, 0, 2.5, H);
+  }
+  // Sheet edges.
+  ctx.fillStyle = 'rgba(30,30,32,0.16)';
+  for (let x = 0; x < W; x += sheet) ctx.fillRect(Math.round(x), 0, 1, H);
+  // Laps every 3 m (a shadow line under a lighter lip), each streaking dirt down the sheet below.
+  for (let y = 3 * px; y < H; y += 3 * px) {
+    ctx.fillStyle = 'rgba(25,25,28,0.3)';
+    ctx.fillRect(0, Math.round(y) - 1, W, 1.5);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)';
+    ctx.fillRect(0, Math.round(y) + 0.5, W, 1);
+    for (let i = 0; i < 9; i++) {
+      const x = rnd() * W;
+      const len = (0.4 + 2.2 * rnd()) * px;
+      const g = ctx.createLinearGradient(0, y, 0, y - len);
+      g.addColorStop(0, `rgba(96,84,64,${0.08 + 0.1 * rnd()})`);
+      g.addColorStop(1, 'rgba(96,84,64,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x, y - len, 1 + 2.5 * rnd(), len);
+    }
+  }
+  // Dust along the foot of the wall, thickest at the ground.
+  const foot = ctx.createLinearGradient(0, 0, 0, 1.4 * px);
+  foot.addColorStop(0, 'rgba(118,104,82,0.42)');
+  foot.addColorStop(0.35, 'rgba(126,112,90,0.16)');
+  foot.addColorStop(1, 'rgba(126,112,90,0)');
+  ctx.fillStyle = foot;
+  ctx.fillRect(0, 0, W, 1.4 * px);
+  addGrain(ctx, W, H, 5, 47);
+  return c;
+}
+
+export function makeCladdingTexture(): THREE.CanvasTexture {
+  const t = canvasTexture(generatedOnce(CLADDING_KEY, drawCladding), { srgb: true, repeat: true, anisotropy: 8 });
+  t.repeat.set(1 / CLADDING_W, 1 / CLADDING_H);
   return t;
 }
