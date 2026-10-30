@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
         source: "/earth/:path*",
         headers: [{ key: "Cache-Control", value: "public, max-age=86400, stale-while-revalidate=604800" }],
       },
+      {
+        // The manifest describes the imagery, so it is checked on every visit (a cheap 304 when unchanged): a cached
+        // manifest must never describe files that have since been replaced. A later rule overrides an earlier one.
+        source: "/earth/manifest.json",
+        headers: [{ key: "Cache-Control", value: "no-cache" }],
+      },
     ];
   },
 };
