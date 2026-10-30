@@ -462,6 +462,10 @@
   white-space: nowrap;
 }
 
+.endNote {
+  display: none;
+}
+
 .outcome {
   max-width: 300px;
   display: none;
@@ -1330,6 +1334,21 @@ kbd.key {
 }
 
 @media (max-width: 440px) {
+  /* Each panel head holds the vehicle's name and at most the Mod badge on one line: the IDs are in the labels at
+     the top of the 3D view, and how a flight ended takes the place of the motion line (all zeros by then). */
+  .vehicleId,
+  .badgeEnd {
+    display: none;
+  }
+
+  .derived[data-ended] .motion {
+    display: none;
+  }
+
+  .derived[data-ended] .endNote {
+    display: inline;
+  }
+
   .readoutValue {
     font-size: 22px;
   }

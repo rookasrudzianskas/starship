@@ -221,8 +221,12 @@ export function VehiclePanel({ vehicle, className }: Props) {
         <AttitudeDial vehicle={vehicle} pitch={Math.round(reading.pitch * 10) / 10} />
       </div>
       {/* Hidden rather than removed before liftoff, so the panel keeps its height when it appears. */}
-      <div className={styles.derived} style={launched ? undefined : { visibility: 'hidden' }}>
-        Mach {reading.mach.toFixed(2)} · {(reading.accel / G0).toFixed(2)} G · {formatVerticalSpeed(reading.vspeed, settings.speedUnit)}
+      <div className={styles.derived} data-ended={ended || undefined} style={launched ? undefined : { visibility: 'hidden' }}>
+        <span className={styles.motion}>
+          Mach {reading.mach.toFixed(2)} · {(reading.accel / G0).toFixed(2)} G · {formatVerticalSpeed(reading.vspeed, settings.speedUnit)}
+        </span>
+        {/* On phones how the flight ended stands here instead of in the head, which has no room for it. */}
+        {ended ? <span className={styles.endNote}>{END_LABEL[endKind]}</span> : null}
       </div>
       <div className={styles.outcome}>
         <div className={styles.outcomeTitle}>{OUTCOME_TITLE[vehicle][endKind]}</div>
