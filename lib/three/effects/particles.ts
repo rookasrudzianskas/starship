@@ -188,6 +188,7 @@ uniform vec3 uGlowPos;
 uniform vec3 uSunLocal;
 uniform vec4 uShadow; // xyz bulk centre (object space), w radius (0 = off)
 uniform float uAoHeight; // > 0: particles near the ground (object y) are occluded by the cloud above
+uniform float uFade; // whole-batch opacity (dims a cloud the camera has flown into)
 varying vec2 vUv;
 varying vec2 vRot;
 varying vec4 vColor;
@@ -218,7 +219,7 @@ void main() {
     vec2 rc = vec2(c * corner.x - s * corner.y, s * corner.x + c * corner.y) * a0.w;
     vec4 mv = modelViewMatrix * vec4(a0.xyz, 1.0);
     // Fade sprites the camera is inside of instead of letting them pop through the near plane.
-    vNear = smoothstep(0.15 * a0.w, 0.6 * a0.w, -mv.z);
+    vNear = smoothstep(0.15 * a0.w, 0.6 * a0.w, -mv.z) * uFade;
     p = mv.xyz + vec3(rc, 0.0);
     vUv = corner + 0.5;
     vRot = vec2(c, s);
@@ -241,7 +242,7 @@ void main() {
     float sl = length(side);
     side = sl > 1e-4 ? side / sl : vec3(1.0, 0.0, 0.0);
     p += side * position.x * a0.w + ax * position.y * a0.w;
-    vNear = smoothstep(0.1 * a0.w, 0.5 * a0.w, -p.z);
+    vNear = smoothstep(0.1 * a0.w, 0.5 * a0.w, -p.z) * uFade;
     vUv = vec2(position.x * 2.0, along);
     vRot = vec2(1.0, 0.0);
     float total = a3.w + a0.w;
@@ -470,26 +471,62 @@ export interface BillboardUniforms {
   uSunLocal: THREE.IUniform<THREE.Vector3>;
   uShadow: THREE.IUniform<THREE.Vector4>;
   uAoHeight: THREE.IUniform<number>;
+  uFade: THREE.IUniform<number>;
+}
+
+/** Render order of the part of an axis-split batch that lies behind the vehicle (see Billboards). */
+export const BEHIND_AXIS_ORDER = -20;
+
+interface InstanceBuffers {
+  geo: THREE.InstancedBufferGeometry;
+  attrs: THREE.InstancedBufferAttribute[];
+}
+
+function instanceBuffers(capacity: number): InstanceBuffers {
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  const attrs: THREE.InstancedBufferAttribute[] = [];
+  for (let k = 0; k < 5; k++) {
+    const a = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
+    a.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute(`a${k}`, a);
+    attrs.push(a);
+  }
+  geo.instanceCount = 0;
+  return { geo, attrs };
 }
 
 /**
  * A batch of instanced particles drawn in one call. Fill it each frame with begin()/add()/finish();
- * finish() depth-sorts with the most recent camera (setCamera, or the one seen at the last render).
- * If the batch is not refilled, the next render re-sorts on camera motion (uploaded one frame later,
- * which is invisible).
+ * finish() depth-sorts for the main camera (setCamera, or else the first view drawn after the last
+ * refill). If the batch is not refilled, the next render re-sorts on camera motion (uploaded one frame
+ * later, which is invisible).
+ *
+ * `splitAtAxis`: for clouds a rocket stands or rises in (liftoff steam, a landing burn into the sea), the
+ * batch is split in two draws around the local +Y axis. Particles farther from the camera than the axis
+ * go into a child mesh drawn before the engine plumes (BEHIND_AXIS_ORDER); the rest draw after them, so
+ * steam in front of the exhaust hides it while steam behind it does not.
  */
 export class Billboards {
   readonly mesh: THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
   readonly uniforms: BillboardUniforms;
   readonly lights = new EffectLights();
-  private readonly geo: THREE.InstancedBufferGeometry;
-  private readonly attrs: THREE.InstancedBufferAttribute[];
+  /**
+   * Opacity left when the camera is deep inside the cloud's bulk (uShadow): a camera that ends up inside a
+   * splash or a fireball would otherwise see nothing but a wall of overlapping sprites. 1 = never dim.
+   */
+  insideFade = 1;
+  private readonly front: InstanceBuffers;
+  private readonly back: InstanceBuffers | null;
   private readonly stage: Float32Array;
   private readonly sortPos: Float32Array;
   private readonly keys: Float32Array;
   private order: number[] = [];
   private n = 0;
+  /** Camera of the view being drawn, and the one finish() sorts for (object space). */
   private readonly cam = new THREE.Vector3(0, 0, 1e9);
+  private readonly sortCam = new THREE.Vector3(0, 0, 1e9);
   private readonly lastSortCam = new THREE.Vector3(1e9, 1e9, 1e9);
   private refilled = false;
   private readonly tmpM = new THREE.Matrix4();
@@ -497,21 +534,10 @@ export class Billboards {
   constructor(
     readonly capacity: number,
     atlas: THREE.Texture | null,
+    splitAtAxis = false,
   ) {
-    this.geo = new THREE.InstancedBufferGeometry();
-    this.geo.setAttribute(
-      'position',
-      new THREE.Float32BufferAttribute([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3),
-    );
-    this.geo.setIndex([0, 1, 2, 0, 2, 3]);
-    this.attrs = [];
-    for (let k = 0; k < 5; k++) {
-      const a = new THREE.InstancedBufferAttribute(new Float32Array(capacity * 4), 4);
-      a.setUsage(THREE.DynamicDrawUsage);
-      this.geo.setAttribute(`a${k}`, a);
-      this.attrs.push(a);
-    }
-    this.geo.instanceCount = 0;
+    this.front = instanceBuffers(capacity);
+    this.back = splitAtAxis ? instanceBuffers(capacity) : null;
     this.stage = new Float32Array(capacity * STRIDE);
     this.sortPos = new Float32Array(capacity * 3);
     this.keys = new Float32Array(capacity);
@@ -530,6 +556,7 @@ export class Billboards {
       uSunLocal: { value: new THREE.Vector3(0, 1, 0) },
       uShadow: { value: new THREE.Vector4(0, 0, 0, 0) },
       uAoHeight: { value: 0 },
+      uFade: { value: 1 },
     };
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -547,12 +574,7 @@ export class Billboards {
       blendSrcAlpha: THREE.OneFactor,
       blendDstAlpha: THREE.OneMinusSrcAlphaFactor,
     });
-    this.mesh = new THREE.Mesh(this.geo, material);
-    this.mesh.frustumCulled = false;
-    this.mesh.castShadow = false;
-    this.mesh.receiveShadow = false;
-    this.mesh.visible = false;
-    this.mesh.onBeforeRender = (_renderer, scene, camera) => {
+    const onBeforeRender = (_renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) => {
       this.lights.update(scene);
       // No sky light to tell us where up is: use this effect's own +Y (the stage orients it).
       if (!this.lights.hasSky) this.lights.up.set(0, 1, 0).transformDirection(this.mesh.matrixWorld);
@@ -560,18 +582,46 @@ export class Billboards {
       this.tmpM.copy(this.mesh.matrixWorld).invert();
       this.uniforms.uSunLocal.value.copy(this.lights.sunDir).transformDirection(this.tmpM);
       this.cam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(this.tmpM);
-      if (!this.refilled && this.n > 1 && this.cam.distanceToSquared(this.lastSortCam) > 1) {
-        this.writeSorted();
+      // The first view drawn after a refill is the main one; later views this frame are extra views.
+      if (this.refilled) this.sortCam.copy(this.cam);
+      const bulk = this.uniforms.uShadow.value;
+      let fade = 1;
+      if (this.insideFade < 1 && bulk.w > 0) {
+        const d = Math.hypot(this.cam.x - bulk.x, this.cam.y - bulk.y, this.cam.z - bulk.z);
+        fade = mix(this.insideFade, 1, smooth(0.6 * bulk.w, 1.15 * bulk.w, d));
+      }
+      this.uniforms.uFade.value = fade;
+      // A split batch keeps the main view's split (its two draw counts must match the uploaded data).
+      if (!this.back && !this.refilled && this.n > 1 && this.cam.distanceToSquared(this.lastSortCam) > 1) {
+        this.writeSorted(this.cam);
       }
       this.refilled = false;
     };
+    this.mesh = new THREE.Mesh(this.front.geo, material);
+    this.mesh.onBeforeRender = onBeforeRender;
+    const meshes = [this.mesh];
+    if (this.back) {
+      // A child with an identity transform: same frame, shown whenever the batch is.
+      const backMesh = new THREE.Mesh(this.back.geo, material);
+      backMesh.name = 'billboards-behind-axis';
+      backMesh.renderOrder = BEHIND_AXIS_ORDER;
+      backMesh.onBeforeRender = onBeforeRender;
+      this.mesh.add(backMesh);
+      meshes.push(backMesh);
+    }
+    for (const m of meshes) {
+      m.frustumCulled = false;
+      m.castShadow = false;
+      m.receiveShadow = false;
+    }
+    this.mesh.visible = false;
   }
 
-  /** Sets the sorting camera from a world-space camera (updates this mesh's world matrix first). */
+  /** Sets the camera finish() sorts for, from a world-space camera (updates this mesh's world matrix first). */
   setCamera(camera: THREE.Camera): void {
     this.mesh.updateWorldMatrix(true, false);
     this.tmpM.copy(this.mesh.matrixWorld).invert();
-    this.cam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(this.tmpM);
+    this.sortCam.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(this.tmpM);
   }
 
   begin(): void {
@@ -615,9 +665,9 @@ export class Billboards {
     this.n++;
   }
 
-  /** Sorts back to front for the current camera and uploads. */
+  /** Sorts back to front for the main camera and uploads. */
   finish(): void {
-    this.writeSorted();
+    this.writeSorted(this.sortCam);
     this.refilled = true;
     this.mesh.visible = this.n > 0;
   }
@@ -654,11 +704,10 @@ export class Billboards {
     return target.set(sx, sy, sz, Math.sqrt(r2 / w));
   }
 
-  private writeSorted(): void {
+  private writeSorted(c: THREE.Vector3): void {
     const n = this.n;
     const s = this.stage;
     const sp = this.sortPos;
-    const c = this.cam;
     const order = this.order;
     order.length = n;
     for (let i = 0; i < n; i++) {
@@ -670,10 +719,18 @@ export class Billboards {
     }
     const keys = this.keys;
     order.sort((a, b) => keys[b] - keys[a]);
-    const arrays = this.attrs.map((a) => a.array as Float32Array);
+    const frontArrays = this.front.attrs.map((a) => a.array as Float32Array);
+    const backArrays = this.back ? this.back.attrs.map((a) => a.array as Float32Array) : frontArrays;
+    let nf = 0;
+    let nb = 0;
     for (let k = 0; k < n; k++) {
-      const o = order[k] * STRIDE;
-      const d = k * 4;
+      const i = order[k];
+      // Behind the axis: farther from the camera than the axis point at the same height.
+      const dy = sp[i * 3 + 1] - c.y;
+      const behind = this.back !== null && keys[i] > c.x * c.x + c.z * c.z + dy * dy;
+      const arrays = behind ? backArrays : frontArrays;
+      const d = (behind ? nb++ : nf++) * 4;
+      const o = i * STRIDE;
       for (let j = 0; j < 5; j++) {
         const dst = arrays[j];
         const src = o + j * 4;
@@ -683,17 +740,21 @@ export class Billboards {
         dst[d + 3] = s[src + 3];
       }
     }
-    for (const a of this.attrs) {
-      a.clearUpdateRanges();
-      a.addUpdateRange(0, Math.max(n, 1) * 4);
-      a.needsUpdate = true;
+    for (const [buf, count] of [[this.front, nf], [this.back, nb]] as const) {
+      if (!buf) continue;
+      for (const a of buf.attrs) {
+        a.clearUpdateRanges();
+        a.addUpdateRange(0, Math.max(count, 1) * 4);
+        a.needsUpdate = true;
+      }
+      buf.geo.instanceCount = count;
     }
-    this.geo.instanceCount = n;
     this.lastSortCam.copy(c);
   }
 
   dispose(): void {
-    this.geo.dispose();
+    this.front.geo.dispose();
+    this.back?.geo.dispose();
     this.mesh.material.dispose();
   }
 }

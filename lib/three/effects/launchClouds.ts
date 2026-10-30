@@ -92,7 +92,7 @@ function buildDefs(count: number, fires: number): { clouds: CloudDef[]; fire: Fi
         lift: 4 + 26 * rnd(),
         s0: 18 + 14 * rnd(),
         grow: 1.6 + 1.8 * rnd(),
-        w: 3 + 8 * rnd(),
+        w: 2 + 5 * rnd(),
         dust: 0.05 + 0.2 * rnd(),
       });
     } else {
@@ -114,7 +114,8 @@ function buildDefs(count: number, fires: number): { clouds: CloudDef[]; fire: Fi
     const r = 3 + 15 * rnd();
     fire.push({
       x: Math.cos(phi) * r,
-      y: 2 + 7 * rnd(),
+      // Low enough that the glow stays under the mount top instead of outlining the engine plane.
+      y: 1.5 + 5 * rnd(),
       z: Math.sin(phi) * r,
       size: 14 + 16 * rnd(),
       rot: rnd() * Math.PI * 2,
@@ -141,7 +142,8 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
   const atlas = scope.get(PUFF_ATLAS_KEY, makePuffAtlas);
   const object = new THREE.Group();
   object.name = 'launch-clouds';
-  const puffs = new Billboards(count + fires, atlas);
+  // Split around the pad's vertical axis so the steam hides the plume only where it is in front of it.
+  const puffs = new Billboards(count + fires, atlas, true);
   puffs.mesh.name = 'launch-cloud-puffs';
   puffs.uniforms.uGroundFade.value = 6;
   puffs.uniforms.uAoHeight.value = 70;
@@ -183,7 +185,8 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
           const front = 22 + 250 * (1 - Math.exp(-age / 5.5)) + 2.2 * age;
           R = 6 + d.f * front;
           size = (d.s0 + d.grow * Math.pow(age, 0.85) * (0.7 + 0.6 * d.f)) * sizeK;
-          const thick = 12 + 8 * Math.pow(age, 0.8);
+          // The cloud spreads fast but builds height slowly, so the climbing plume stays in view above it.
+          const thick = 8 + 5.5 * Math.pow(age, 0.85);
           y = size * 0.42 + d.lift * thick * (0.35 + 0.65 * d.f);
         } else if (d.kind === 1) {
           R = d.f + 1.5 * age;
@@ -195,11 +198,14 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
           y = Math.max(d.lift + d.w * age, size * 0.42);
         }
         size = Math.min(size, 190);
+        // Dense steam is opaque; the rising column only builds once the vehicle has climbed clear of it
+        // (until then it would veil the lower booster).
         const op =
           smooth(0, 0.8, age) *
           (1 - smooth(d.fadeStart, d.fadeStart + d.fadeLen, age)) *
           Math.min(Math.max(1.25 - size / 230, 0.4), 1) *
-          0.78;
+          (d.kind === 1 ? smooth(1, 6, t) : 1) *
+          0.9;
         if (op < 0.004) continue;
         rec.x = d.cos * R + driftX * age;
         rec.z = d.sin * R + driftZ * age;
@@ -218,7 +224,7 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         const dx = rec.x;
         const dy = rec.y - glowY;
         const dz = rec.z;
-        rec.m3 = 1 / (1 + (dx * dx + dy * dy + dz * dz) / (60 * 60));
+        rec.m3 = 1 / (1 + (dx * dx + dy * dy + dz * dz) / (80 * 80));
         puffs.add(rec);
       }
 

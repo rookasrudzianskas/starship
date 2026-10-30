@@ -20,6 +20,14 @@ import * as THREE from 'three';
  * camera, and the volume drops samples next to the camera and dims while the camera is inside it.
  */
 
+/**
+ * Render order of the merged plume volume: below the default 0 of the effect particles, so steam and spray
+ * in front of the exhaust column hide it (particles behind the vehicle draw earlier still, see
+ * BEHIND_AXIS_ORDER in effects/particles.ts). The nozzle cores and the glow draw after the particles: the
+ * engines' own flames are bright enough to show through the steam they stand in.
+ */
+export const PLUME_ORDER = -6;
+
 /** 0 at sea level → 1 in vacuum (log of the pressure ratio). */
 export function altitudeFactor(pressure: number): number {
   const a = Math.log10(101325 / Math.max(pressure, 0.001)) / 6.5;
@@ -445,7 +453,7 @@ export class PlumeVolume {
     });
     this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = 9;
+    this.mesh.renderOrder = PLUME_ORDER;
   }
 
   /** Base ray-march sample count (wide, faint plumes and long oblique sight lines get more). */
@@ -607,16 +615,22 @@ export function clusterShape(out: VolumeShape, alt: number, r0: number, y0: numb
   // as a huge faint glow rather than a blob at the nozzles.
   out.falloff = 2 - 1.0 * smooth(0.3, 0.9, alt);
   out.decay = r0 * (6.5 + 42 * Math.pow(alt, 1.35)) * scale;
-  // Near vacuum the exhaust glow is huge but faint.
-  out.intensity = power * (1.5 - 0.4 * alt) * (1 - 0.35 * smooth(0.15, 0.45, alt)) * (1 - 0.72 * smooth(0.45, 1.0, alt));
-  // In thick air the merged plume starts a few metres down, so the shock diamonds stay visible.
-  out.fadeIn = 6.5 - 5.5 * smooth(0.0, 0.4, alt);
+  // Near vacuum the exhaust glow is huge but faint. In thick air it is held back a little so the merged
+  // column keeps its colour instead of saturating to a flat white block.
+  out.intensity =
+    power *
+    (1.5 - 0.4 * alt - 0.35 * (1 - smooth(0.0, 0.25, alt))) *
+    (1 - 0.35 * smooth(0.15, 0.45, alt)) *
+    (1 - 0.72 * smooth(0.45, 1.0, alt));
+  // In thick air the merged plume starts several metres down, so the individual engines and their shock
+  // diamonds show first and the column has no hard top at the nozzles.
+  out.fadeIn = 9 - 8 * smooth(0.0, 0.4, alt);
   // Low in thick air so the afterburning orange survives the tone mapping, highest for the bright expanded
   // plume at staging altitudes, low again for the faint vacuum exhaust.
   out.saturation = 1.3 + 0.5 * smooth(0.05, 0.4, alt) - 0.7 * smooth(0.55, 1.0, alt);
   out.noise = 0.32 - 0.18 * alt;
   out.flicker = 1.6 - 1.0 * alt;
-  out.sharp = 1.35 + 0.85 * alt;
+  out.sharp = 1.8 + 0.4 * alt;
   out.near = 1.5 * r0;
   const a = smooth(0.02, 0.3, alt);
   out.col0.copy(C_SL_CORE).lerp(C_ALT_CORE, a);

@@ -5,10 +5,12 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, newR
 
 /**
  * Water impact: a ballistic spray column that collapses into a widening curtain, a crown of droplet
- * sheets (velocity-aligned streaks), a low base surge of mist rolling out over the water, and an
- * expanding foam ring on the surface. Origin = impact point on the water surface, +Y up.
+ * sheets (velocity-aligned streaks), a low base surge of mist rolling out over the water, and foam on the
+ * surface: an expanding ring of churned water plus a patch round the touchdown point that stays while the
+ * vehicle floats in it. Origin = impact point on the water surface, +Y up.
  * Pure function of (age, scale); `scale` is the size of the impacting body in metres (9 ≈ a vehicle
- * diameter). Heights grow sub-linearly with scale (k^0.6), widths with k^0.8, k = scale / 9.
+ * diameter). Heights grow sub-linearly with scale (k^0.5), widths with k^0.65, k = scale / 9, so a 70 m
+ * booster raises a spray column of 50-140 m and a mist that settles within about 150 m.
  */
 
 const COLUMN = 56;
@@ -93,14 +95,14 @@ function buildDefs(): { column: ColumnDef[]; crown: CrownDef[]; mist: MistDef[] 
     mist.push({
       cos: Math.cos(phi),
       sin: Math.sin(phi),
-      reach: 1.6 + 2.6 * rnd(),
+      reach: 1.2 + 1.9 * rnd(),
       td: 2.5 + 3 * rnd(),
-      s0: 1.1 + 0.6 * rnd(),
-      grow: 0.25 + 0.2 * rnd(),
+      s0: 0.9 + 0.5 * rnd(),
+      grow: 0.16 + 0.14 * rnd(),
       delay: 0.3 + 0.9 * rnd(),
       rot: rnd() * Math.PI * 2,
       cell: Math.floor(rnd() * 4),
-      fade: 10 + 14 * rnd(),
+      fade: 10 + 12 * rnd(),
     });
   }
   return { column, crown, mist };
@@ -129,6 +131,8 @@ uniform sampler2D uNoise;
 uniform float uOuter;
 uniform float uInner;
 uniform float uOpacity;
+uniform float uPatch;
+uniform float uPatchOpacity;
 uniform float uSeed;
 uniform vec3 uLight;
 varying vec2 vXZ;
@@ -141,7 +145,13 @@ void main() {
   float band = smoothstep(uInner * 0.6, uInner + (uOuter - uInner) * 0.7, r) * (1.0 - smoothstep(uOuter * 0.86, uOuter, r));
   float lead = smoothstep(uOuter * 0.72, uOuter * 0.92, r) * (1.0 - smoothstep(uOuter * 0.92, uOuter, r));
   float foam = smoothstep(0.38, 0.95, n + lead * 0.3) * band;
-  float a = clamp(foam * uOpacity, 0.0, 0.8);
+  // Churned water round the touchdown point, where the vehicle floats: dense close in, breaking up into
+  // streaks towards a ragged edge.
+  vec2 qp = vXZ / max(uPatch, 1.0);
+  float np = texture2D(uNoise, qp * 1.4 + uSeed * 2.0).r * 0.55 + texture2D(uNoise, qp * 4.3 - uSeed).g * 0.5;
+  float pr = length(qp) + (np - 0.52) * 0.45;
+  float patchFoam = smoothstep(0.42, 0.9, np + (1.0 - pr) * 0.55) * (1.0 - smoothstep(0.55, 1.0, pr));
+  float a = clamp(max(foam * uOpacity, patchFoam * uPatchOpacity), 0.0, 0.8);
   if (a < 0.003) discard;
   vec3 c = uLight * 0.75 * RECIPROCAL_PI;
   #ifdef TONE_MAPPING
@@ -166,8 +176,10 @@ export function createSplash(): Splash {
   const object = new THREE.Group();
   object.name = 'splash';
   // Spray puffs and droplet sheets share one depth-sorted batch.
-  const batch = new Billboards(COLUMN + MIST + CROWN, atlas);
+  // Split around the vertical axis: a landing burn's plume shows through the spray behind it, not in front.
+  const batch = new Billboards(COLUMN + MIST + CROWN, atlas, true);
   batch.mesh.name = 'splash-spray';
+  batch.insideFade = 0.2;
 
   const foamMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -177,6 +189,8 @@ export function createSplash(): Splash {
       uOuter: { value: 10 },
       uInner: { value: 5 },
       uOpacity: { value: 0 },
+      uPatch: { value: 10 },
+      uPatchOpacity: { value: 0 },
       uSeed: { value: 0.37 },
       uLight: { value: new THREE.Color(3, 3, 3) },
     },
@@ -193,11 +207,12 @@ export function createSplash(): Splash {
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
   });
-  // Unit disc in the XZ plane, scaled in the vertex shader; just above the water to avoid z-fighting.
+  // Unit disc in the XZ plane, scaled in the vertex shader. The origin follows the floating vehicle, which
+  // can ride a few centimetres low, and the log depth buffer ignores polygon offset: lift the foam clear.
   const foamGeo = new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2);
   const foam = new THREE.Mesh(foamGeo, foamMat);
   foam.name = 'splash-foam';
-  foam.position.y = 0.05;
+  foam.position.y = 0.4;
   foam.frustumCulled = false;
   foam.visible = false;
   foam.renderOrder = -1;
@@ -223,8 +238,8 @@ export function createSplash(): Splash {
         return;
       }
       const k = Math.max(scale, 0.5) / 9;
-      const hRef = 9 * Math.pow(k, 0.6); // vertical reference, m
-      const wRef = 9 * Math.pow(k, 0.8); // horizontal reference, m
+      const hRef = 9 * Math.pow(k, 0.5); // vertical reference, m
+      const wRef = 9 * Math.pow(k, 0.65); // horizontal reference, m
       batch.uniforms.uGroundFade.value = 0.15 * wRef;
 
       // Column: spray launched upwards, collapsing into a widening curtain and drifting mist.
@@ -238,12 +253,12 @@ export function createSplash(): Splash {
         // Falling spray slows (drag) and hangs as mist instead of plunging straight back.
         const y = Math.max(yb, d.h * hRef * 0.35 * (1 - smooth(flight * 0.8, flight * 2.2, t)));
         const out = wRef * (0.15 + d.lean * 2.2) * (1 - Math.exp(-t / 0.8)) + wRef * 0.5 * fall * d.lean * 4;
-        const op = 0.9 * smooth(0, 0.06, t) * (1 - 0.5 * fall) * (1 - smooth(flight * 1.2, flight * 1.2 + 9, t));
+        const op = 0.85 * smooth(0, 0.06, t) * (1 - 0.5 * fall) * (1 - smooth(flight, flight * 1.2 + 6, t));
         if (op < 0.004) continue;
         rec.x = d.dirX * out;
         rec.y = y + wRef * 0.25;
         rec.z = d.dirZ * out;
-        rec.size = wRef * (d.s0 + d.grow * t + 0.15 * fall * t);
+        rec.size = wRef * (d.s0 + d.grow * Math.min(t, 6) + 0.08 * fall * Math.min(t, 10));
         rec.r = 0.87;
         rec.g = 0.9;
         rec.b = 0.93;
@@ -262,8 +277,9 @@ export function createSplash(): Splash {
         const t = age - d.delay;
         if (t < 0) continue;
         const R = wRef * (0.6 + d.reach * (1 - Math.exp(-t / d.td)));
-        const size = wRef * (d.s0 + d.grow * Math.pow(t, 0.8));
-        const op = 0.42 * smooth(0, 0.6, t) * (1 - smooth(d.fade * 0.35, d.fade, t));
+        // The surge stops growing once it has settled on the water.
+        const size = wRef * (d.s0 + d.grow * Math.pow(Math.min(t, 14), 0.8));
+        const op = 0.32 * smooth(0, 0.6, t) * (1 - smooth(d.fade * 0.35, d.fade, t));
         if (op < 0.004) continue;
         rec.x = d.cos * R;
         rec.y = size * 0.32 + hRef * 0.03 * t;
@@ -294,12 +310,13 @@ export function createSplash(): Splash {
         const vyy = vy - G * t;
         const speed = Math.sqrt(vh * vh + vyy * vyy);
         const life = (2 * vy) / G;
-        const op = 0.8 * smooth(0, 0.05, t) * (1 - smooth(life * 0.55, life * 1.02, t));
+        const op = 0.42 * smooth(0, 0.05, t) * (1 - smooth(life * 0.55, life * 1.02, t));
         if (op < 0.004) continue;
         rec.x = d.cos * R;
         rec.y = Math.max(y, 0);
         rec.z = d.sin * R;
-        rec.size = wRef * d.width * (1 + 0.8 * t);
+        // Thin sheets that break up as they fly: they stretch along the flight path, not sideways.
+        rec.size = wRef * d.width * 0.55 * (1 + 0.3 * t);
         rec.r = 0.9;
         rec.g = 0.93;
         rec.b = 0.96;
@@ -309,18 +326,21 @@ export function createSplash(): Splash {
         rec.m0 = (d.cos * vh) / speed;
         rec.m1 = vyy / speed;
         rec.m2 = (d.sin * vh) / speed;
-        rec.m3 = Math.min(speed * 0.3, wRef * 2.2);
+        rec.m3 = Math.min(speed * 0.45, wRef * 2.2);
         rec.mode = MODE_STREAK;
         rec.taper = 1;
         rec.seed = d.seed;
         batch.add(rec);
       }
-      // Foam ring on the surface.
-      const outer = wRef * (0.9 + 2.8 * (1 - Math.exp(-age / 2.5)) + 0.5 * Math.sqrt(age));
-      foamMat.uniforms.uRadius.value = outer * 1.02;
+      // Foam on the surface: the expanding ring, and the patch the vehicle floats in until it is gone.
+      const outer = wRef * (0.8 + 2.0 * (1 - Math.exp(-age / 2.5)) + 0.35 * Math.sqrt(age));
+      const patch = Math.max(scale, 0.5) * (0.22 + 0.18 * (1 - Math.exp(-age / 4)) + 0.006 * age);
+      foamMat.uniforms.uRadius.value = Math.max(outer, patch) * 1.02;
       foamMat.uniforms.uOuter.value = outer;
       foamMat.uniforms.uInner.value = outer * (0.2 + 0.5 * smooth(0, 25, age));
-      foamMat.uniforms.uOpacity.value = smooth(0, 0.4, age) * (1 - smooth(18, 58, age)) * 0.85;
+      foamMat.uniforms.uOpacity.value = smooth(0, 0.4, age) * (1 - smooth(8, 32, age)) * 0.55;
+      foamMat.uniforms.uPatch.value = patch;
+      foamMat.uniforms.uPatchOpacity.value = smooth(0.2, 1.5, age) * (1 - smooth(48, 60, age)) * 0.8;
       foam.visible = true;
       batch.uniforms.uShadow.value.copy(batch.bulk(shadow, 0.1));
       batch.finish();
