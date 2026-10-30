@@ -294,8 +294,14 @@ vec3 shadeSurfaceWater(vec3 n, vec3 nw, vec3 v, SurfaceSample s, float shadow, f
     vec3 r = reflect(v, nw);
     // Reflected down into the next wave: it shows sky from about as high above the horizon instead.
     r -= 2.0 * n * min(dot(r, n), 0.0);
+    // Slopes too small to resolve (s2) still tilt the facets that show at a grazing view towards the camera: they
+    // reflect sky from higher above the horizon than the mirror direction (bluer, darker than the pale haze right
+    // at the horizon), and less of it, so the far sea stays darker than the sky above it at low sun too.
+    float lift = sqrt(s2) * (1.0 - smoothstep(0.0, 0.5, dot(r, n)));
+    r = normalize(r + n * (2.0 * lift));
+    float fR = 0.02 + 0.98 * pow(1.0 - clamp(cosV + 0.8 * lift, 0.0, 1.0), 5.0);
     atmosphereAlongRay(r, false, skyIns, skyT);
-    skyReflection = mix(skyReflection, fV * skyIns, lowCam);
+    skyReflection = mix(skyReflection, fR * skyIns, lowCam);
   }
   lo += s.water * (glint + skyReflection);
 
