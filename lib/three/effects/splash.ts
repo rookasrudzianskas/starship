@@ -4,47 +4,67 @@ import { NOISE_KEY, SharedScope, makeNoiseTexture, seededRandom } from '@/lib/th
 import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, newRecord, smooth } from './particles';
 
 /**
- * Water impact: a ballistic spray column that collapses into a widening curtain, a crown of droplet
- * sheets (velocity-aligned streaks), a low base surge of mist rolling out over the water, and foam on the
- * surface: an expanding ring of churned water plus a patch round the touchdown point that stays while the
- * vehicle floats in it. Origin = impact point on the water surface, +Y up. Before touchdown (setApproach) the
- * landing burn lights the water under the descending vehicle, whose base is then the origin.
- * Pure function of (age, scale); `scale` is the size of the impacting body in metres (9 ≈ a vehicle
- * diameter). Heights grow sub-linearly with scale (k^0.45), widths with k^0.5, k = scale / 9, so a 70 m
- * booster raises a spray column of 40-100 m and a mist that settles within about 120 m: a chase camera a
- * couple of vehicle lengths away stays outside it (and the whole cloud thins out if one gets inside).
+ * Water impact, as seen at booster and ship splashdowns: a white spray column of jets of water thrown up round the
+ * vehicle (each a ragged sheet that rises, stalls and falls back as a curtain), droplets raining fast out of it,
+ * mist that drifts away low over the water and thins, and foam on the surface: an expanding ring of churned water
+ * plus a patch round the touchdown point that stays while the vehicle floats in it. Origin = impact point on the
+ * water surface, +Y up. Before touchdown (setApproach) the landing burn lights the water under the descending
+ * vehicle, whose base is then the origin.
+ * Pure function of (age, scale); `scale` is the size of the impacting body in metres (9 ≈ a vehicle diameter).
+ * Heights grow sub-linearly with scale (k^0.45), widths with k^0.5, k = scale / 9, so a 70 m booster throws spray
+ * 30-100 m up and a mist that settles within about 120 m: a chase camera a couple of vehicle lengths away stays
+ * outside it (and the whole cloud thins out if one gets inside). While the vehicle still stands in the spray, no
+ * sprite cuts through its hull (see uKeepOut in particles.ts).
  */
 
-const COLUMN = 56;
-const CROWN = 72;
+const JETS = 40;
+/** Each jet is drawn as two straight segments (launched first → mid-launch → last launched). */
+const JET_SEGS = 2;
+const DROPS = 100;
 const MIST = 44;
+const SURGE = 26;
 const G = 9.81;
+/** Radius of the hull standing at the origin (both vehicles are 9 m across), and how long it stands. */
+const HULL_RADIUS = 4.8;
+const STANDING: [number, number] = [2.5, 5];
 
-interface ColumnDef {
-  h: number;
-  dirX: number;
-  dirZ: number;
-  lean: number;
-  delay: number;
-  s0: number;
-  grow: number;
-  rot: number;
-  spin: number;
-  cell: number;
-}
-
-interface CrownDef {
+interface JetDef {
   cos: number;
   sin: number;
-  h: number;
-  cot: number;
-  r0: number;
+  /** Launch speed (per unit of sqrt(hRef)), its elevation, and how it decays over the feeding time. */
+  v0: number;
+  elev: number;
+  /** Seconds over which the jet is fed, and the drag time constant of its spray. */
+  feed: number;
+  drag: number;
   width: number;
-  delay: number;
+  op: number;
+  seed: number;
+}
+
+interface DropDef {
+  jet: number;
+  /** Release time as a fraction of the jet's rise, and the scatter of its velocity (m/s per unit). */
+  rel: number;
+  sx: number;
+  sy: number;
+  sz: number;
+  size: number;
   seed: number;
 }
 
 interface MistDef {
+  jet: number;
+  rel: number;
+  s0: number;
+  grow: number;
+  rise: number;
+  fade: number;
+  rot: number;
+  cell: number;
+}
+
+interface SurgeDef {
   cos: number;
   sin: number;
   reach: number;
@@ -57,57 +77,85 @@ interface MistDef {
   fade: number;
 }
 
-function buildDefs(): { column: ColumnDef[]; crown: CrownDef[]; mist: MistDef[] } {
+function buildDefs(): { jets: JetDef[]; drops: DropDef[]; mist: MistDef[]; surge: SurgeDef[] } {
   const rnd = seededRandom(31337);
-  const column: ColumnDef[] = [];
-  for (let i = 0; i < COLUMN; i++) {
-    const phi = rnd() * Math.PI * 2;
-    column.push({
-      // Peak height in units of the reference height (≈ 9 m body → 16..41 m column).
-      h: 1.8 + 2.8 * Math.pow(rnd(), 1.4),
-      dirX: Math.cos(phi),
-      dirZ: Math.sin(phi),
-      lean: 0.03 + 0.2 * rnd(),
-      delay: 0.3 * rnd(),
-      s0: 0.45 + 0.4 * rnd(),
-      grow: 0.12 + 0.12 * rnd(),
-      rot: rnd() * Math.PI * 2,
-      spin: (rnd() - 0.5) * 0.4,
-      cell: Math.floor(rnd() * 4),
-    });
-  }
-  const crown: CrownDef[] = [];
-  for (let i = 0; i < CROWN; i++) {
-    const phi = ((i + 0.7 * rnd()) / CROWN) * Math.PI * 2;
-    const el = THREE.MathUtils.degToRad(50 + 28 * rnd());
-    crown.push({
+  const jets: JetDef[] = [];
+  for (let i = 0; i < JETS; i++) {
+    const phi = ((i + 0.7 * rnd()) / JETS) * Math.PI * 2;
+    // Peak heights (without drag) of 1.6..5.4 reference heights, steep and slightly outwards; a quarter of them
+    // nearly vertical and broad, the dense core of the column round the hull.
+    const core = i % 4 === 0;
+    const h = 1.6 + 3.8 * Math.pow(rnd(), 1.2);
+    const elev = THREE.MathUtils.degToRad(core ? 80 + 8 * rnd() : 62 + 22 * rnd());
+    jets.push({
       cos: Math.cos(phi),
       sin: Math.sin(phi),
-      h: 0.7 + 2.0 * Math.pow(rnd(), 1.3),
-      cot: 1 / Math.tan(el),
-      r0: 0.45 + 0.25 * rnd(),
-      width: 0.09 + 0.08 * rnd(),
-      delay: 0.15 * rnd(),
+      v0: Math.sqrt(2 * G * h) / Math.sin(elev),
+      elev,
+      feed: 0.4 + 0.6 * rnd(),
+      drag: 3 + 2 * rnd(),
+      width: core ? 0.22 + 0.08 * rnd() : 0.11 + 0.09 * rnd(),
+      op: 0.6 + 0.3 * rnd(),
+      seed: rnd() * 100,
+    });
+  }
+  const drops: DropDef[] = [];
+  for (let i = 0; i < DROPS; i++) {
+    drops.push({
+      jet: Math.floor(rnd() * JETS),
+      rel: 0.3 + 1.3 * rnd(),
+      sx: (rnd() - 0.5) * 2,
+      sy: (rnd() - 0.5) * 2,
+      sz: (rnd() - 0.5) * 2,
+      size: 0.6 + 0.8 * rnd(),
       seed: rnd() * 100,
     });
   }
   const mist: MistDef[] = [];
   for (let i = 0; i < MIST; i++) {
-    const phi = ((i + rnd()) / MIST) * Math.PI * 2;
     mist.push({
+      jet: Math.floor(rnd() * JETS),
+      rel: 0.5 + 0.9 * rnd(),
+      s0: 0.7 + 0.5 * rnd(),
+      grow: 0.08 + 0.08 * rnd(),
+      rise: 0.2 + 0.5 * rnd(),
+      fade: 14 + 14 * rnd(),
+      rot: rnd() * Math.PI * 2,
+      // Mostly smooth haze, some with a little texture: a veil, not separate puffs.
+      cell: rnd() < 0.7 ? 4 : Math.floor(rnd() * 4),
+    });
+  }
+  const surge: SurgeDef[] = [];
+  for (let i = 0; i < SURGE; i++) {
+    const phi = ((i + rnd()) / SURGE) * Math.PI * 2;
+    surge.push({
       cos: Math.cos(phi),
       sin: Math.sin(phi),
       reach: 1.0 + 1.6 * rnd(),
       td: 2.5 + 3 * rnd(),
       s0: 0.7 + 0.4 * rnd(),
-      grow: 0.12 + 0.1 * rnd(),
-      delay: 0.3 + 0.9 * rnd(),
+      grow: 0.1 + 0.1 * rnd(),
+      delay: 0.6 + 1.2 * rnd(),
       rot: rnd() * Math.PI * 2,
       cell: Math.floor(rnd() * 4),
       fade: 10 + 12 * rnd(),
     });
   }
-  return { column, crown, mist };
+  return { jets, drops, mist, surge };
+}
+
+/**
+ * Position (horizontal distance out, height) of spray launched at `speed` and elevation `elev`, `t` seconds later,
+ * under gravity and linear drag with time constant `td` (exact solution of v' = −v/td − g).
+ */
+function sprayAt(speed: number, elev: number, td: number, t: number, out: { r: number; y: number; vr: number; vy: number }): void {
+  const e = Math.exp(-t / td);
+  const vh = speed * Math.cos(elev);
+  const vv = speed * Math.sin(elev);
+  out.r = vh * td * (1 - e);
+  out.y = (vv + G * td) * td * (1 - e) - G * td * t;
+  out.vr = vh * e;
+  out.vy = (vv + G * td) * e - G * td;
 }
 
 const FOAM_VERT = /* glsl */ `
@@ -233,9 +281,9 @@ export function createSplash(): Splash {
   const noise = scope.get(NOISE_KEY, makeNoiseTexture);
   const object = new THREE.Group();
   object.name = 'splash';
-  // Spray puffs and droplet sheets share one depth-sorted batch.
+  // Spray jets, droplets and mist share one depth-sorted batch.
   // Split around the vertical axis: a landing burn's plume shows through the spray behind it, not in front.
-  const batch = new Billboards(COLUMN + MIST + CROWN, atlas, true);
+  const batch = new Billboards(JETS * JET_SEGS + DROPS + MIST + SURGE, atlas, true);
   batch.mesh.name = 'splash-spray';
   // Start thinning out well before the camera reaches the spray: the mist spreads wider than its bulk.
   batch.insideFade = 0.2;
@@ -308,6 +356,28 @@ export function createSplash(): Splash {
   const defs = buildDefs();
   const rec = newRecord();
   const shadow = new THREE.Vector4();
+  const pa = { r: 0, y: 0, vr: 0, vy: 0 };
+  const pb = { r: 0, y: 0, vr: 0, vy: 0 };
+  /** Adds one straight streak of spray from (r0, y0) to (r1, y1) along azimuth (c, s), r out from the base ring. */
+  const segment = (c: number, sn: number, base: number, r0: number, y0: number, r1: number, y1: number) => {
+    const x0 = c * (base + r0);
+    const z0 = sn * (base + r0);
+    const x1 = c * (base + r1);
+    const z1 = sn * (base + r1);
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dz = z1 - z0;
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-3) return false;
+    rec.x = x1;
+    rec.y = y1;
+    rec.z = z1;
+    rec.m0 = dx / len;
+    rec.m1 = dy / len;
+    rec.m2 = dz / len;
+    rec.m3 = len;
+    return true;
+  };
 
   const api: Splash = {
     object,
@@ -323,49 +393,146 @@ export function createSplash(): Splash {
       const k = Math.max(scale, 0.5) / 9;
       const hRef = 9 * Math.pow(k, 0.45); // vertical reference, m
       const wRef = 9 * Math.pow(k, 0.5); // horizontal reference, m
-      batch.uniforms.uGroundFade.value = 0.15 * wRef;
+      const vk = Math.sqrt(hRef); // launch speeds scale with the square root of the heights they reach
+      const base = Math.min(HULL_RADIUS * 1.15, wRef * 0.3); // the jets rise round the hull, not out of it
+      batch.uniforms.uGroundFade.value = 0.08 * wRef;
+      // The vehicle stands in the spray for the first seconds, then topples into it.
+      batch.uniforms.uKeepOut.value.set(HULL_RADIUS * (1 - smooth(STANDING[0], STANDING[1], age)), -5, 6 * hRef);
 
-      // Column: spray launched upwards, collapsing into a widening curtain and drifting mist.
-      for (const d of defs.column) {
-        const t = age - d.delay;
-        if (t < 0) continue;
-        const v = Math.sqrt(2 * G * d.h * hRef);
-        const flight = (2 * v) / G;
-        const yb = v * t - 0.5 * G * t * t;
-        const fall = smooth(0.5, 1.0, t / flight);
-        // Falling spray slows (drag) and hangs as mist instead of plunging straight back.
-        const y = Math.max(yb, d.h * hRef * 0.35 * (1 - smooth(flight * 0.8, flight * 2.2, t)));
-        const out = wRef * (0.15 + d.lean * 2.2) * (1 - Math.exp(-t / 0.8)) + wRef * 0.5 * fall * d.lean * 4;
-        const op = 0.85 * smooth(0, 0.06, t) * (1 - 0.5 * fall) * (1 - smooth(flight, flight * 1.2 + 6, t));
+      // Jets: water launched over each jet's feeding time, fastest first, so the jet is a ragged sheet from the
+      // water up to its head; once fed it detaches, stalls and falls back as a curtain.
+      for (const d of defs.jets) {
+        const v0 = d.v0 * vk;
+        const fed = Math.min(age, d.feed);
+        // Head (launched first), middle and tail (launched last, slower) of the sheet.
+        const speedAt = (tau: number) => v0 * (1 - 0.5 * (tau / d.feed));
+        sprayAt(v0, d.elev, d.drag, age, pa);
+        const apex = (v0 * Math.sin(d.elev)) / G;
+        const op = d.op * smooth(0, 0.06, age) * (1 - smooth(apex * 0.8, apex * 1.8 + 1, age));
         if (op < 0.004) continue;
-        rec.x = d.dirX * out;
-        rec.y = y + wRef * 0.25;
-        rec.z = d.dirZ * out;
-        rec.size = wRef * (d.s0 + d.grow * Math.min(t, 6) + 0.08 * fall * Math.min(t, 10));
-        rec.r = 0.87;
-        rec.g = 0.9;
-        rec.b = 0.93;
+        const w = wRef * d.width * (1 + 0.6 * Math.min(age, 6));
+        let prevR = pa.r;
+        let prevY = Math.max(pa.y, 0);
+        for (let sgi = 1; sgi <= JET_SEGS; sgi++) {
+          const tau = (fed * sgi) / JET_SEGS;
+          sprayAt(speedAt(tau), d.elev, d.drag, age - tau, pb);
+          const r1 = pb.r;
+          const y1 = Math.max(pb.y, 0);
+          // From the lower end up to the higher one, so the streak's bright head is at the top.
+          const up = y1 >= prevY;
+          if (!(up ? segment(d.cos, d.sin, base, prevR, prevY, r1, y1) : segment(d.cos, d.sin, base, r1, y1, prevR, prevY))) {
+            continue;
+          }
+          rec.size = w * (1 + 0.25 * sgi);
+          rec.r = 0.9;
+          rec.g = 0.93;
+          rec.b = 0.97;
+          rec.opacity = op * (sgi === 1 ? 1 : 0.85);
+          rec.er = rec.eg = rec.eb = 0;
+          rec.temp = 0;
+          rec.mode = MODE_STREAK;
+          rec.taper = 0;
+          rec.seed = d.seed + sgi * 3.1;
+          batch.add(rec);
+          prevR = r1;
+          prevY = y1;
+        }
+      }
+
+      // Droplets: big drops shed by the jets, raining back down fast (velocity-aligned streaks, a motion-blur long).
+      for (const d of defs.drops) {
+        const j = defs.jets[d.jet];
+        const v0 = j.v0 * vk;
+        const apex = (v0 * Math.sin(j.elev)) / G;
+        const t0 = d.rel * apex;
+        const a = age - t0;
+        if (a <= 0) continue;
+        sprayAt(v0, j.elev, j.drag, t0, pa);
+        if (pa.y <= 0) continue;
+        // Free fall from the release point with the jet's velocity plus some scatter; drops feel less drag.
+        const td = 7;
+        const e = Math.exp(-a / td);
+        const vr = pa.vr + d.sx * 2.5 * vk * 0.25;
+        const vt = d.sz * 2.5 * vk * 0.25;
+        const vy0 = pa.vy + d.sy * 2.0 * vk * 0.25;
+        const y = pa.y + (vy0 + G * td) * td * (1 - e) - G * td * a;
+        if (y <= 0) continue;
+        const r = base + pa.r + vr * td * (1 - e);
+        const tside = vt * td * (1 - e);
+        const vy = (vy0 + G * td) * e - G * td;
+        const vrr = vr * e;
+        const vtt = vt * e;
+        const speed = Math.sqrt(vy * vy + vrr * vrr + vtt * vtt);
+        if (speed < 1e-3) continue;
+        // World direction of the drop's velocity (radial r̂ = (cos, 0, sin), tangent t̂ = (−sin, 0, cos)).
+        const dx = (vrr * j.cos - vtt * j.sin) / speed;
+        const dz = (vrr * j.sin + vtt * j.cos) / speed;
+        rec.x = j.cos * r - j.sin * tside;
+        rec.y = y;
+        rec.z = j.sin * r + j.cos * tside;
+        rec.m0 = dx;
+        rec.m1 = vy / speed;
+        rec.m2 = dz;
+        rec.m3 = Math.min(speed * 0.07, wRef * 0.5);
+        rec.size = wRef * 0.02 * d.size;
+        rec.r = 0.92;
+        rec.g = 0.95;
+        rec.b = 0.98;
+        rec.opacity = 0.5 * smooth(0, 0.15, a) * (1 - smooth(apex * 2.5, apex * 3.5, age));
+        if (rec.opacity < 0.004) continue;
+        rec.er = rec.eg = rec.eb = 0;
+        rec.temp = 0;
+        rec.mode = MODE_STREAK;
+        rec.taper = 1;
+        rec.seed = d.seed;
+        batch.add(rec);
+      }
+
+      // Mist: fine spray left hanging where the jets broke up, spreading, drifting up a little and thinning out.
+      for (const d of defs.mist) {
+        const j = defs.jets[d.jet];
+        const v0 = j.v0 * vk;
+        const apex = (v0 * Math.sin(j.elev)) / G;
+        const t0 = d.rel * apex;
+        const a = age - t0;
+        if (a <= 0) continue;
+        sprayAt(v0, j.elev, j.drag, t0, pa);
+        const size = wRef * (d.s0 + d.grow * Math.pow(Math.min(a, 20), 0.85));
+        const op = 0.16 * smooth(0, 1.2, a) * (1 - smooth(d.fade * 0.4, d.fade, a));
+        if (op < 0.004) continue;
+        // Settles from where it was left towards a low layer, drifting outwards.
+        const y = Math.max(pa.y * Math.exp(-a / 3) + hRef * 0.04 * d.rise * a, size * 0.3);
+        const r = base + pa.r + wRef * 0.08 * a;
+        rec.x = j.cos * r;
+        rec.y = y;
+        rec.z = j.sin * r;
+        rec.size = size;
+        rec.r = 0.9;
+        rec.g = 0.93;
+        rec.b = 0.96;
         rec.opacity = op;
         rec.er = rec.eg = rec.eb = 0;
         rec.temp = 0;
-        rec.m0 = d.rot + d.spin * t;
+        rec.m0 = d.rot + 0.03 * a;
         rec.m1 = d.cell;
-        rec.m2 = 0.04 + 0.5 * fall;
+        rec.m2 = 0.35 + 0.4 * smooth(0, d.fade, a);
         rec.m3 = 0;
         rec.mode = MODE_PUFF;
+        rec.flat = 0.75;
         batch.add(rec);
       }
-      // Base surge: low, wide mist rolling out over the water.
-      for (const d of defs.mist) {
+
+      // Base surge: a low, wide layer of mist rolling out over the water from the foot of the column.
+      for (const d of defs.surge) {
         const t = age - d.delay;
         if (t < 0) continue;
-        const R = wRef * (0.6 + d.reach * (1 - Math.exp(-t / d.td)));
+        const R = base + wRef * (0.5 + d.reach * (1 - Math.exp(-t / d.td)));
         // The surge stops growing once it has settled on the water.
         const size = wRef * (d.s0 + d.grow * Math.pow(Math.min(t, 14), 0.8));
-        const op = 0.32 * smooth(0, 0.6, t) * (1 - smooth(d.fade * 0.35, d.fade, t));
+        const op = 0.2 * smooth(0, 0.8, t) * (1 - smooth(d.fade * 0.35, d.fade, t));
         if (op < 0.004) continue;
         rec.x = d.cos * R;
-        rec.y = size * 0.32 + hRef * 0.03 * t;
+        rec.y = size * 0.22 + hRef * 0.02 * t;
         rec.z = d.sin * R;
         rec.size = size;
         rec.r = 0.88;
@@ -376,43 +543,10 @@ export function createSplash(): Splash {
         rec.temp = 0;
         rec.m0 = d.rot + 0.04 * t;
         rec.m1 = d.cell;
-        rec.m2 = 0.12 + 0.45 * smooth(1, d.fade, t);
+        rec.m2 = 0.3 + 0.45 * smooth(1, d.fade, t);
         rec.m3 = 0;
         rec.mode = MODE_PUFF;
-        batch.add(rec);
-      }
-      // Crown: droplet sheets thrown out on ballistic arcs.
-      for (const d of defs.crown) {
-        const t = age - d.delay;
-        if (t < 0) continue;
-        const vy = Math.sqrt(2 * G * d.h * hRef);
-        const vh = vy * d.cot * Math.pow(k, 0.2);
-        const y = vy * t - 0.5 * G * t * t;
-        if (y < -0.5) continue;
-        const R = wRef * d.r0 + vh * t;
-        const vyy = vy - G * t;
-        const speed = Math.sqrt(vh * vh + vyy * vyy);
-        const life = (2 * vy) / G;
-        const op = 0.34 * smooth(0, 0.05, t) * (1 - smooth(life * 0.55, life * 1.02, t));
-        if (op < 0.004) continue;
-        rec.x = d.cos * R;
-        rec.y = Math.max(y, 0);
-        rec.z = d.sin * R;
-        // Thin sheets that break up as they fly: they stretch along the flight path, not sideways.
-        rec.size = wRef * d.width * 0.4 * (1 + 0.3 * t);
-        rec.r = 0.9;
-        rec.g = 0.93;
-        rec.b = 0.96;
-        rec.opacity = op;
-        rec.er = rec.eg = rec.eb = 0;
-        rec.temp = 0;
-        rec.m0 = (d.cos * vh) / speed;
-        rec.m1 = vyy / speed;
-        rec.m2 = (d.sin * vh) / speed;
-        rec.m3 = Math.min(speed * 0.45, wRef * 2.2);
-        rec.mode = MODE_STREAK;
-        rec.taper = 1;
-        rec.seed = d.seed;
+        rec.flat = 0.5;
         batch.add(rec);
       }
       // Foam on the surface: the expanding ring, and the patch the vehicle floats in until it is gone.

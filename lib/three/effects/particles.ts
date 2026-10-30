@@ -99,7 +99,7 @@ const VERT = /* glsl */ `
 attribute vec4 a0; // puff centre / streak head (object space, m), size (puff diameter / streak width, m)
 attribute vec4 a1; // albedo rgb (linear), opacity
 attribute vec4 a2; // emission rgb (HDR multiplier), temperature (puffs: drives the fire ramp)
-attribute vec4 a3; // puff: rotation, atlas cell (4 = smooth glow, 5 = thin shell), erosion, glow weight | streak: unit dir xyz, length
+attribute vec4 a3; // puff: rotation, atlas cell (4 = smooth glow, 5 = vapour sphere), erosion, glow weight | streak: unit dir xyz, length
 attribute vec4 a4; // mode (0 puff, 1 streak), taper (streak: 1 fades to the tail, 0 uniform segment), seed, puff flattening
 uniform vec3 uSunDir;
 uniform vec3 uUp;
@@ -109,6 +109,7 @@ uniform vec3 uSunLocal;
 uniform vec4 uShadow; // xyz bulk centre (object space), w radius (0 = off)
 uniform float uAoHeight; // > 0: particles near the ground (object y) are occluded by the cloud above
 uniform float uFade; // whole-batch opacity (dims a cloud the camera has flown into)
+uniform vec3 uKeepOut; // x: radius (m, 0 = off) of a vehicle standing on the object's +Y axis, from y to z
 varying vec2 vUv;
 varying vec2 vRot;
 varying vec4 vColor;
@@ -149,6 +150,15 @@ void main() {
     // Fade sprites the camera is inside of instead of letting them pop through the near plane.
     vNear = smoothstep(0.15 * a0.w, 0.6 * a0.w, -mv.z) * uFade;
     p = mv.xyz + vec3(rc, 0.0);
+    // A flat sprite next to a vehicle standing in the cloud would cut through its hull, which then shows through
+    // the steam in patches as if translucent: keep the sprite wholly in front of the hull or wholly behind it,
+    // moved along the sight lines so it covers the same pixels.
+    if (uKeepOut.x > 0.0 && a0.y > uKeepOut.y - 0.5 * a0.w && a0.y < uKeepOut.z + 0.5 * a0.w) {
+      float za = -(modelViewMatrix * vec4(0.0, a0.y, 0.0, 1.0)).z;
+      float zc = -mv.z;
+      float zt = zc < za ? min(zc, za - uKeepOut.x) : max(zc, za + uKeepOut.x);
+      if (zc > 1e-3 && zt > 1e-3) p *= zt / zc;
+    }
     vUv = corner + 0.5;
     vRot = vec2(c, s);
     vMisc = vec4(a3.yzw, 0.0);
@@ -206,6 +216,7 @@ uniform vec3 uSkyColor;
 uniform vec3 uGroundColor;
 uniform vec3 uGlowColor;
 uniform float uGroundFade;
+uniform float uGroundY; // height of the ground (object y) that uGroundFade fades particles out towards
 varying vec2 vUv;
 varying vec2 vRot;
 varying vec4 vColor;
@@ -268,13 +279,17 @@ void main() {
     float cell = vMisc.x;
     vec2 nt;
     if (cell > 4.5) {
-      // Thin spherical shell (vapour expanding in vacuum): the thickness of a shell between radii 0.78 and
-      // 0.9 along each sight line (squared, so the faint middle erodes away and the rim stands out), broken
-      // up by the first cell's turbulence.
-      float shell = (sqrt(max(0.81 - r2, 0.0)) - sqrt(max(0.6084 - r2, 0.0))) / 0.449;
-      detail = texture2D(uAtlas, clamp(vUv, 0.004, 0.996) * 0.5).a;
-      dens = shell * shell * (0.5 + 0.7 * detail);
-      nt = q * 0.6;
+      // Vapour expanding freely into vacuum: a smooth sphere of gas (its thickness along each sight line, out to
+      // 0.9 of the half-size), a little brighter towards the edge where it has thinned least, streaked with rays
+      // radiating from the centre (the jets that tore out of the ruptured tanks): a slice of the first cell's
+      // turbulence taken round the circle. It thins out from the middle as it erodes, never into lumps.
+      float rr = sqrt(r2);
+      float sphere = sqrt(max(1.0 - r2 / 0.81, 0.0));
+      float ang = atan(q.y, q.x) * 0.15915 + 0.5;
+      float rays = texture2D(uAtlas, vec2(0.02 + 0.46 * ang, 0.25 + 0.04 * rr)).a;
+      detail = smoothstep(0.35, 0.8, rays);
+      dens = sphere * (0.15 + 0.85 * detail) * (0.75 + 0.35 * smoothstep(0.3, 0.85, rr));
+      nt = q * 0.4;
     } else if (cell > 3.5) {
       // Smooth radial glow (flashes, halos).
       dens = max(exp(-5.0 * r2) - 0.0067, 0.0);
@@ -315,7 +330,9 @@ void main() {
     float xs = clamp(x, -1.0, 1.0);
     n = normalize(vSideV * xs * 0.8 + vec3(0.0, 0.0, 1.0) * sqrt(1.0 - xs * xs * 0.64));
   }
-  if (uGroundFade > 0.0) a *= smoothstep(0.0, uGroundFade, vHeight);
+  // Particles fade out towards the ground or the sea instead of being cut off by it (glow included, below).
+  float ground = uGroundFade > 0.0 ? smoothstep(uGroundY, uGroundY + uGroundFade, vHeight) : 1.0;
+  a *= ground;
 
   float ndl = dot(n, vSunV);
   // Wrapped diffuse plus a multiple-scattering floor: dense steam and smoke are never pitch black on the
@@ -338,9 +355,9 @@ void main() {
     // Incandescence: hotter in the core and in the turbulent tongues of the texture, cooler where the gas thins
     // out at the edge (an orange rim round a white-hot core rather than a white cut-out).
     float T = vEmit.a * (0.5 + 0.75 * detail) * (1.2 - 0.55 * r2) * mix(0.62, 1.0, smoothstep(0.05, 0.55, dens));
-    emission = vEmit.rgb * fireRamp(T) * smoothstep(0.02, 0.4, dens) * vNear;
+    emission = vEmit.rgb * fireRamp(T) * smoothstep(0.02, 0.4, dens) * vNear * ground;
   } else {
-    emission = vEmit.rgb * dens * (0.35 + 0.65 * vUv.y) * vNear;
+    emission = vEmit.rgb * dens * (0.35 + 0.65 * vUv.y) * vNear * ground;
   }
 
   // Fog is mixed in display space like three's built-in materials (the Earth module supplies a matching
@@ -415,10 +432,14 @@ export interface BillboardUniforms {
   uGlowLen: THREE.IUniform<number>;
   uGlowColor: THREE.IUniform<THREE.Color>;
   uGroundFade: THREE.IUniform<number>;
+  /** Object-space height of the ground that uGroundFade fades towards (default 0). */
+  uGroundY: THREE.IUniform<number>;
   uSunLocal: THREE.IUniform<THREE.Vector3>;
   uShadow: THREE.IUniform<THREE.Vector4>;
   uAoHeight: THREE.IUniform<number>;
   uFade: THREE.IUniform<number>;
+  /** Hull of a vehicle standing on the object's +Y axis that sprites must not cut: x radius (0 = none), y..z heights. */
+  uKeepOut: THREE.IUniform<THREE.Vector3>;
 }
 
 /** Render order of the part of an axis-split batch that lies behind the vehicle (see Billboards). */
@@ -503,10 +524,12 @@ export class Billboards {
       uGlowLen: { value: 0 },
       uGlowColor: { value: new THREE.Color(0, 0, 0) },
       uGroundFade: { value: 0 },
+      uGroundY: { value: 0 },
       uSunLocal: { value: new THREE.Vector3(0, 1, 0) },
       uShadow: { value: new THREE.Vector4(0, 0, 0, 0) },
       uAoHeight: { value: 0 },
       uFade: { value: 1 },
+      uKeepOut: { value: new THREE.Vector3(0, 0, 0) },
     };
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,

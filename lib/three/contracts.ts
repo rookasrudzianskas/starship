@@ -153,8 +153,13 @@ export interface PadModel {
 
 export interface Explosion {
   object: THREE.Object3D;
-  /** Start a fireball/debris burst. `scale` ~ vehicle size in m. `airDensityRatio` 1 at sea level, 0 in space. */
-  trigger(scale: number, airDensityRatio: number): void;
+  /**
+   * Start a fireball/debris burst. `scale` ~ vehicle size in m. `airDensityRatio` 1 at sea level, 0 in space.
+   * Optional `height`: metres above the ground or sea below the burst (an impact is at 0); when it is left out it
+   * is estimated from `airDensityRatio` (exponential air, 8.5 km scale height). A burst at the surface spreads
+   * over it as a dome instead of being cut off by it.
+   */
+  trigger(scale: number, airDensityRatio: number, height?: number): void;
   /** `age` = seconds since trigger (negative = not triggered). Deterministic so scrubbing works. */
   setAge(age: number): void;
   dispose(): void;

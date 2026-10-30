@@ -8,10 +8,10 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, mix,
  *  - air: an incandescent fireball of lumpy puffs that cools from white through orange into dark soot
  *    and white vapour, rises buoyantly and spreads; hot debris streaks arc out on drag + gravity
  *    trajectories, some leaving persistent smoke trails.
- *  - vacuum: a short, very bright flash; thin shells of propellant vapour expanding freely at about
- *    100 m/s (like propellant vented in orbit), sunlit and brightest at their rims, that dilute away within
- *    about two seconds, with faint clumps of vapour in them; glowing fragments fly in straight lines. No
- *    fireball, no buoyant smoke.
+ *  - vacuum: a short, very bright flash; a thin, smooth cloud of propellant vapour expanding freely at about
+ *    100 m/s (like propellant vented in orbit), sunlit, streaked with rays from the centre, that dilutes away
+ *    within about two seconds, with faint knots of vapour in it; glowing fragments fly in straight lines. No
+ *    fireball, no buoyant smoke, no puffs.
  *  - in between: both models evaluated and blended by w = ratio^0.3, except the fire: it needs air, so the gas
  *    cools as in vacuum below about a tenth of sea-level density.
  * Buoyancy and gravity act along the local vertical: the scene's HemisphereLight direction if there is
@@ -24,7 +24,8 @@ const DEBRIS = 40;
 const TRAILS = 14;
 const TRAIL_SEGS = 14;
 const CAPACITY = 2 + SHELLS + FIREBALL + DEBRIS + TRAILS * TRAIL_SEGS;
-/** Atlas cell of the billboard shader's limb-brightened shell profile (see particles.ts). */
+/** Atlas cells of the billboard shader's smooth glow and its rayed vapour sphere (see particles.ts). */
+const GLOW_CELL = 4;
 const SHELL_CELL = 5;
 const G = 9.81;
 
@@ -99,7 +100,7 @@ function buildDefs(): { puffs: PuffDef[]; shells: ShellDef[]; debris: DebrisDef[
     shells.push({
       off: sphereDir(rnd(), rnd(), new THREE.Vector3()).multiplyScalar(0.06 + 0.1 * rnd()),
       spd: 0.75 + 0.3 * rnd(),
-      op: 0.1 + 0.06 * rnd(),
+      op: 0.13 + 0.07 * rnd(),
       delay: 0.04 * rnd(),
       rot: rnd() * Math.PI * 2,
       spin: (rnd() - 0.5) * 0.3,
@@ -134,7 +135,25 @@ export function createExplosion(): Explosion {
   const qInv = new THREE.Quaternion();
   let scale = 50;
   let air = 1;
+  /** Height of the burst above the ground or sea (m); Infinity when the surface is out of the fireball's reach. */
+  let surface = Infinity;
   let armed = false;
+  const sp = new THREE.Vector3();
+
+  /**
+   * A burst at the surface: whatever would go below it is thrown back up and out along it (gas rebounds and spreads
+   * over the water as a dome, it does not carry on under it).
+   */
+  const aboveSurface = (pos: THREE.Vector3) => {
+    if (surface === Infinity) return;
+    const h = pos.dot(U) + surface;
+    if (h >= 0) return;
+    // Mirror the part below into a flattened part above, pushed outwards by as much.
+    sp.copy(pos).addScaledVector(U, -pos.dot(U));
+    const out = sp.length();
+    if (out > 1e-6) pos.addScaledVector(sp, (-h * 0.8) / out);
+    pos.addScaledVector(U, -h * 1.5);
+  };
 
   /** Debris position/velocity at time t (object space, relative to the burst centre). */
   const debrisAt = (d: DebrisDef, t: number, w: number, outP: THREE.Vector3, outV: THREE.Vector3) => {
@@ -196,7 +215,7 @@ export function createExplosion(): Explosion {
         rec.eb = e;
         rec.temp = 1.15;
         rec.m0 = 0;
-        rec.m1 = 4;
+        rec.m1 = GLOW_CELL;
         rec.m2 = 0;
         rec.m3 = 0;
         rec.mode = MODE_PUFF;
@@ -218,15 +237,15 @@ export function createExplosion(): Explosion {
         rec.er = rec.eg = rec.eb = 0;
         rec.temp = 0;
         rec.m0 = 0;
-        rec.m1 = 4;
+        rec.m1 = GLOW_CELL;
         rec.m2 = 0;
         rec.m3 = 0;
         rec.mode = MODE_PUFF;
         batch.add(rec);
       }
 
-      // --- Vacuum shells: the vapour expands freely into thin, overlapping, slightly off-centre shells that
-      // glow for an instant, then show only in sunlight, brightest along their rims, thinning as 1/R².
+      // --- Vacuum vapour: expands freely into thin, overlapping, slightly off-centre spheres that glow for an
+      // instant, then show only in sunlight, thinning as 1/R².
       for (const d of defs.shells) {
         const tau = age - d.delay;
         if (tau < 0) continue;
@@ -238,7 +257,8 @@ export function createExplosion(): Explosion {
         rec.z = d.off.z * radius;
         // The profile's outer edge sits at 0.9 of the sprite's half-size.
         rec.size = (2 * radius) / 0.9;
-        rec.r = rec.g = rec.b = 0.75 * d.shade;
+        // Ice and propellant droplets: white.
+        rec.r = rec.g = rec.b = 0.92 * d.shade;
         rec.opacity = op;
         rec.er = rec.eg = rec.eb = 1;
         rec.temp = 1.1 * Math.exp(-tau / 0.08);
@@ -268,12 +288,14 @@ export function createExplosion(): Explosion {
       const ay = bd.y * 0.9 * S * d.spd * kA + U.y * rise;
       const az = bd.z * 0.9 * S * d.spd * kA + U.z * rise;
       const sizeA = S * 1.3 * (d.s0 + 0.6 * (1 - Math.exp(-tau / (0.6 * ts))) + (0.05 * tau) / ts);
-      const tempA = 1.12 * Math.exp(-tau / (d.cool * (d.soot ? 1.25 : 0.55) * ts));
+      // White-hot only for an instant: within a few tenths of a second the gas is down to yellow and orange, then
+      // cools more slowly into soot and steam.
+      const tempA = (0.85 + 0.27 * Math.exp(-tau / 0.1)) * Math.exp(-tau / (d.cool * (d.soot ? 1.25 : 0.55) * ts));
       const opA = smooth(0, 0.05, tau) * (1 - smooth(28 * ts, 75 * ts, tau)) * 0.62;
       const erA = 0.06 + 0.55 * smooth(3 * ts, 60 * ts, tau);
-      // Vacuum model: clumps of vapour and fine debris riding the shells outwards (no drag, no buoyancy):
-      // small, faint and soft (nothing condenses into billowing puffs in vacuum); they dilute away within
-      // about two seconds and glow only at first.
+      // Vacuum model: faint knots of vapour and fine debris riding the expanding cloud outwards (no drag, no
+      // buoyancy). Nothing condenses into billowing puffs in vacuum: in near-vacuum they are soft, smooth glows that
+      // only thicken the cloud here and there; they dilute away within about two seconds and glow only at first.
       const td = 6;
       const kV = td * (1 - Math.exp(-tau / td));
       const shell = 0.55 + 0.45 * Math.sqrt(d.spd);
@@ -285,7 +307,7 @@ export function createExplosion(): Explosion {
       // continuous cloud rather than a cluster of separate balls.
       const sizeV = S * (0.6 * d.s0 + 0.02 * tau) + reach * (0.16 + 0.6 * smooth(0, 0.5, w));
       const tempV = 1.15 * Math.exp(-tau / (0.12 * d.cool));
-      const opV = smooth(0, 0.04, tau) * (0.1 / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.2, 2.6, tau));
+      const opV = smooth(0, 0.04, tau) * ((0.04 + 0.06 * smooth(0.05, 0.4, w)) / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.2, 2.6, tau));
       const erV = 0.25 + 0.5 * smooth(0.1, 2, tau);
 
       const op = mix(opV, opA, w);
@@ -293,9 +315,11 @@ export function createExplosion(): Explosion {
       // dull-red fireball there would only tint its sunlit vapour pink).
       const temp = mix(tempV, tempA, smooth(0.35, 0.9, w));
       if (op < 0.004 && temp < 0.08) continue;
-      rec.x = mix(vx, ax, w);
-      rec.y = mix(vy, ay, w);
-      rec.z = mix(vz, az, w);
+      p.set(mix(vx, ax, w), mix(vy, ay, w), mix(vz, az, w));
+      aboveSurface(p);
+      rec.x = p.x;
+      rec.y = p.y;
+      rec.z = p.z;
       rec.size = mix(sizeV, sizeA, w);
       // Soot is brown-black, propellant vapour and ice are white; vacuum clouds are all vapour. Burning gas scatters
       // little sunlight (its own glow is what shows): the white of steam and the brown of smoke come as it cools.
@@ -310,10 +334,10 @@ export function createExplosion(): Explosion {
       // stopped down for it would), it shows a hot core with yellow and orange round it; it thins to the smoke's
       // opacity as it cools.
       rec.opacity = Math.min(1, op * (1 + 0.4 * smooth(0.3, 0.8, temp)));
-      rec.er = rec.eg = rec.eb = 0.55 * (1 - 0.55 * smooth(0.55, 1.0, temp));
+      rec.er = rec.eg = rec.eb = 0.5 * (1 - 0.6 * smooth(0.5, 1.0, temp));
       rec.temp = temp;
       rec.m0 = d.rot + d.spin * tau;
-      rec.m1 = d.cell;
+      rec.m1 = w < 0.2 ? GLOW_CELL : d.cell;
       rec.m2 = mix(erV, erA, w);
       rec.m3 = 0;
       rec.mode = MODE_PUFF;
@@ -328,14 +352,18 @@ export function createExplosion(): Explosion {
       const glow = Math.exp(-age / life) * smooth(0, 0.03, age);
       if (glow > 0.01) {
         debrisAt(d, age, w, p, v);
+      }
+      // Fragments that reach the sea or the ground are gone.
+      if (glow > 0.01 && (surface === Infinity || p.dot(U) + surface > 0)) {
         const speed = v.length();
         rec.x = p.x;
         rec.y = p.y;
         rec.z = p.z;
-        rec.size = S * d.width * 1.8;
+        rec.size = S * d.width * 1.1;
         rec.r = rec.g = rec.b = 0;
         rec.opacity = 0;
-        const e = 6 * d.hot * glow;
+        // Red-hot to yellow fragments, not white: the brightest are a few times the sunlit scene.
+        const e = 3 * d.hot * glow;
         rec.er = e;
         rec.eg = e * 0.4;
         rec.eb = e * 0.12;
@@ -366,6 +394,8 @@ export function createExplosion(): Explosion {
           if (head) tk = age;
           if (tk - prevT < 1e-3) break;
           debrisAt(d, tk, w, p, v);
+          // The trail ends where its fragment met the sea or the ground.
+          if (surface !== Infinity && p.dot(U) + surface < 0) break;
           const segAge = age - prevT;
           const burn = Math.exp(-prevT / (life * 1.6));
           // Trails only show once the debris is clear of the fireball (they would be buried in it).
@@ -413,9 +443,15 @@ export function createExplosion(): Explosion {
 
   return {
     object,
-    trigger(s: number, airDensityRatio: number) {
+    trigger(s: number, airDensityRatio: number, height?: number) {
       scale = Math.max(s, 0.5);
       air = Math.min(Math.max(airDensityRatio, 0), 1);
+      const h = Math.max(height ?? -8500 * Math.log(Math.max(air, 1e-12)), 0);
+      // Within reach of the fireball (about its size; an impact's last moment is a few metres up).
+      surface = h < 0.6 * scale ? h : Infinity;
+      // There, puffs fade out into the surface rather than being cut off by it.
+      batch.uniforms.uGroundFade.value = surface !== Infinity ? 0.1 * scale : 0;
+      batch.uniforms.uGroundY.value = surface !== Infinity ? -surface : 0;
       armed = true;
     },
     setAge,
