@@ -67,7 +67,7 @@ function minElevation(alt: number, dist: number): number {
   return Math.asin(Math.min(1, Math.max(-1, (MIN_CAMERA_ALTITUDE - alt) / Math.max(1, dist))));
 }
 
-/** Orbit-style offset in the target's local east/north/up frame (azimuth clockwise from north), kept off the ground. */
+/** Orbit-style offset in the target's east/north/up frame (azimuth clockwise from north), kept off the ground. */
 function orbitOffset(target: V3, azDeg: number, elDeg: number, dist: number, out: V3): V3 {
   const az = (azDeg * Math.PI) / 180;
   const alt = Math.hypot(target[0], target[1], target[2]) - EARTH_RADIUS;
