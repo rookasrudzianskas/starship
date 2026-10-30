@@ -49,16 +49,25 @@ export const COAST_EXIT = 5;
 export const AS_FLOWN: Scenario = { asFlown: true, interventions: [] };
 
 const SETTINGS_KEY = 'starship-telemetry:settings';
+/** A screen whose shorter side is under this many CSS pixels is a phone's (tablets start at about 740). */
+const PHONE_SCREEN_PX = 600;
 
-/** Defaults for this browser: reduced motion follows the system preference until the viewer chooses. */
+/**
+ * Defaults for this browser, until the viewer chooses: reduced motion follows the system preference, and
+ * phones start with the low-quality 3D view (one pixel per CSS pixel, lighter textures), which keeps the
+ * frame rate and spares the battery.
+ */
 function browserDefaults(): Settings {
   let reduceMotion = DEFAULT_SETTINGS.reduceMotion;
+  let quality = DEFAULT_SETTINGS.quality;
   try {
     reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   } catch {
     // No matchMedia (old browsers, tests): keep the default.
   }
-  return { ...DEFAULT_SETTINGS, reduceMotion };
+  const side = typeof window === 'undefined' || !window.screen ? 0 : Math.min(window.screen.width, window.screen.height);
+  if (side > 0 && side < PHONE_SCREEN_PX) quality = 'low';
+  return { ...DEFAULT_SETTINGS, reduceMotion, quality };
 }
 
 function loadSettings(): Settings {

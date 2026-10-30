@@ -188,6 +188,23 @@ describe('settings', () => {
     expect(useReplay.getState().settings.reduceMotion).toBe(true);
   });
 
+  it('starts phones on the low-quality 3D view, and keeps a saved choice', () => {
+    vi.stubGlobal('window', { ...window, screen: { width: 390, height: 844 } });
+    useReplay.getState().hydrateSettings();
+    expect(useReplay.getState().settings.quality).toBe('low');
+    useReplay.getState().updateSettings({ quality: 'high' });
+    expect(JSON.parse(stored['starship-telemetry:settings'])).toEqual({ quality: 'high' });
+    useReplay.setState({ settingsLoaded: false });
+    useReplay.getState().hydrateSettings();
+    expect(useReplay.getState().settings.quality).toBe('high');
+  });
+
+  it('keeps the high-quality 3D view on tablets and computers', () => {
+    vi.stubGlobal('window', { ...window, screen: { width: 768, height: 1024 } });
+    useReplay.getState().hydrateSettings();
+    expect(useReplay.getState().settings.quality).toBe('high');
+  });
+
   it('saves only the choices that differ from the defaults', () => {
     useReplay.getState().hydrateSettings();
     useReplay.getState().updateSettings({ speedUnit: 'mph' });
