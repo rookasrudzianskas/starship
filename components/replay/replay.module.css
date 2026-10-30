@@ -207,7 +207,7 @@
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 440px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 460px) minmax(0, 1fr);
   align-items: end;
   gap: 24px;
   padding: 70px 20px 14px;
@@ -614,10 +614,12 @@
 
 /* -------------------------------------------------------------- controls */
 
+/* One row where the column is wide enough for all ten buttons; two in the narrower desktop layout (960 px and less). */
 .controls {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
+  gap: 6px 5px;
   margin-top: 4px;
 }
 
