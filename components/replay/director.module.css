@@ -2,7 +2,8 @@
   position: absolute;
   top: 50px;
   right: 14px;
-  bottom: 250px;
+  /* Down to just above the ship's panel in the HUD (--hud-clear is measured by ReplayApp), so its engine map stays clickable. */
+  bottom: calc(var(--hud-clear, 236px) + 14px);
   z-index: 30;
   width: 340px;
   display: flex;
@@ -14,6 +15,10 @@
   border-radius: var(--radius);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
   animation: slideIn 0.22s var(--ease);
+}
+
+[data-reduce-motion] .panel {
+  animation: none;
 }
 
 @keyframes slideIn {
@@ -246,6 +251,13 @@
   color: var(--mod);
 }
 
+/* Run-wide settings ("Whole run") above the timed commands. */
+.log li[data-setting] .logTime {
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .logText {
   color: var(--text);
   line-height: 1.3;
@@ -296,6 +308,13 @@
   text-transform: uppercase;
   color: var(--text-3);
   min-height: 34px;
+}
+
+.status[data-error] {
+  color: var(--danger);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 11px;
 }
 
 @media (max-width: 860px) {

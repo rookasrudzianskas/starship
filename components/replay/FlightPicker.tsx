@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { IconChevronDown } from '@/components/icons';
 import { FLIGHTS, GENERATIONS, getFlight, type Flight } from '@/lib/flights/catalog';
 import { formatDate, formatDateLong } from '@/lib/format';
 import { useReplay } from '@/lib/store/replay';
 import type { EndKind, Generation } from '@/lib/sim/types';
+import { rovingFocus } from './a11y';
 import styles from './picker.module.css';
 
 const GEN_ORDER: Generation[] = ['v3', 'b2', 'b1'];
@@ -27,6 +28,7 @@ export function FlightPicker({ onSelect }: Props) {
   const open = useReplay((s) => s.panel === 'picker');
   const setPanel = useReplay((s) => s.setPanel);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const flight = getFlight(flightN);
 
   useEffect(() => {
@@ -41,9 +43,26 @@ export function FlightPicker({ onSelect }: Props) {
     return () => window.removeEventListener('pointerdown', onDown);
   }, [open, setPanel]);
 
+  const close = () => {
+    setPanel('none');
+    buttonRef.current?.focus();
+  };
+
+  const onListKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (rovingFocus(e, '[role="option"]')) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    } else if (e.key === 'Tab') {
+      setPanel('none');
+    }
+  };
+
   return (
     <div className={styles.wrap} ref={wrapRef}>
       <button
+        ref={buttonRef}
         type="button"
         className={styles.button}
         aria-haspopup="listbox"
@@ -57,12 +76,12 @@ export function FlightPicker({ onSelect }: Props) {
         <IconChevronDown size={14} className={styles.chevron} />
       </button>
       {open ? (
-        <div className={styles.popover} role="listbox" aria-label="Flights">
+        <div className={styles.popover} role="listbox" aria-label="Flights" onKeyDown={onListKey}>
           {GEN_ORDER.map((gen) => {
             const list = FLIGHTS.filter((f) => f.generation === gen).sort((a, b) => b.n - a.n);
             return (
-              <div key={gen} className={styles.group}>
-                <div className={styles.groupLabel}>
+              <div key={gen} className={styles.group} role="group" aria-label={GENERATIONS[gen].label}>
+                <div className={styles.groupLabel} aria-hidden="true">
                   {GENERATIONS[gen].label}
                   <span>{GENERATIONS[gen].blurb}</span>
                 </div>
@@ -73,9 +92,10 @@ export function FlightPicker({ onSelect }: Props) {
                     role="option"
                     aria-selected={f.n === flightN}
                     aria-current={f.n === flightN ? 'true' : undefined}
+                    tabIndex={f.n === flightN ? 0 : -1}
                     className={styles.option}
                     onClick={() => {
-                      setPanel('none');
+                      close();
                       onSelect(f.n);
                     }}
                   >

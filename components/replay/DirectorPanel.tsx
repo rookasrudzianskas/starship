@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { IconClose, IconUndo } from '@/components/icons';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatEventTime } from '@/lib/format';
-import { ENGINE_LIT, type BoosterRecovery, type Intervention, type ShipMission, type VehicleId } from '@/lib/sim/types';
+import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipMission, type VehicleId } from '@/lib/sim/types';
 import { isModified, useReplay } from '@/lib/store/replay';
 import { engineStates, isStacked } from '@/lib/telemetry';
 import styles from './director.module.css';
@@ -71,22 +71,91 @@ function Choice<T extends string>({ value, options, onChange, label }: { value: 
   );
 }
 
+/**
+ * A scenario slider. It shows its value live while dragged and commits it when let go (or per key
+ * press), so a drag re-simulates the flight once instead of once per step.
+ */
+function ScenarioSlider({
+  id,
+  label,
+  min,
+  max,
+  step,
+  value,
+  onCommit,
+}: {
+  id: string;
+  label(v: number): ReactNode;
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onCommit(v: number): void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [draft, setDraft] = useState<number | null>(null);
+
+  // React's onChange follows every step; the native change event fires once the value is let go.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const onRelease = () => {
+      setDraft(null);
+      const v = Number(el.value);
+      if (v !== value) onCommit(v);
+    };
+    el.addEventListener('change', onRelease);
+    return () => el.removeEventListener('change', onRelease);
+  }, [value, onCommit]);
+
+  const shown = draft ?? value;
+  return (
+    <div className={styles.row}>
+      <label className={styles.sliderLabel} htmlFor={id}>
+        {label(shown)}
+      </label>
+      <input
+        ref={inputRef}
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={shown}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        className={styles.slider}
+      />
+    </div>
+  );
+}
+
+/** The time a command issued now takes effect. */
+function commandTime(): number {
+  const s = useReplay.getState();
+  return Math.max(s.t, s.result?.tStart ?? -10);
+}
+
 function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
-  const t = useReplay((s) => s.t);
-  const result = useReplay((s) => s.result);
-  const scenario = useReplay((s) => s.scenario);
+  // Display-level selections: the block re-renders when an action becomes (un)available, not every frame.
+  const hasResult = useReplay((s) => s.result !== null);
+  const alive = useReplay((s) => s.result !== null && s.t <= (vehicle === 'booster' ? s.result.booster : s.result.ship).end);
+  const stacked = useReplay((s) => s.result !== null && isStacked(s.result, s.t));
+  const flying = useReplay((s) => s.t >= 0);
+  const canStage = useReplay((s) => s.t >= 20);
+  const bias = useReplay((s) => currentBias(s.scenario.interventions, vehicle, s.t));
+  const boosterRecovery = useReplay((s) => s.scenario.boosterRecovery);
+  const shipMission = useReplay((s) => s.scenario.shipMission);
+  const payloadCount = useReplay((s) => s.scenario.payloadCount);
   const flightN = useReplay((s) => s.flight);
   const { addIntervention, updateScenario } = useReplay.getState();
   const [throttle, setThrottle] = useState(100);
   const flight = getFlight(flightN);
-  const track = result ? (vehicle === 'booster' ? result.booster : result.ship) : null;
-  const alive = track !== null && t <= track.end;
-  const stacked = result !== null && isStacked(result, t);
-  const bias = currentBias(scenario.interventions, vehicle, t);
-  const now = Math.max(t, result?.tStart ?? -10);
+  const realLoad = flight.plan.ship.payloadCount;
 
   const randomEngineOut = () => {
+    const { result, scenario } = useReplay.getState();
     if (!result) return;
+    const now = commandTime();
     const timeline = vehicle === 'booster' ? result.boosterEngines : result.shipEngines;
     const states = engineStates(timeline, now, new Uint8Array(timeline.slots.length));
     const lit: number[] = [];
@@ -101,7 +170,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
       <div className={styles.blockHead}>
         <span>{VEHICLE_NAME[vehicle]}</span>
         <span className={styles.blockSub}>{vehicle === 'booster' ? flight.boosterId : flight.shipId}</span>
-        {!alive && track ? <span className={styles.blockState}>Flight over</span> : null}
+        {!alive && hasResult ? <span className={styles.blockState}>Flight over</span> : null}
       </div>
 
       <div className={styles.row}>
@@ -123,7 +192,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
             type="button"
             className={styles.action}
             disabled={!alive}
-            onClick={() => addIntervention({ t: now, kind: 'throttle', vehicle, value: throttle / 100 })}
+            onClick={() => addIntervention({ t: commandTime(), kind: 'throttle', vehicle, value: throttle / 100 })}
           >
             Apply
           </button>
@@ -135,18 +204,18 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
           Engine out
         </button>
         {vehicle === 'booster' ? (
-          <button type="button" className={styles.action} disabled={!alive || !stacked || t < 20} onClick={() => addIntervention({ t: now, kind: 'stage-now' })}>
+          <button type="button" className={styles.action} disabled={!alive || !stacked || !canStage} onClick={() => addIntervention({ t: commandTime(), kind: 'stage-now' })}>
             Stage now
           </button>
         ) : null}
-        <button type="button" className={styles.action} disabled={!alive} onClick={() => addIntervention({ t: now, kind: 'skip-burn', vehicle })} title="Cancel this vehicle's next planned burn">
+        <button type="button" className={styles.action} disabled={!alive} onClick={() => addIntervention({ t: commandTime(), kind: 'skip-burn', vehicle })} title="Cancel this vehicle's next planned burn">
           Skip next burn
         </button>
         <ConfirmButton
           label="Terminate"
           confirmLabel="Confirm FTS"
-          disabled={!alive || t < 0}
-          onConfirm={() => addIntervention({ t: now, kind: 'terminate', vehicle })}
+          disabled={!alive || !flying}
+          onConfirm={() => addIntervention({ t: commandTime(), kind: 'terminate', vehicle })}
         />
       </div>
 
@@ -155,13 +224,13 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
           Steering bias <b>{bias > 0 ? '+' : ''}{bias}°</b>
         </span>
         <div className={styles.actions}>
-          <button type="button" className={styles.action} disabled={!alive || t < 0} onClick={() => addIntervention({ t: now, kind: 'pitch', vehicle, deg: bias - 2 })}>
+          <button type="button" className={styles.action} disabled={!alive || !flying} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: bias - 2 })}>
             Nose down 2°
           </button>
-          <button type="button" className={styles.action} disabled={!alive || t < 0} onClick={() => addIntervention({ t: now, kind: 'pitch', vehicle, deg: bias + 2 })}>
+          <button type="button" className={styles.action} disabled={!alive || !flying} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: bias + 2 })}>
             Nose up 2°
           </button>
-          <button type="button" className={styles.action} disabled={!alive || bias === 0} onClick={() => addIntervention({ t: now, kind: 'pitch', vehicle, deg: 0 })}>
+          <button type="button" className={styles.action} disabled={!alive || bias === 0} onClick={() => addIntervention({ t: commandTime(), kind: 'pitch', vehicle, deg: 0 })}>
             Centre
           </button>
         </div>
@@ -172,7 +241,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
           <span className={styles.sliderLabel}>After staging</span>
           <Choice<BoosterRecovery | 'plan'>
             label="Booster recovery"
-            value={scenario.boosterRecovery ?? 'plan'}
+            value={boosterRecovery ?? 'plan'}
             onChange={(v) => updateScenario({ boosterRecovery: v === 'plan' ? undefined : v })}
             options={[
               ['plan', 'Real plan'],
@@ -188,7 +257,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
             <span className={styles.sliderLabel}>Ascent target</span>
             <Choice<ShipMission | 'plan'>
               label="Ship mission"
-              value={scenario.shipMission ?? 'plan'}
+              value={shipMission ?? 'plan'}
               onChange={(v) => updateScenario({ shipMission: v === 'plan' ? undefined : v })}
               options={[
                 ['plan', 'Real plan'],
@@ -197,37 +266,63 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
               ]}
             />
           </div>
-          <div className={styles.row}>
-            <label className={styles.sliderLabel} htmlFor="payload">
-              Starlink satellites aboard <b>{scenario.payloadCount ?? flight.plan.ship.payloadCount}</b>
-              {scenario.payloadCount === undefined ? ' (real load)' : ''}
-            </label>
-            <input
-              id="payload"
-              type="range"
-              min={0}
-              max={40}
-              step={1}
-              value={scenario.payloadCount ?? flight.plan.ship.payloadCount}
-              onChange={(e) => updateScenario({ payloadCount: Number(e.target.value) })}
-              className={styles.slider}
-            />
-          </div>
+          <ScenarioSlider
+            id="payload"
+            min={0}
+            max={40}
+            step={1}
+            value={payloadCount ?? realLoad}
+            // The real load is no change at all.
+            onCommit={(v) => updateScenario({ payloadCount: v === realLoad ? undefined : v })}
+            label={(v) => (
+              <>
+                Starlink satellites aboard <b>{v}</b>
+                {v === realLoad ? ' (real load)' : ''}
+              </>
+            )}
+          />
         </>
       )}
     </section>
   );
 }
 
+const RECOVERY_TEXT: Record<BoosterRecovery, string> = { catch: 'tower catch', splashdown: 'splashdown in the Gulf', expend: 'expended' };
+const MISSION_TEXT: Record<ShipMission, string> = { suborbital: 'suborbital path', orbital: 'to orbit' };
+
+/** The run-wide settings that differ from the real flight, each with the patch that undoes it. */
+function settingChanges(s: Scenario, realLoad: number): { key: string; text: string; undo: Partial<Omit<Scenario, 'interventions'>> }[] {
+  const list: { key: string; text: string; undo: Partial<Omit<Scenario, 'interventions'>> }[] = [];
+  if (!s.asFlown) list.push({ key: 'asFlown', text: 'Flying the plan, without the real failures', undo: { asFlown: true } });
+  if (s.boosterRecovery) list.push({ key: 'recovery', text: `Super Heavy: ${RECOVERY_TEXT[s.boosterRecovery]}`, undo: { boosterRecovery: undefined } });
+  if (s.shipMission) list.push({ key: 'mission', text: `Starship: ${MISSION_TEXT[s.shipMission]}`, undo: { shipMission: undefined } });
+  if (s.payloadCount !== undefined) list.push({ key: 'payload', text: `${s.payloadCount} Starlink satellites aboard (real load ${realLoad})`, undo: { payloadCount: undefined } });
+  if ((s.wind ?? 0) !== 0) list.push({ key: 'wind', text: `Upper-level wind ${s.wind} m/s`, undo: { wind: undefined } });
+  if ((s.boosterLoad ?? 1) !== 1) list.push({ key: 'load', text: `Booster propellant load ${Math.round((s.boosterLoad ?? 1) * 100)}%`, undo: { boosterLoad: undefined } });
+  return list;
+}
+
+/** "Commands take effect at …": its own component, so only this line follows the clock (whole seconds, as the clock shows them). */
+function CommandTime() {
+  const text = useReplay((s) => formatEventTime(Math.floor(Math.max(s.t, s.result?.tStart ?? -10))));
+  return <>{text}</>;
+}
+
 export function DirectorPanel() {
   const open = useReplay((s) => s.panel === 'director');
-  const t = useReplay((s) => s.t);
+  return open ? <DirectorBody /> : null;
+}
+
+function DirectorBody() {
   const result = useReplay((s) => s.result);
   const scenario = useReplay((s) => s.scenario);
   const loading = useReplay((s) => s.loading);
+  const error = useReplay((s) => s.error);
+  const flightN = useReplay((s) => s.flight);
   const { setPanel, updateScenario, removeIntervention, resetScenario } = useReplay.getState();
-  if (!open) return null;
   const modified = isModified(scenario);
+  const settings = settingChanges(scenario, getFlight(flightN).plan.ship.payloadCount);
+  const changes = settings.length + scenario.interventions.length;
   const engineCount = (v: VehicleId) => (result ? (v === 'booster' ? result.boosterEngines.slots.length : result.shipEngines.slots.length) : v === 'booster' ? 33 : 6);
 
   return (
@@ -235,7 +330,9 @@ export function DirectorPanel() {
       <header className={styles.head}>
         <div>
           <h2 className={styles.title}>Flight director</h2>
-          <p className={styles.sub}>Commands take effect at {formatEventTime(Math.max(t, result?.tStart ?? -10))}. The whole flight is re-simulated from your changes.</p>
+          <p className={styles.sub}>
+            Commands take effect at <CommandTime />. The whole flight is re-simulated from your changes.
+          </p>
         </div>
         <button type="button" className={styles.close} aria-label="Close the flight director" onClick={() => setPanel('none')}>
           <IconClose size={16} />
@@ -266,50 +363,52 @@ export function DirectorPanel() {
           <div className={styles.blockHead}>
             <span>Environment</span>
           </div>
-          <div className={styles.row}>
-            <label className={styles.sliderLabel} htmlFor="wind">
-              Upper-level wind <b>{scenario.wind ?? 0} m/s</b>
-            </label>
-            <input
-              id="wind"
-              type="range"
-              min={0}
-              max={90}
-              step={5}
-              value={scenario.wind ?? 0}
-              onChange={(e) => updateScenario({ wind: Number(e.target.value) || undefined })}
-              className={styles.slider}
-            />
-          </div>
-          <div className={styles.row}>
-            <label className={styles.sliderLabel} htmlFor="load">
-              Booster propellant load <b>{Math.round((scenario.boosterLoad ?? 1) * 100)}%</b>
-            </label>
-            <input
-              id="load"
-              type="range"
-              min={85}
-              max={100}
-              step={1}
-              value={Math.round((scenario.boosterLoad ?? 1) * 100)}
-              onChange={(e) => {
-                const v = Number(e.target.value) / 100;
-                updateScenario({ boosterLoad: v >= 1 ? undefined : v });
-              }}
-              className={styles.slider}
-            />
-          </div>
+          <ScenarioSlider
+            id="wind"
+            min={0}
+            max={90}
+            step={5}
+            value={scenario.wind ?? 0}
+            onCommit={(v) => updateScenario({ wind: v || undefined })}
+            label={(v) => (
+              <>
+                Upper-level wind <b>{v} m/s</b>
+              </>
+            )}
+          />
+          <ScenarioSlider
+            id="load"
+            min={85}
+            max={100}
+            step={1}
+            value={Math.round((scenario.boosterLoad ?? 1) * 100)}
+            onCommit={(v) => updateScenario({ boosterLoad: v >= 100 ? undefined : v / 100 })}
+            label={(v) => (
+              <>
+                Booster propellant load <b>{v}%</b>
+              </>
+            )}
+          />
         </section>
 
         <section className={styles.block} aria-label="Your changes">
           <div className={styles.blockHead}>
             <span>Your changes</span>
-            <span className={styles.blockSub}>{scenario.interventions.length}</span>
+            <span className={styles.blockSub}>{changes}</span>
           </div>
-          {scenario.interventions.length === 0 ? (
-            <p className={styles.note}>No commands yet. Everything you do appears here and on the timeline.</p>
+          {changes === 0 ? (
+            <p className={styles.note}>Nothing changed yet. Your changes appear here, and timed commands also on the timeline.</p>
           ) : (
             <ul className={styles.log}>
+              {settings.map((c) => (
+                <li key={c.key} data-setting="">
+                  <span className={styles.logTime}>Whole run</span>
+                  <span className={styles.logText}>{c.text}</span>
+                  <button type="button" aria-label="Undo this change" onClick={() => updateScenario(c.undo)}>
+                    <IconClose size={12} />
+                  </button>
+                </li>
+              ))}
               {scenario.interventions.map((i) => (
                 <li key={i.id}>
                   <span className={styles.logTime}>{formatEventTime(i.t)}</span>
@@ -327,8 +426,14 @@ export function DirectorPanel() {
         </section>
       </div>
 
-      <footer className={styles.status} aria-live="polite">
-        {loading ? 'Re-simulating…' : result ? `Simulated in ${Math.round(result.computeMs)} ms${modified ? ' · modified run' : ' · as flown'}` : ''}
+      <footer className={styles.status} aria-live="polite" data-error={(error && !loading) || undefined}>
+        {loading
+          ? 'Re-simulating…'
+          : error
+            ? `Simulation failed: ${error}`
+            : result
+              ? `Simulated in ${Math.round(result.computeMs)} ms${modified ? ' · modified run' : ' · as flown'}`
+              : ''}
       </footer>
     </aside>
   );

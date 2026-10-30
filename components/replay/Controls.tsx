@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import {
   IconCaret,
   IconDirector,
@@ -16,7 +16,8 @@ import {
 } from '@/components/icons';
 import { useLocalFlag } from '@/lib/clientState';
 import type { FlightResult } from '@/lib/sim/types';
-import { coastAt, PLAYBACK_RATES, useReplay, type CameraMode, type FollowMode } from '@/lib/store/replay';
+import { COAST_RATE, isSkipping, PLAYBACK_RATES, useReplay, type CameraMode, type FollowMode } from '@/lib/store/replay';
+import { rovingFocus } from './a11y';
 import styles from './replay.module.css';
 
 /** Seconds before an event that the event buttons jump to. */
@@ -50,14 +51,17 @@ export function toggleFullscreen(el: HTMLElement | null): void {
 }
 
 export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () => HTMLElement | null }) {
+  // Display-level selections only, so the controls re-render when what they show changes, not every frame.
   const playing = useReplay((s) => s.playing);
   const rate = useReplay((s) => s.rate);
-  const t = useReplay((s) => s.t);
-  const result = useReplay((s) => s.result);
-  const skipping = useReplay((s) => s.skipUntil !== null);
+  const hasResult = useReplay((s) => s.result !== null);
+  const hasNext = useReplay((s) => nextEventTime(s.result, s.t) !== null);
+  const noCoasts = useReplay((s) => s.result !== null && s.result.coasts.length === 0);
+  const skipCoasts = useReplay((s) => s.skipCoasts);
+  const skipping = useReplay(isSkipping);
   const panel = useReplay((s) => s.panel);
   const live = useReplay((s) => s.liveLiftoffMs !== null);
-  const { toggle, seek, setRate, skipCoast, togglePanel } = useReplay.getState();
+  const { toggle, seek, setRate, setSkipCoasts, togglePanel } = useReplay.getState();
   const [isFullscreen, setFullscreen] = useState(false);
   const [directorSeen, setDirectorSeen] = useLocalFlag('starship-telemetry:director-seen', true);
 
@@ -67,27 +71,21 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  const canSkip = Boolean(result && (coastAt(result, t) || result.coasts.some((c) => c[0] > t)));
-  const rates = PLAYBACK_RATES as readonly number[];
+  // Opening the director any way (this button, K or the hint) counts as having seen it.
+  useEffect(() => {
+    if (panel === 'director' && !directorSeen) setDirectorSeen(true);
+  }, [panel, directorSeen, setDirectorSeen]);
 
-  const openDirector = () => {
-    togglePanel('director');
-    if (!directorSeen) setDirectorSeen(true);
+  const rates = PLAYBACK_RATES as readonly number[];
+  const jump = (to: (result: FlightResult | null, t: number) => number | null) => {
+    const st = useReplay.getState();
+    const target = to(st.result, st.t);
+    if (target !== null) seek(target);
   };
 
   return (
     <div className={styles.controls}>
-      <button
-        type="button"
-        className={styles.ctl}
-        aria-label="Previous event ([)"
-        title="Previous event ([)"
-        disabled={!result}
-        onClick={() => {
-          const p = previousEventTime(result, t);
-          if (p !== null) seek(p);
-        }}
-      >
+      <button type="button" className={styles.ctl} aria-label="Previous event ([)" title="Previous event ([)" disabled={!hasResult} onClick={() => jump(previousEventTime)}>
         <IconPrevEvent size={14} />
       </button>
       <button
@@ -99,23 +97,13 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       >
         {playing ? <IconPause size={14} /> : <IconPlay size={15} />}
       </button>
-      <button
-        type="button"
-        className={styles.ctl}
-        aria-label="Next event (])"
-        title="Next event (])"
-        disabled={!result || nextEventTime(result, t) === null}
-        onClick={() => {
-          const n = nextEventTime(result, t);
-          if (n !== null) seek(n);
-        }}
-      >
+      <button type="button" className={styles.ctl} aria-label="Next event (])" title="Next event (])" disabled={!hasNext} onClick={() => jump(nextEventTime)}>
         <IconNextEvent size={14} />
       </button>
       <button
         type="button"
         className={`${styles.ctl} ${styles.ctlRate}`}
-        aria-label="Playback speed (↑ ↓)"
+        aria-label={`Playback speed ${rate}×`}
         title="Playback speed (↑ ↓)"
         onClick={() => setRate(rates[(rates.indexOf(rate) + 1) % rates.length])}
       >
@@ -124,11 +112,11 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       <button
         type="button"
         className={`${styles.ctl} ${styles.ctlText}`}
-        aria-label="Fast-forward through long coasts"
-        title="Fast-forward through long coasts"
-        aria-pressed={skipping}
-        disabled={!canSkip}
-        onClick={skipCoast}
+        aria-pressed={skipCoasts}
+        data-active={skipping || undefined}
+        title={noCoasts ? 'This flight has no long coasts' : `Fast-forward through long coasts at ${COAST_RATE}× (${skipCoasts ? 'on' : 'off'})`}
+        disabled={noCoasts}
+        onClick={() => setSkipCoasts(!skipCoasts)}
       >
         Skip coast
       </button>
@@ -138,7 +126,7 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
         aria-label="Flight director: take control of the simulation (K)"
         title="Flight director: take control of the simulation (K)"
         aria-pressed={panel === 'director'}
-        onClick={openDirector}
+        onClick={() => togglePanel('director')}
       >
         <IconDirector size={15} />
         {!directorSeen ? <span className={styles.pulse} aria-hidden="true" /> : null}
@@ -163,9 +151,10 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       >
         <IconGear size={15} />
       </button>
+      {/* Keyboard help and full screen are left out on phones (no keyboard, no element full screen on iPhone). */}
       <button
         type="button"
-        className={styles.ctl}
+        className={`${styles.ctl} ${styles.ctlDesk}`}
         aria-label="Keyboard shortcuts (?)"
         title="Keyboard shortcuts (?)"
         aria-pressed={panel === 'help'}
@@ -175,7 +164,7 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       </button>
       <button
         type="button"
-        className={styles.ctl}
+        className={`${styles.ctl} ${styles.ctlDesk}`}
         aria-label="Full screen (F)"
         title="Full screen (F)"
         onClick={() => toggleFullscreen(fullscreenTarget())}
@@ -224,6 +213,7 @@ export function CameraBar() {
   const shotsOpen = useReplay((s) => s.panel === 'shots');
   const { setCamera, setWebcastShot, setFollow, setPip, setPanel } = useReplay.getState();
   const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const shotLabel = WEBCAST_SHOTS.find((s) => s.id === shot)?.label ?? 'Director';
 
   useEffect(() => {
@@ -232,13 +222,31 @@ export function CameraBar() {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setPanel('none');
     };
     window.addEventListener('pointerdown', onDown);
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]')?.focus();
     return () => window.removeEventListener('pointerdown', onDown);
   }, [shotsOpen, setPanel]);
+
+  const closeMenu = () => {
+    setPanel('none');
+    triggerRef.current?.focus();
+  };
+
+  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (rovingFocus(e, '[role="menuitemradio"]')) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMenu();
+    } else if (e.key === 'Tab') {
+      setPanel('none');
+    }
+  };
 
   return (
     <div className={styles.cameraBar} role="group" aria-label="Camera and view">
       <div className={styles.camGroup} ref={menuRef}>
         <button
+          ref={triggerRef}
           type="button"
           className={styles.camButton}
           aria-pressed={camera === 'webcast'}
@@ -265,17 +273,18 @@ export function CameraBar() {
           </button>
         ))}
         {shotsOpen ? (
-          <div className={styles.shotMenu} role="menu" aria-label="Webcast cameras">
+          <div className={styles.shotMenu} role="menu" aria-label="Webcast cameras" onKeyDown={onMenuKey}>
             {WEBCAST_SHOTS.map((s) => (
               <button
                 key={s.id}
                 type="button"
                 role="menuitemradio"
                 aria-checked={shot === s.id}
+                tabIndex={shot === s.id ? 0 : -1}
                 className={styles.shotItem}
                 onClick={() => {
                   setWebcastShot(s.id);
-                  setPanel('none');
+                  closeMenu();
                 }}
               >
                 {s.label}

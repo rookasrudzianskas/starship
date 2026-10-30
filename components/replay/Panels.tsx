@@ -123,10 +123,36 @@ const SHORTCUTS: [string[], string][] = [
 export function HelpDialog() {
   const open = useReplay((s) => s.panel === 'help');
   const setPanel = useReplay((s) => s.setPanel);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Modal: focus moves in on open and goes back to where it was on close.
+  useEffect(() => {
+    if (!open) return;
+    const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.querySelector<HTMLElement>('button')?.focus();
+    return () => {
+      if (returnTo?.isConnected) returnTo.focus();
+    };
+  }, [open]);
+
   if (!open) return null;
+
+  // Tab cycles within the dialog.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Tab') return;
+    const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button, [href], input, [tabindex]:not([tabindex="-1"])'));
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  };
+
   return (
     <div className={styles.dialogBackdrop} onPointerDown={(e) => e.target === e.currentTarget && setPanel('none')}>
-      <div className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="help-title">
+      <div className={styles.dialog} ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="help-title" onKeyDown={onKeyDown}>
         <h2 className={styles.dialogTitle} id="help-title">
           Keyboard
         </h2>
@@ -144,7 +170,7 @@ export function HelpDialog() {
             </div>
           ))}
         </dl>
-        <button type="button" className={styles.dialogClose} onClick={() => setPanel('none')} autoFocus>
+        <button type="button" className={styles.dialogClose} onClick={() => setPanel('none')}>
           Close
         </button>
       </div>
@@ -246,7 +272,14 @@ const HINT_KEY = 'starship-telemetry:hint-dismissed';
 
 export function DirectorHint() {
   const [dismissed, setDismissed] = useLocalFlag(HINT_KEY, true);
+  const directorOpen = useReplay((s) => s.panel === 'director');
   const togglePanel = useReplay((s) => s.togglePanel);
+
+  // The note has done its job once the director is open, whether from here, the toolbar or K.
+  useEffect(() => {
+    if (directorOpen && !dismissed) setDismissed(true);
+  }, [directorOpen, dismissed, setDismissed]);
+
   if (dismissed) return null;
   const dismiss = () => setDismissed(true);
   return (
@@ -274,15 +307,15 @@ export function DirectorHint() {
 
 /** Summary card shown when playback reaches the end of the flight. */
 export function FlightCard({ onSelectFlight }: { onSelectFlight(n: number): void }) {
-  const t = useReplay((s) => s.t);
+  const atEnd = useReplay((s) => s.result !== null && !s.playing && s.t >= s.result.tEnd - 0.05);
   const result = useReplay((s) => s.result);
-  const playing = useReplay((s) => s.playing);
   const scenario = useReplay((s) => s.scenario);
   const flightN = useReplay((s) => s.flight);
+  const directorOpen = useReplay((s) => s.panel === 'director');
   const seek = useReplay((s) => s.seek);
   const play = useReplay((s) => s.play);
   const [dismissedAt, setDismissedAt] = useState<string | null>(null);
-  if (!result || playing || t < result.tEnd - 0.05) return null;
+  if (!result || !atEnd) return null;
   const cardKey = `${result.flight}-${result.scenarioKey}`;
   if (dismissedAt === cardKey) return null;
   const flight = getFlight(flightN);
@@ -293,7 +326,8 @@ export function FlightCard({ onSelectFlight }: { onSelectFlight(n: number): void
     : flight.boosterSummary;
   const shipLine = modified ? `${END_LABEL[result.ship.endKind]} at ${formatEventTime(result.ship.end)} in this run.` : flight.shipSummary;
   return (
-    <div className={styles.card} role="dialog" aria-labelledby="flight-card-title">
+    // Beside an open flight director the card centres in the space left of it, so neither covers the other.
+    <div className={styles.card} role="dialog" aria-labelledby="flight-card-title" data-beside-director={directorOpen || undefined}>
       <button type="button" className={styles.cardClose} aria-label="Close" onClick={() => setDismissedAt(cardKey)}>
         <IconClose size={16} />
       </button>
@@ -332,15 +366,69 @@ export function FlightCard({ onSelectFlight }: { onSelectFlight(n: number): void
         </Link>
         {other ? (
           <button type="button" className={`${styles.ctl} ${styles.ctlText}`} onClick={() => onSelectFlight(other.n)}>
-            {other.name} <IconArrowRight size={12} style={{ marginLeft: 6, verticalAlign: '-2px' }} />
+            <span className={styles.ctlLabel}>
+              {other.name} <IconArrowRight size={12} />
+            </span>
           </button>
         ) : null}
         <button type="button" className={`${styles.ctl} ${styles.ctlText}`} onClick={() => downloadCsv(result, flight.name)}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span className={styles.ctlLabel}>
             <IconDownload size={13} /> CSV
           </span>
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Shown when the link cannot be copied automatically: the link, selected, to copy by hand. Key it by `url`. */
+export function ShareLinkDialog({ url, onClose }: { url: string; onClose(): void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [copied, setCopied] = useState(false);
+  const ref = useDismiss(true, onClose, '[aria-label="Share this moment (S)"]');
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const copy = async () => {
+    const input = inputRef.current;
+    input?.focus();
+    input?.select();
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      // No clipboard access (an insecure origin, or permission denied): copy the selected text instead.
+      setCopied(document.execCommand('copy'));
+    }
+  };
+
+  return (
+    <div
+      className={styles.shareBox}
+      ref={ref}
+      role="dialog"
+      aria-labelledby="share-title"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      <div className={styles.sectionLabel} id="share-title">
+        Link to this moment
+      </div>
+      <div className={styles.shareRow}>
+        <input ref={inputRef} className={styles.shareInput} readOnly value={url} aria-label="Link" onFocus={(e) => e.currentTarget.select()} />
+        <button type="button" className={`${styles.ctl} ${styles.ctlText}`} onClick={() => void copy()}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <button type="button" className={styles.cardClose} aria-label="Close" onClick={onClose}>
+        <IconClose size={14} />
+      </button>
     </div>
   );
 }

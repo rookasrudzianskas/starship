@@ -1,18 +1,19 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { IconShare } from '@/components/icons';
 import { SiteHeader } from '@/components/shell/SiteHeader';
-import { FLIGHTS, getFlight, LATEST_FLIGHT } from '@/lib/flights/catalog';
+import { getFlight } from '@/lib/flights/catalog';
 import { formatDate } from '@/lib/format';
 import { runSimulation } from '@/lib/sim/client';
 import type { FlightEvent } from '@/lib/sim/types';
-import { isModified, useReplay, type CameraMode, type FollowMode } from '@/lib/store/replay';
+import { AS_FLOWN, isModified, isSkipping, useReplay, type CameraMode } from '@/lib/store/replay';
+import { encodeScenario, linkOf, readRunLink, runLinkSearch } from '@/lib/store/runLink';
 import { CameraBar, nextEventTime, PlaybackControls, previousEventTime, toggleFullscreen, WEBCAST_SHOTS } from './Controls';
 import { DirectorPanel } from './DirectorPanel';
 import { FlightPicker } from './FlightPicker';
-import { DirectorHint, EventCallout, FlightCard, HelpDialog, LivePanel, SettingsPanel } from './Panels';
+import { DirectorHint, EventCallout, FlightCard, HelpDialog, LivePanel, SettingsPanel, ShareLinkDialog } from './Panels';
 import { Stage, stageHandle } from './Stage';
 import { MissionClock, Timeline } from './Timeline';
 import { VehiclePanel } from './VehiclePanel';
@@ -20,43 +21,64 @@ import styles from './replay.module.css';
 
 const CAMERA_ORDER: CameraMode[] = ['webcast', 'chase', 'free', 'globe'];
 const CALLOUT_MS = 4200;
+/** Address-bar updates are batched: browsers limit history.replaceState (Safari: 100 calls per 30 s). */
+const URL_WRITE_MS = 400;
+/** Keys a focused range input uses itself. */
+const SLIDER_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End']);
 
-function shareUrl(withTime: boolean): string {
-  const s = useReplay.getState();
-  const url = new URL(window.location.href);
-  url.search = '';
-  url.searchParams.set('f', String(s.flight));
-  if (withTime) url.searchParams.set('t', String(Math.round(s.t)));
-  if (s.camera !== 'webcast') url.searchParams.set('cam', s.camera);
-  if (s.follow !== 'both') url.searchParams.set('follow', s.follow);
-  return url.toString();
+/** The replay URL last written to or read from the address bar; any other URL came from a navigation. */
+let knownUrl: string | null = null;
+/** The page the replay is on: the address bar is only ever written there. */
+let replayPath = '/';
+
+function currentUrl(): string {
+  return window.location.pathname + window.location.search;
 }
 
-function readUrlState() {
-  const p = new URLSearchParams(window.location.search);
-  const f = Number(p.get('f'));
-  const t = Number(p.get('t'));
-  const cam = p.get('cam') as CameraMode | null;
-  const follow = p.get('follow') as FollowMode | null;
-  return {
-    flight: FLIGHTS.some((x) => x.n === f) ? f : LATEST_FLIGHT,
-    t: p.has('t') && Number.isFinite(t) ? t : undefined,
-    camera: cam && CAMERA_ORDER.includes(cam) ? cam : null,
-    follow: follow && ['both', 'booster', 'ship'].includes(follow) ? follow : null,
-    pip: p.get('pip') === '0' ? false : null,
-  };
+/** An old single-page link (/?view=compare): the page of its own is opened instead. */
+function redirecting(): boolean {
+  return new URLSearchParams(window.location.search).has('view');
 }
 
-function writeUrl() {
+/** A link to this moment, for sharing: always names the flight, and includes your changes. */
+function shareUrl(): string {
   const s = useReplay.getState();
-  const url = new URL(window.location.href);
-  url.search = '';
-  if (s.flight !== LATEST_FLIGHT) url.searchParams.set('f', String(s.flight));
-  if (s.camera !== 'webcast') url.searchParams.set('cam', s.camera);
-  if (s.follow !== 'both') url.searchParams.set('follow', s.follow);
-  if (!s.pip) url.searchParams.set('pip', '0');
-  const next = url.pathname + url.search;
-  if (next !== window.location.pathname + window.location.search) window.history.replaceState(null, '', next);
+  return window.location.origin + window.location.pathname + runLinkSearch(linkOf(s, true), true);
+}
+
+/** Bring the address bar in line with the replay: what it shows, plus the moment while paused. */
+function writeUrl(): void {
+  // A batched write that lands while leaving for another page must not touch that page's URL.
+  if (window.location.pathname !== replayPath) return;
+  const s = useReplay.getState();
+  const next = replayPath + runLinkSearch(linkOf(s, !s.playing), false);
+  knownUrl = next;
+  if (next !== currentUrl()) window.history.replaceState(null, '', next);
+}
+
+/** Show what the address bar asks for. The run already shown keeps playing where it is; another one starts over. */
+function applyUrl(): void {
+  knownUrl = currentUrl();
+  const link = readRunLink(window.location.search);
+  const st = useReplay.getState();
+  const sameRun = link.flight === st.flight && encodeScenario(link.scenario) === encodeScenario(st.scenario);
+  const sameMoment = link.t === undefined ? st.playing : !st.playing && Math.abs(link.t - st.t) < 1;
+  if (!sameRun || !sameMoment) st.openRun({ flight: link.flight, scenario: sameRun ? st.scenario : link.scenario, t: link.t });
+  const shot = WEBCAST_SHOTS.some((s) => s.id === link.shot) ? link.shot : 'auto';
+  if (shot !== st.webcastShot) st.setWebcastShot(shot);
+  if (link.camera !== useReplay.getState().camera) st.setCamera(link.camera);
+  if (link.follow !== st.follow) st.setFollow(link.follow);
+  if (link.pip !== st.pip) st.setPip(link.pip);
+}
+
+/** Follows navigations that stay on this page: the brand and Replay links, Back and Forward. */
+function UrlSync() {
+  const search = useSearchParams().toString();
+  useEffect(() => {
+    if (currentUrl() === knownUrl || redirecting()) return;
+    applyUrl();
+  }, [search]);
+  return null;
 }
 
 export function ReplayApp() {
@@ -65,47 +87,107 @@ export function ReplayApp() {
   const flightN = useReplay((s) => s.flight);
   const scenario = useReplay((s) => s.scenario);
   const camera = useReplay((s) => s.camera);
-  const follow = useReplay((s) => s.follow);
-  const pip = useReplay((s) => s.pip);
+  const reduceMotion = useReplay((s) => s.settings.reduceMotion);
   const [toast, setToast] = useState<string | null>(null);
+  const [linkToCopy, setLinkToCopy] = useState<string | null>(null);
   const flight = getFlight(flightN);
 
-  // Initial state from the URL and saved settings.
+  // Arrival, and every return to this page: a URL the replay did not write itself decides what is shown
+  // (coming Back to the address the replay last wrote resumes exactly where it was).
   useEffect(() => {
     // Development handle for driving the replay from the console or automated checks.
     if (process.env.NODE_ENV !== 'production') (window as unknown as { __replay?: typeof useReplay }).__replay = useReplay;
-    const view = new URLSearchParams(window.location.search).get('view');
-    if (view === 'compare' || view === 'flights' || view === 'about') {
-      router.replace(`/${view}`);
-      return;
+    const params = new URLSearchParams(window.location.search);
+    const view = params.get('view');
+    if (view !== null) {
+      params.delete('view');
+      const rest = params.toString();
+      if (view === 'compare' || view === 'flights' || view === 'about') {
+        router.replace(`/${view}${rest ? `?${rest}` : ''}`);
+        return;
+      }
+      window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}`);
     }
-    const u = readUrlState();
-    const st = useReplay.getState();
-    st.hydrateSettings();
-    st.setFlight(u.flight, u.t);
-    if (u.camera) st.setCamera(u.camera);
-    if (u.follow) st.setFollow(u.follow);
-    if (u.pip !== null) st.setPip(u.pip);
+    replayPath = window.location.pathname;
+    useReplay.getState().hydrateSettings();
+    if (currentUrl() !== knownUrl) applyUrl();
   }, [router]);
 
+  // The tab shows the flight. Next's metadata resets the title on every navigation, also within this
+  // page (the brand link), so it is put back whenever it changes while the address bar is on the replay.
   useEffect(() => {
-    writeUrl();
-    document.title = `${flight.name} · Starship Telemetry`;
-  }, [flightN, camera, follow, pip, flight.name]);
+    const apply = () => {
+      const title = `${getFlight(useReplay.getState().flight).name} · Starship Telemetry`;
+      if (window.location.pathname === replayPath && document.title !== title) document.title = title;
+    };
+    apply();
+    const observer = new MutationObserver(apply);
+    observer.observe(document.head, { subtree: true, childList: true, characterData: true });
+    const unsubscribe = useReplay.subscribe((s, p) => {
+      if (s.flight !== p.flight) apply();
+    });
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+    };
+  }, []);
+
+  // Keep the address bar in step with the replay; rapid changes (scrubbing while paused) are batched.
+  useEffect(() => {
+    let timer = 0;
+    const flush = () => {
+      timer = 0;
+      // Writing during a ?view= redirect would cancel that navigation.
+      if (!redirecting()) writeUrl();
+    };
+    const unsubscribe = useReplay.subscribe((s, p) => {
+      const changed =
+        s.flight !== p.flight ||
+        s.scenario !== p.scenario ||
+        s.playing !== p.playing ||
+        (!s.playing && Math.round(s.t) !== Math.round(p.t)) ||
+        s.camera !== p.camera ||
+        s.webcastShot !== p.webcastShot ||
+        s.follow !== p.follow ||
+        s.pip !== p.pip;
+      if (changed && !timer) timer = window.setTimeout(flush, URL_WRITE_MS);
+    });
+    flush();
+    return () => {
+      unsubscribe();
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  // Side panels (the flight director) end just above the HUD's vehicle panels, whose height varies with
+  // the viewport: publish the distance from the bottom of the replay to the top of the ship panel.
+  useEffect(() => {
+    const root = rootRef.current;
+    const ship = root?.querySelector(`.${CSS.escape(styles.hudShip)}`);
+    if (!root || !ship) return;
+    const ro = new ResizeObserver(() => {
+      const clear = root.getBoundingClientRect().bottom - ship.getBoundingClientRect().top;
+      root.style.setProperty('--hud-clear', `${Math.round(clear)}px`);
+    });
+    ro.observe(root);
+    ro.observe(ship);
+    return () => ro.disconnect();
+  }, []);
 
   // Run the simulation whenever the flight or the scenario changes.
   useEffect(() => {
     let cancelled = false;
-    const st = useReplay.getState();
-    st.setLoading(true);
-    const modified = isModified(scenario);
-    Promise.all([runSimulation(flightN, scenario), modified ? runSimulation(flightN, { asFlown: true, interventions: [] }) : Promise.resolve(null)])
+    // Read the store rather than this render: the URL may have changed the run in an effect above.
+    const { flight: n, scenario: sc, setLoading } = useReplay.getState();
+    setLoading(true);
+    Promise.all([runSimulation(n, sc), isModified(sc) ? runSimulation(n, AS_FLOWN) : Promise.resolve(null)])
       .then(([result, base]) => {
         if (cancelled) return;
         useReplay.getState().setResult(result, base ?? result);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        // A run superseded by a newer scenario (lib/sim/client.ts rejects it with an AbortError) is not a failure.
+        if (cancelled || (err as { name?: unknown } | null)?.name === 'AbortError') return;
         useReplay.getState().setLoading(false, err instanceof Error ? err.message : String(err));
       });
     return () => {
@@ -122,23 +204,22 @@ export function ReplayApp() {
     const frame = (now: number) => {
       const dt = Math.min(0.1, (now - last) / 1000);
       last = now;
-      const st = useReplay.getState();
-      st.advance(dt);
-      const s2 = useReplay.getState();
-      const t = s2.t;
+      useReplay.getState().advance(dt);
+      const s = useReplay.getState();
+      const t = s.t;
       const forward = t > prevT && t - prevT < 2.5;
-      if (s2.result && s2.playing && forward && s2.skipUntil === null && s2.rate <= 20) {
+      if (s.result && s.playing && forward && s.rate <= 20 && !isSkipping(s)) {
         let crossed: FlightEvent | null = null;
-        for (const e of s2.result.events) {
+        for (const e of s.result.events) {
           if (e.major && e.t > prevT && e.t <= t) crossed = e;
         }
         if (crossed) {
-          s2.setCallout(crossed);
+          s.setCallout(crossed);
           window.clearTimeout(calloutTimer);
           calloutTimer = window.setTimeout(() => useReplay.getState().setCallout(null), CALLOUT_MS);
         }
-      } else if (!forward && s2.callout && Math.abs(t - prevT) > 2.5) {
-        s2.setCallout(null);
+      } else if (!forward && s.callout && Math.abs(t - prevT) > 2.5) {
+        s.setCallout(null);
       }
       prevT = t;
       stageHandle.current?.render(t, dt);
@@ -157,16 +238,19 @@ export function ReplayApp() {
   }, []);
 
   const share = useCallback(async () => {
-    const url = shareUrl(true);
+    const url = shareUrl();
+    const modified = isModified(useReplay.getState().scenario);
     try {
       if (navigator.share && window.matchMedia('(pointer: coarse)').matches) {
         await navigator.share({ title: `${getFlight(useReplay.getState().flight).name} · Starship Telemetry`, url });
         return;
       }
       await navigator.clipboard.writeText(url);
-      showToast('Link to this moment copied');
-    } catch {
-      showToast(url);
+      showToast(modified ? 'Link to your run at this moment copied' : 'Link to this moment copied');
+    } catch (err) {
+      // Closing the share sheet is not a failure; anything else (no clipboard access) offers the link to copy by hand.
+      if (err instanceof Error && err.name === 'AbortError') return;
+      setLinkToCopy(url);
     }
   }, [showToast]);
 
@@ -178,10 +262,15 @@ export function ReplayApp() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const target = e.target as HTMLElement | null;
-      if (target && (target.closest('input, textarea, select, [contenteditable="true"]') || target.getAttribute('role') === 'slider')) return;
-      const st = useReplay.getState();
+      const target = e.target instanceof Element ? e.target : null;
       const key = e.key;
+      // Text fields keep every key, sliders the keys that move them; menus and lists handle their own keys.
+      if (target?.closest('textarea, select, [contenteditable="true"], [role="menu"], [role="listbox"]')) return;
+      const input = target?.closest('input');
+      if (input && (input.type !== 'range' || SLIDER_KEYS.has(key))) return;
+      const st = useReplay.getState();
+      // The keyboard help is modal: only closing it works while it is open.
+      if (st.panel === 'help' && key !== 'Escape' && key !== '?') return;
       let handled = true;
       switch (key) {
         case ' ':
@@ -273,8 +362,7 @@ export function ReplayApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [share]);
 
-  const globeSuffix = camera === 'globe' ? ' · Trajectories' : '';
-  const vehicles = [flight.boosterId ? `Super Heavy ${flight.boosterId}` : 'Super Heavy', flight.shipId ? `Starship ${flight.shipId}` : 'Starship'].join(' · ');
+  const vehicles = [flight.boosterId ? `Super Heavy ${flight.boosterId}` : 'Super Heavy', flight.shipId ? `Starship ${flight.shipId}` : 'Starship'];
 
   return (
     <>
@@ -287,23 +375,36 @@ export function ReplayApp() {
           </button>
         }
       />
-      <main className={styles.replay} ref={rootRef} aria-label="Flight replay">
+      <Suspense fallback={null}>
+        <UrlSync />
+      </Suspense>
+      <main className={styles.replay} ref={rootRef} aria-label="Flight replay" data-reduce-motion={reduceMotion || undefined}>
         <div className={styles.stage}>
           <Stage />
           <div className={styles.stageLabels} aria-hidden="true">
-            <span>{flight.boosterId ? `Super Heavy ${flight.boosterId}` : 'Super Heavy'}</span>
-            <span>{flight.shipId ? `Starship ${flight.shipId}` : 'Starship'}</span>
+            <span>{vehicles[0]}</span>
+            <span>{vehicles[1]}</span>
           </div>
           <a className={styles.credits} href="/about#credits">
             Imagery NASA · Sentinel-2 cloudless 2016 by EOX (CC BY 4.0)
           </a>
-        </div>
-        <div className={styles.topBar}>
-          <div className={styles.topLabel}>{vehicles}</div>
-          <CameraBar />
-          <div className={`${styles.topLabel} ${styles.topRight}`}>
-            {flight.name} · {formatDate(flight.date)}
-            {globeSuffix}
+          {/* Inside the stage: on phones the bar sits at the bottom of the 3D view, above the HUD. */}
+          <div className={styles.topBar}>
+            <div className={styles.topLabel}>
+              <span>{vehicles[0]}</span> · <span>{vehicles[1]}</span>
+            </div>
+            <CameraBar />
+            <div className={`${styles.topLabel} ${styles.topRight}`}>
+              <span>
+                {flight.name} · {formatDate(flight.date)}
+              </span>
+              {camera === 'globe' ? (
+                <>
+                  {' · '}
+                  <span>Trajectories</span>
+                </>
+              ) : null}
+            </div>
           </div>
         </div>
         <DirectorHint />
@@ -322,6 +423,7 @@ export function ReplayApp() {
         <HelpDialog />
         <DirectorPanel />
         <FlightCard onSelectFlight={selectFlight} />
+        {linkToCopy ? <ShareLinkDialog key={linkToCopy} url={linkToCopy} onClose={() => setLinkToCopy(null)} /> : null}
         {toast ? (
           <div role="status" style={toastStyle}>
             {toast}

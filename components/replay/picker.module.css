@@ -157,9 +157,14 @@
     display: none;
   }
 
+  /* Anchored to the viewport under the header: the picker button sits near the middle on phones. */
   .popover {
-    left: auto;
-    right: 0;
+    position: fixed;
+    top: calc(var(--header-h) + 6px);
+    left: 14px;
+    right: 14px;
+    width: auto;
+    max-height: calc(100dvh - var(--header-h) - 20px);
   }
 }
 
