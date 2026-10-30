@@ -340,6 +340,17 @@ function WindowBrush({ window: win, extent, onWindow, alignEnd }: { window: [num
   const width = ((win[1] - win[0]) / span) * 100;
   const fmt = (x: number) => (alignEnd ? (Math.abs(x) < 0.5 ? 'End' : formatEventTime(x).replace('T', 'E')) : formatEventTime(x));
 
+  /** Main button (or a touch or pen contact) only: a right-click's release goes to the context menu instead. */
+  const startDrag = (e: React.PointerEvent, mode: 'move' | 'l' | 'r') => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    ref.current?.setPointerCapture(e.pointerId);
+    drag.current = { mode, x0: e.clientX, w0: win };
+  };
+  const endDrag = () => {
+    drag.current = null;
+  };
+
   const onMove = (e: React.PointerEvent) => {
     const d = drag.current;
     const el = ref.current;
@@ -359,33 +370,10 @@ function WindowBrush({ window: win, extent, onWindow, alignEnd }: { window: [num
     <div className={styles.brushRow}>
       <span className={styles.brushLabel}>Window</span>
       <span className={styles.brushTime}>{fmt(win[0])}</span>
-      <div className={styles.brush} ref={ref} onPointerMove={onMove} onPointerUp={() => (drag.current = null)}>
-        <div
-          className={styles.brushWin}
-          style={{ left: `${left}%`, width: `${width}%` }}
-          onPointerDown={(e) => {
-            e.currentTarget.parentElement?.setPointerCapture(e.pointerId);
-            drag.current = { mode: 'move', x0: e.clientX, w0: win };
-          }}
-        >
-          <span
-            className={styles.brushHandle}
-            data-side="l"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              ref.current?.setPointerCapture(e.pointerId);
-              drag.current = { mode: 'l', x0: e.clientX, w0: win };
-            }}
-          />
-          <span
-            className={styles.brushHandle}
-            data-side="r"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              ref.current?.setPointerCapture(e.pointerId);
-              drag.current = { mode: 'r', x0: e.clientX, w0: win };
-            }}
-          />
+      <div className={styles.brush} ref={ref} onPointerMove={onMove} onPointerUp={endDrag} onPointerCancel={endDrag} onLostPointerCapture={endDrag}>
+        <div className={styles.brushWin} style={{ left: `${left}%`, width: `${width}%` }} onPointerDown={(e) => startDrag(e, 'move')}>
+          <span className={styles.brushHandle} data-side="l" onPointerDown={(e) => startDrag(e, 'l')} />
+          <span className={styles.brushHandle} data-side="r" onPointerDown={(e) => startDrag(e, 'r')} />
         </div>
       </div>
       <span className={styles.brushTime}>{fmt(win[1])}</span>
