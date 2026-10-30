@@ -36,6 +36,15 @@ function disposeStage(): void {
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/** A note over the live view needs a backdrop to stay legible against the sky. */
+const overViewStyle: React.CSSProperties = {
+  padding: '7px 12px',
+  background: 'var(--panel)',
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--radius)',
+  color: 'var(--text-2)',
+};
+
 /** A flight that takes longer than this to load says so over the view. */
 const SLOW_LOAD_MS = 400;
 
@@ -138,7 +147,11 @@ export function Stage() {
           <LineArt className={styles.lineArt} generation={flight.generation} hotStageRing={flight.n !== 1} />
         </div>
       ) : null}
-      {showNote ? <div className={styles.loadingNote}>{note}</div> : null}
+      {showNote ? (
+        <div className={styles.loadingNote} style={showOutline ? undefined : overViewStyle}>
+          {note}
+        </div>
+      ) : null}
     </>
   );
 }

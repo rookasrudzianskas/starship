@@ -51,6 +51,8 @@ export class ResolutionGovernor {
   /** No step up before this time (after a change, and longer after a step that had to be undone). */
   private holdUntil = 0;
   private backoff = 4000;
+  /** Interval mode: no step down before this time (after a step down that didn't help). */
+  private frozenUntil = 0;
   /** Interval mode: a step down being checked, with the median interval before it. */
   private trial: number | null = null;
 
@@ -81,14 +83,20 @@ export class ResolutionGovernor {
   restart(): void {
     this.level = 0;
     this.backoff = 4000;
+    this.holdUntil = 0;
+    this.frozenUntil = 0;
     this.reset();
   }
 
   /** Forget the samples (the scene or the canvas size changed). */
   reset(): void {
+    this.clearSamples();
+    this.trial = null;
+  }
+
+  private clearSamples(): void {
     this.gpu.length = 0;
     this.intervals.length = 0;
-    this.trial = null;
     this.lastFrameAt = -Infinity;
   }
 
@@ -163,10 +171,10 @@ export class ResolutionGovernor {
       if (typical > 0.9 * this.trial) {
         // Coarser pixels didn't speed things up: go back and leave the resolution alone for a while.
         this.level--;
-        this.holdUntil = now + 30_000;
+        this.frozenUntil = now + 30_000;
       } else this.holdUntil = now + this.backoff;
       this.trial = null;
-    } else if (typical > SLOW_INTERVAL_MS && this.level < last) {
+    } else if (typical > SLOW_INTERVAL_MS && this.level < last && now >= this.frozenUntil) {
       this.level++;
       this.trial = typical;
     } else if (this.level > 0 && now >= this.holdUntil && high < FAST_INTERVAL_MS) {
@@ -176,7 +184,8 @@ export class ResolutionGovernor {
       this.holdUntil = now + this.backoff;
     }
     if (this.level === before) return false;
-    this.reset();
+    // Measure the new resolution from scratch (a step down stays on trial).
+    this.clearSamples();
     return true;
   }
 

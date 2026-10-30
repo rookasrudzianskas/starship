@@ -132,6 +132,10 @@ const DOOR_LEAD = 5;
 const SWARM_CAPACITY = 48;
 /** Highest eye adaptation while a lit plume fills the view: it is the brightest thing there, even at night. */
 const PLUME_EXPOSURE = 1.3;
+/** Picture-in-picture frame: at most this wide (CSS px), with this aspect. */
+const PIP_WIDTH = 320;
+const PIP_ASPECT = 0.62;
+const PIP_HEIGHT = Math.round(PIP_WIDTH * PIP_ASPECT);
 
 const v1 = new THREE.Vector3();
 const v2 = new THREE.Vector3();
@@ -166,15 +170,18 @@ function smoothstep(a: number, b: number, x: number): number {
   return k * k * (3 - 2 * k);
 }
 
-/** Same camera, to well under a pixel. */
-function samePose(a: CameraPose, b: CameraPose): boolean {
-  return (
-    Math.abs(a.pos[0] - b.pos[0]) < 1e-3 &&
-    Math.abs(a.pos[1] - b.pos[1]) < 1e-3 &&
-    Math.abs(a.pos[2] - b.pos[2]) < 1e-3 &&
-    1 - Math.abs(a.quat.dot(b.quat)) < 1e-10 &&
-    Math.abs(a.fov - b.fov) < 1e-4
-  );
+/**
+ * The same view to within a fifth of a pixel, for a frame `height` pixels tall whose subject is `range` metres
+ * away (smoothed cameras creep towards their goal for seconds; a paused view need not follow every creep).
+ */
+function samePose(a: CameraPose, b: CameraPose, height: number, range: number): boolean {
+  const tol = (0.2 * ((a.fov * Math.PI) / 180)) / Math.max(1, height);
+  const dx = a.pos[0] - b.pos[0];
+  const dy = a.pos[1] - b.pos[1];
+  const dz = a.pos[2] - b.pos[2];
+  const r = tol * Math.max(1, range);
+  // For unit quaternions 1 - |dot| is about angle^2 / 8.
+  return dx * dx + dy * dy + dz * dz < r * r && 1 - Math.abs(a.quat.dot(b.quat)) < (tol * tol) / 8 && Math.abs(a.fov - b.fov) < (0.2 * a.fov) / Math.max(1, height);
 }
 
 /**
@@ -1136,7 +1143,8 @@ export function createStage(): StageHandle {
               ? lastShot.vehicle === 'booster' ? ship : booster
               : null;
     const pip = pipTarget && pipTarget.visible && width > 520 ? pipTarget : null;
-    if (pip) chasePip.pose(st.camera === 'globe' && !sep ? focusStack : pip.id === 'booster' ? focusB : focusS, dt, pipPose);
+    const pipFocus = st.camera === 'globe' && !sep ? focusStack : pip?.id === 'booster' ? focusB : focusS;
+    if (pip) chasePip.pose(pipFocus, dt, pipPose);
 
     // Eye adaptation: brighten towards the Earth's suggestion in twilight and at night, but meter for a lit plume
     // that fills the view (the brightest thing in it), so night launches and landings don't blow out.
@@ -1180,9 +1188,9 @@ export function createStage(): StageHandle {
       height !== drawnLayout.h ||
       mem.textures !== seen.textures ||
       mem.geometries !== seen.geometries ||
-      !samePose(pose, drawnPose) ||
-      (split && (!samePose(leftPose, drawnLeft) || !samePose(rightPose, drawnRight))) ||
-      (pip !== null && !samePose(pipPose, drawnPip));
+      !samePose(pose, drawnPose, height, dist3(pose.pos, mainFocus.pos)) ||
+      (split && (!samePose(leftPose, drawnLeft, height, dist3(leftPose.pos, focusB.pos)) || !samePose(rightPose, drawnRight, height, dist3(rightPose.pos, focusS.pos)))) ||
+      (pip !== null && !samePose(pipPose, drawnPip, PIP_HEIGHT, dist3(pipPose.pos, pipFocus.pos)));
     if (changed) changedAt = now;
     // Until the imagery is in the outline covers the view: draw only what warms it up, not every frame.
     if (!earthReady && shown === result && !dirty) return;
@@ -1213,8 +1221,8 @@ export function createStage(): StageHandle {
       labels(pose.pos, camera, full, t, st.settings.showLabels, st.settings.showGates && st.camera === 'globe');
     }
     if (pip) {
-      const w = Math.round(Math.min(320, width * 0.28));
-      const h = Math.round(w * 0.62);
+      const w = Math.round(Math.min(PIP_WIDTH, width * 0.28));
+      const h = Math.round(w * PIP_ASPECT);
       const vp: Viewport = { x: width - w - 16, y: 52, w, h };
       prepareView(pipPose, sideCamera, vp, t, false);
       drawView(sideCamera, vp);
