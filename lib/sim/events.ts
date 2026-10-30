@@ -37,12 +37,23 @@ function endLabel(vehicle: VehicleId, kind: EndKind): Label {
         return ['Booster splashdown', 'BOOSTER SPLASHDOWN', true];
       case 'impact':
         return ['Booster impact', 'BOOSTER IMPACT', true];
+      case 'orbit':
+        return ['Booster in orbit', 'BOOSTER IN ORBIT', true];
       default:
         return ['Booster lost', 'BOOSTER LOST', true];
     }
   }
-  if (kind === 'splashdown') return ['Splashdown', 'SPLASHDOWN', true];
-  return ['Ship lost', 'SHIP LOST', true];
+  switch (kind) {
+    case 'splashdown':
+      return ['Splashdown', 'SPLASHDOWN', true];
+    case 'impact':
+      return ['Ship impact', 'SHIP IMPACT', true];
+    case 'orbit':
+      // The simulated window ends with the ship still flying: nothing was lost.
+      return ['Still in orbit', 'IN ORBIT', true];
+    default:
+      return ['Ship lost', 'SHIP LOST', true];
+  }
 }
 
 export interface EventState {
