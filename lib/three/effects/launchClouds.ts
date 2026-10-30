@@ -10,14 +10,27 @@ import { Billboards, PUFF_ATLAS_KEY, makePuffAtlas, newRecord, smooth } from './
  * torus of steam and dust erupts radially. Each puff owns a fixed fraction of that torus: it follows an
  * expanding front (fast at first, then slowing), billows upwards as the cloud thickens, grows, drifts with
  * a light breeze and dissolves over a couple of minutes. A rising column of steam wraps the mount and the
- * climbing vehicle, and late deluge steam keeps welling up around the mount. A warm point light (the plume
- * impinging on the pad, then climbing with the vehicle) lights the cloud from inside while thrust > 0,
- * and incandescent exhaust spills out under the mount during startup and the first seconds of flight.
+ * climbing vehicle, and late deluge steam keeps welling up around the mount. The flame lights the cloud from
+ * inside while thrust > 0 (a warm column of light from the deflector up to the engines, climbing with the
+ * vehicle), and incandescent exhaust spills out under the mount during startup and the first seconds of flight.
  * Pure function of t (seconds since T+0); `thrust` only scales the glow.
  */
 
 const STARTUP = -3.5;
 const MOUNT_TOP = 22; // m, between Pad 1 (21) and Pad 2 (24)
+/**
+ * The exhaust's light on the steam: irradiance at the flame (in the stage's units, where noon sunlight is about 3),
+ * the distance over which it is soft (the flame and the exhaust spilling out under the mount are tens of metres
+ * across) and the distance over which the steam swallows it. Dense steam scatters the light on rather than
+ * absorbing it, so the cloud round the flame glows as a whole and the light falls off about as 1 / distance in it,
+ * not as 1 / distance²: steam 30 m from the flame is lit more than twice as strongly as by the Sun, 150 m out half
+ * as strongly. In daylight that is a warm tint round the mount; at dawn or at night the cloud glows.
+ */
+const GLOW_IRRADIANCE = 28;
+const GLOW_SOFT = 30;
+const GLOW_REACH = 120;
+/** Colour of that light: the afterburning exhaust's deep orange (about 2000 K against daylight white). */
+const GLOW_COLOR = new THREE.Color(1.0, 0.5, 0.2);
 
 type Kind = 0 | 1 | 2; // ground torus, rising column, late deluge steam
 
@@ -152,7 +165,6 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
   const defs = buildDefs(count, fires);
   const rec = newRecord();
   const shadow = new THREE.Vector4();
-  const glowColor = new THREE.Color(1.0, 0.42, 0.12);
   // Gentle onshore sea breeze from the south-east (m/s), pad frame (+X east, +Z south): drifts north-west.
   const driftX = -1.2;
   const driftZ = -0.6;
@@ -167,12 +179,15 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         return;
       }
       const th = Math.min(Math.max(thrust, 0), 1);
-      // Warm light: starts at the flame deflector, climbs with the plume's impingement point and fades
-      // once the plume no longer reaches the ground.
-      const glowY = Math.min(Math.max(MOUNT_TOP + climb(t) - 38, 3), 400);
-      const glowK = th * (1 - smooth(6, 20, t)) * smooth(STARTUP, STARTUP + 1.2, t);
-      puffs.uniforms.uGlowPos.value.set(0, glowY, 0);
-      puffs.uniforms.uGlowColor.value.copy(glowColor).multiplyScalar(30 * glowK);
+      // Warm light from the flame: a column from the flame deflector up to just below the engines, which climbs with
+      // the vehicle (the steam then lies further and further below it) and fades once the plume is high above it.
+      const base = MOUNT_TOP + climb(t);
+      const glowY0 = Math.min(Math.max(base - 70, 2), 600);
+      const glowY1 = Math.max(base - 4, glowY0);
+      const glowK = th * (1 - smooth(8, 24, t)) * smooth(STARTUP, STARTUP + 1.2, t);
+      puffs.uniforms.uGlowPos.value.set(0, glowY0, 0);
+      puffs.uniforms.uGlowLen.value = glowY1 - glowY0;
+      puffs.uniforms.uGlowColor.value.copy(GLOW_COLOR).multiplyScalar(GLOW_IRRADIANCE * glowK);
 
       for (const d of defs.clouds) {
         const age = t - d.birth;
@@ -226,10 +241,10 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         rec.m0 = d.rot + d.spin * age;
         rec.m1 = d.cell;
         rec.m2 = 0.04 + 0.6 * smooth(d.fadeStart - 30, d.fadeStart + d.fadeLen, age);
-        const dx = rec.x;
-        const dy = rec.y - glowY;
-        const dz = rec.z;
-        rec.m3 = 1 / (1 + (dx * dx + dy * dy + dz * dz) / (80 * 80));
+        // Light from the flame column: from its nearest point, measured to the puff's near side.
+        const dy = rec.y - Math.min(Math.max(rec.y, glowY0), glowY1);
+        const dist = Math.max(Math.sqrt(rec.x * rec.x + dy * dy + rec.z * rec.z) - 0.25 * size, 0);
+        rec.m3 = Math.exp(-dist / GLOW_REACH) / (1 + dist / GLOW_SOFT);
         puffs.add(rec);
       }
 

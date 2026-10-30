@@ -104,6 +104,7 @@ attribute vec4 a4; // mode (0 puff, 1 streak), taper (streak: 1 fades to the tai
 uniform vec3 uSunDir;
 uniform vec3 uUp;
 uniform vec3 uGlowPos;
+uniform float uGlowLen; // the glow is a line source from uGlowPos up this far along the object's +Y (0: a point)
 uniform vec3 uSunLocal;
 uniform vec4 uShadow; // xyz bulk centre (object space), w radius (0 = off)
 uniform float uAoHeight; // > 0: particles near the ground (object y) are occluded by the cloud above
@@ -182,7 +183,9 @@ void main() {
   #include <logdepthbuf_vertex>
   vec4 mvPosition = vec4(p, 1.0);
   #include <fog_vertex>
-  vec3 g = (modelViewMatrix * vec4(uGlowPos - centre, 0.0)).xyz;
+  // Towards the nearest point of the glow (a flame is a column of light, not a point).
+  vec3 glowAt = uGlowPos + vec3(0.0, clamp(centre.y - uGlowPos.y, 0.0, uGlowLen), 0.0);
+  vec3 g = (modelViewMatrix * vec4(glowAt - centre, 0.0)).xyz;
   vGlowV = g / max(length(g), 1e-3);
   // Crude self-shadowing of the whole cloud: particles on the far side from the sun get less direct light.
   vExposure = 1.0;
@@ -323,7 +326,11 @@ void main() {
   float hemi = dot(n, vUpV) * 0.5 + 0.5;
   vec3 irr = uSunColor * sunTerm * vExposure * mix(0.75, 1.0, vAo)
     + mix(uGroundColor, uSkyColor, hemi) * 1.5 * mix(0.7, 1.0, vExposure) * vAo;
-  irr += uGlowColor * vMisc.z * step(vMode, 0.5) * clamp(dot(n, vGlowV) * 0.65 + 0.45, 0.0, 1.0);
+  // Light from a glow inside the cloud (a flame). Steam scatters it all through: the side of a puff facing the flame
+  // is brightest, but one between the camera and the flame still glows with what diffuses through it (about half),
+  // and its thin edges light up with what they scatter forwards, instead of showing a dark back against the light.
+  float fwdGlow = pow(clamp(-vGlowV.z, 0.0, 1.0), 3.0) * (0.25 + 1.2 * (1.0 - smoothstep(0.05, 0.6, dens)));
+  irr += uGlowColor * vMisc.z * step(vMode, 0.5) * (0.45 + 0.55 * clamp(dot(n, vGlowV) * 0.6 + 0.4, 0.0, 1.0) + fwdGlow);
   vec3 lit = vColor.rgb * irr * RECIPROCAL_PI;
 
   vec3 emission;
@@ -404,6 +411,8 @@ export interface BillboardUniforms {
   uGroundColor: THREE.IUniform<THREE.Color>;
   uUp: THREE.IUniform<THREE.Vector3>;
   uGlowPos: THREE.IUniform<THREE.Vector3>;
+  /** Length of the glow along the object's +Y from uGlowPos (m; 0 = a point source). */
+  uGlowLen: THREE.IUniform<number>;
   uGlowColor: THREE.IUniform<THREE.Color>;
   uGroundFade: THREE.IUniform<number>;
   uSunLocal: THREE.IUniform<THREE.Vector3>;
@@ -491,6 +500,7 @@ export class Billboards {
       uGroundColor: { value: this.lights.groundColor },
       uUp: { value: this.lights.up },
       uGlowPos: { value: new THREE.Vector3() },
+      uGlowLen: { value: 0 },
       uGlowColor: { value: new THREE.Color(0, 0, 0) },
       uGroundFade: { value: 0 },
       uSunLocal: { value: new THREE.Vector3(0, 1, 0) },
