@@ -486,14 +486,15 @@ export function createEarth(options: EarthOptions): EarthHandle {
     stars.uniforms.uStarRotation.value.copy(starRot);
     stars.uniforms.uStarParams.value.y = renderer.getPixelRatio();
 
-    // Environment map + hemisphere light, rate-limited.
+    // Environment map + hemisphere light, rate-limited. They are the main view's: a second view of the frame
+    // refreshing them for its own camera would make both views' lighting and the exposure flip between the two.
     const now = performance.now();
     const moved =
       envState.force ||
       !(Math.abs(h - envState.h) <= Math.max(25, 0.04 * h)) ||
       envState.sun.angleTo(sunVec) > 0.004 ||
       envState.up.angleTo(upVec) > 0.008;
-    if (moved && now - envState.last >= QUALITY[quality].envInterval) {
+    if (!frame.secondary && moved && now - envState.last >= QUALITY[quality].envInterval) {
       const e0 = performance.now();
       refreshLighting(h, mus);
       scene.environment = env.update(renderer);

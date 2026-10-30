@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { getFlight, PADS, type Flight } from '@/lib/flights/catalog';
-import { ENGINE_LIT, ENGINE_OFF, Phase, type FlightResult, type Generation, type PadId, type Track, type VehicleId } from '@/lib/sim/types';
+import { EARTH_RADIUS, ENGINE_LIT, ENGINE_OFF, Phase, type FlightResult, type Generation, type PadId, type Track, type VehicleId } from '@/lib/sim/types';
 import { useReplay, type ReplayState } from '@/lib/store/replay';
 import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry';
 import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
@@ -216,6 +216,13 @@ function hiddenByEarth(a: V3, b: V3): boolean {
 function smoothstep(a: number, b: number, x: number): number {
   const k = Math.min(Math.max((x - a) / (b - a), 0), 1);
   return k * k * (3 - 2 * k);
+}
+
+/** How many of a vehicle's engines burn this frame. */
+function litEngines(rig: Rig): number {
+  let lit = 0;
+  for (let i = 0; i < rig.visual.engines.length; i++) if (rig.visual.engines[i] === ENGINE_LIT) lit++;
+  return lit;
 }
 
 /**
@@ -1113,7 +1120,10 @@ export function createStage(): StageHandle {
     }
   }
 
-  /** Point `cam` along a pose and bring the scene to it; `primary` advances the models (once per frame). */
+  /**
+   * Point `cam` along a pose and bring the scene to it. The `primary` view (one per frame) advances the models and
+   * sets the scene's lighting; the others only follow their own camera.
+   */
   function prepareView(p: CameraPose, cam: THREE.PerspectiveCamera, vp: Viewport, t: number, primary: boolean, liftCentre = 0) {
     cam.position.set(0, 0, 0);
     cam.quaternion.copy(p.quat);
@@ -1133,6 +1143,7 @@ export function createStage(): StageHandle {
       earthFrame.camera = cam;
       earthFrame.time = t;
       earthFrame.utcMs = current ? current.launchUtc + t * 1000 : undefined;
+      earthFrame.secondary = !primary;
       earth.update(earthFrame);
     }
     lines?.update(t, p.pos, show, tips);
@@ -1266,8 +1277,7 @@ export function createStage(): StageHandle {
     let w = 0;
     for (const rig of rigs) {
       if (!rig.visible) continue;
-      let lit = 0;
-      for (let i = 0; i < rig.visual.engines.length; i++) if (rig.visual.engines[i] === ENGINE_LIT) lit++;
+      const lit = litEngines(rig);
       if (lit === 0) continue;
       // Measured at the engines: the plume starts there, and onboard cameras look at it from a few metres.
       const cover = ((rig.id === 'booster' ? L.booster : L.ship) / Math.max(1, dist3(rig.base, p.pos))) * k;
@@ -1609,7 +1619,13 @@ export function createStage(): StageHandle {
     for (const rig of rigs) {
       const track = rig.id === 'booster' ? result.booster : result.ship;
       rig.explosion?.setAge(track.endKind === 'lost' || track.endKind === 'termination' || track.endKind === 'impact' ? t - track.end : -1);
-      if (rig.splash) rig.splash.setAge(rig.touchdown !== null ? t - rig.touchdown : -1, SPLASH_SCALE[rig.id]);
+      if (rig.splash) {
+        rig.splash.setAge(rig.touchdown !== null ? t - rig.touchdown : -1, SPLASH_SCALE[rig.id]);
+        // A landing burn lights the water under the vehicle, which is what shows at night: the height of its base
+        // above the sea, and its thrust in full-throttle engines.
+        const height = Math.hypot(rig.base[0], rig.base[1], rig.base[2]) - EARTH_RADIUS;
+        rig.splash.setApproach?.(height, rig.visible ? litEngines(rig) * rig.visual.throttle : 0);
+      }
     }
     (ship.model as ShipModel | null)?.setPayloadDoor(doorAt(t));
     updateCoast(result, t, st.playing, now);

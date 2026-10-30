@@ -29,6 +29,11 @@ export interface EarthFrame {
   time: number;
   /** UTC epoch milliseconds of this frame, for the star field's sidereal orientation. */
   utcMs?: number;
+  /**
+   * Another view of the same frame (split screen, picture-in-picture): the scene keeps the main view's lighting
+   * (environment map, sky light, exposure hint) and only what depends on this view itself follows its camera.
+   */
+  secondary?: boolean;
 }
 
 export interface Earth {
