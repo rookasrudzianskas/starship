@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { IconClose, IconGithub, IconMenu } from '@/components/icons';
+import { rovingFocus } from '@/components/replay/a11y';
 import { useReplayHref } from '@/lib/store/replayAddress';
 import styles from './shell.module.css';
 
@@ -29,6 +30,7 @@ interface Props {
 export function SiteHeader({ active, picker, actions }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   // "Replay" resumes the flight being watched in this visit; the brand always opens the latest flight.
   const replayHref = useReplayHref();
   const hrefOf = (n: (typeof NAV)[number]) => (n.id === 'replay' ? replayHref : n.href);
@@ -43,11 +45,27 @@ export function SiteHeader({ active, picker, actions }: Props) {
     };
     window.addEventListener('pointerdown', onDown);
     window.addEventListener('keydown', onKey);
+    // Focus moves into the menu, to the page you are on (or the first item).
+    const menu = menuRef.current;
+    (menu?.querySelector<HTMLElement>('[role="menuitem"][data-active]') ?? menu?.querySelector<HTMLElement>('[role="menuitem"]'))?.focus();
     return () => {
       window.removeEventListener('pointerdown', onDown);
       window.removeEventListener('keydown', onKey);
     };
   }, [menuOpen]);
+
+  // Arrow keys move between the items; Escape closes the menu and goes back to its button.
+  const onMenuKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (rovingFocus(e, '[role="menuitem"]')) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      setMenuOpen(false);
+      buttonRef.current?.focus();
+    } else if (e.key === 'Tab') {
+      setMenuOpen(false);
+    }
+  };
 
   return (
     <header className={styles.header}>
@@ -80,16 +98,18 @@ export function SiteHeader({ active, picker, actions }: Props) {
       {actions ? <div className={styles.actions}>{actions}</div> : null}
       <div className={styles.menuWrap} ref={menuRef}>
         <button
+          ref={buttonRef}
           type="button"
           className={styles.iconButton}
           aria-label="Menu"
+          aria-haspopup="menu"
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((o) => !o)}
         >
           {menuOpen ? <IconClose size={18} /> : <IconMenu size={18} />}
         </button>
         {menuOpen ? (
-          <div className={styles.menu} role="menu">
+          <div className={styles.menu} role="menu" onKeyDown={onMenuKey}>
             {NAV.map((n) => (
               <Link
                 key={n.id}
