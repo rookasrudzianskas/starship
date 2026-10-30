@@ -249,7 +249,7 @@ export function ReplayApp() {
       showToast(modified ? 'Link to your run at this moment copied' : 'Link to this moment copied');
     } catch (err) {
       // Closing the share sheet is not a failure; anything else (no clipboard access) offers the link to copy by hand.
-      if (err instanceof Error && err.name === 'AbortError') return;
+      if ((err as { name?: unknown } | null)?.name === 'AbortError') return;
       setLinkToCopy(url);
     }
   }, [showToast]);

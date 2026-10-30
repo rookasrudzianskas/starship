@@ -76,6 +76,13 @@
   text-transform: uppercase;
 }
 
+/* The name stays on one line; on a phone the description wraps beside it. */
+.groupName {
+  flex: none;
+  font-weight: inherit;
+  white-space: nowrap;
+}
+
 .groupLabel span {
   font-weight: 400;
   font-size: 10px;

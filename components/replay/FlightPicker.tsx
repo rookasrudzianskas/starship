@@ -82,7 +82,7 @@ export function FlightPicker({ onSelect }: Props) {
             return (
               <div key={gen} className={styles.group} role="group" aria-label={GENERATIONS[gen].label}>
                 <div className={styles.groupLabel} aria-hidden="true">
-                  {GENERATIONS[gen].label}
+                  <b className={styles.groupName}>{GENERATIONS[gen].label}</b>
                   <span>{GENERATIONS[gen].blurb}</span>
                 </div>
                 {list.map((f) => (
