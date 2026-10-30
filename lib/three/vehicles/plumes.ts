@@ -21,10 +21,10 @@ import * as THREE from 'three';
  */
 
 /**
- * Render order of the merged plume volume: below the default 0 of the effect particles, so steam and spray
- * in front of the exhaust column hide it (particles behind the vehicle draw earlier still, see
- * BEHIND_AXIS_ORDER in effects/particles.ts). The nozzle cores and the glow draw after the particles: the
- * engines' own flames are bright enough to show through the steam they stand in.
+ * Render order of the merged plume volume (the nozzle cores draw right after it): below the default 0 of the
+ * effect particles, so steam and spray in front of the exhaust hide it (particles behind the vehicle draw
+ * earlier still, see BEHIND_AXIS_ORDER in effects/particles.ts). The glow sprite draws after the particles:
+ * it stands in for the light the flames scatter through the steam they stand in.
  */
 export const PLUME_ORDER = -6;
 
@@ -205,7 +205,7 @@ export class PlumeCores {
     });
     this.mesh = new THREE.InstancedMesh(this.geo, this.mat, slots.length);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = 10;
+    this.mesh.renderOrder = PLUME_ORDER + 1;
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const down = new THREE.Vector3(0, -1, 0);

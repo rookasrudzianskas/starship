@@ -79,7 +79,8 @@ function buildDefs(count: number, fires: number): { clouds: CloudDef[]; fire: Fi
         birth,
         f,
         lift: rnd(),
-        s0: 18 + 22 * f + 10 * rnd(),
+        // The leading edge is a low wall of dust and steam; the bulk piles up nearer the mount.
+        s0: 22 + 16 * (1 - f) + 10 * rnd(),
         grow: 1.6 + 1.6 * rnd(),
         w: 0,
         dust: (0.25 + 0.45 * rnd()) * (birth < 0.5 ? 1 : 0.6),
@@ -89,10 +90,10 @@ function buildDefs(count: number, fires: number): { clouds: CloudDef[]; fire: Fi
         ...base,
         birth: -3 + 15 * rnd(),
         f: 8 + 34 * rnd(),
-        lift: 4 + 26 * rnd(),
+        lift: 4 + 18 * rnd(),
         s0: 18 + 14 * rnd(),
         grow: 1.6 + 1.8 * rnd(),
-        w: 2 + 5 * rnd(),
+        w: 1.5 + 3.5 * rnd(),
         dust: 0.05 + 0.2 * rnd(),
       });
     } else {
@@ -181,13 +182,14 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         let y: number;
         let size: number;
         if (d.kind === 0) {
-          // Expanding torus front; the cloud thickens and billows up as it spreads.
+          // Expanding torus: the exhaust drives a low, wide front along the ground while the cloud nearer the
+          // mount piles up, then the whole cloud billows up once the front slows. Built low, so the climbing
+          // vehicle and its plume clear it within seconds even from a camera on the ground nearby.
           const front = 22 + 250 * (1 - Math.exp(-age / 5.5)) + 2.2 * age;
           R = 6 + d.f * front;
-          size = (d.s0 + d.grow * Math.pow(age, 0.85) * (0.7 + 0.6 * d.f)) * sizeK;
-          // The cloud spreads fast but builds height slowly, so the climbing plume stays in view above it.
-          const thick = 8 + 5.5 * Math.pow(age, 0.85);
-          y = size * 0.42 + d.lift * thick * (0.35 + 0.65 * d.f);
+          size = (d.s0 + d.grow * Math.pow(age, 0.85) * (0.7 + 0.25 * d.f)) * sizeK;
+          const thick = 6 + 4.2 * Math.pow(age, 0.85);
+          y = size * 0.27 + d.lift * thick * (1 - 0.6 * d.f);
         } else if (d.kind === 1) {
           R = d.f + 1.5 * age;
           size = (d.s0 + d.grow * Math.pow(age, 0.85)) * sizeK;
@@ -204,7 +206,7 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
           smooth(0, 0.8, age) *
           (1 - smooth(d.fadeStart, d.fadeStart + d.fadeLen, age)) *
           Math.min(Math.max(1.25 - size / 230, 0.4), 1) *
-          (d.kind === 1 ? smooth(1, 6, t) : 1) *
+          (d.kind === 1 ? smooth(2, 9, t) : 1) *
           0.9;
         if (op < 0.004) continue;
         rec.x = d.cos * R + driftX * age;

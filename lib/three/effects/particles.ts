@@ -99,7 +99,7 @@ const VERT = /* glsl */ `
 attribute vec4 a0; // puff centre / streak head (object space, m), size (puff diameter / streak width, m)
 attribute vec4 a1; // albedo rgb (linear), opacity
 attribute vec4 a2; // emission rgb (HDR multiplier), temperature (puffs: drives the fire ramp)
-attribute vec4 a3; // puff: rotation, atlas cell (4 = smooth glow), erosion, glow weight | streak: unit dir xyz, length
+attribute vec4 a3; // puff: rotation, atlas cell (4 = smooth glow, 5 = thin shell), erosion, glow weight | streak: unit dir xyz, length
 attribute vec4 a4; // mode (0 puff, 1 streak), taper (streak: 1 fades to the tail, 0 uniform segment), seed, unused
 uniform vec3 uSunDir;
 uniform vec3 uUp;
@@ -256,7 +256,15 @@ void main() {
     r2 = dot(q, q);
     float cell = vMisc.x;
     vec2 nt;
-    if (cell > 3.5) {
+    if (cell > 4.5) {
+      // Thin spherical shell (vapour expanding in vacuum): the thickness of a shell between radii 0.78 and
+      // 0.9 along each sight line (squared, so the faint middle erodes away and the rim stands out), broken
+      // up by the first cell's turbulence.
+      float shell = (sqrt(max(0.81 - r2, 0.0)) - sqrt(max(0.6084 - r2, 0.0))) / 0.449;
+      detail = texture2D(uAtlas, clamp(vUv, 0.004, 0.996) * 0.5).a;
+      dens = shell * shell * (0.5 + 0.7 * detail);
+      nt = q * 0.6;
+    } else if (cell > 3.5) {
       // Smooth radial glow (flashes, halos).
       dens = max(exp(-5.0 * r2) - 0.0067, 0.0);
       detail = 0.6;
@@ -436,6 +444,8 @@ export class Billboards {
    * splash or a fireball would otherwise see nothing but a wall of overlapping sprites. 1 = never dim.
    */
   insideFade = 1;
+  /** Distance from the bulk centre, in bulk radii, at which that dimming starts (full at half of it). */
+  insideReach = 1.15;
   private readonly front: InstanceBuffers;
   private readonly back: InstanceBuffers | null;
   private readonly stage: Float32Array;
@@ -507,7 +517,7 @@ export class Billboards {
       let fade = 1;
       if (this.insideFade < 1 && bulk.w > 0) {
         const d = Math.hypot(this.cam.x - bulk.x, this.cam.y - bulk.y, this.cam.z - bulk.z);
-        fade = mix(this.insideFade, 1, smooth(0.6 * bulk.w, 1.15 * bulk.w, d));
+        fade = mix(this.insideFade, 1, smooth(0.5 * this.insideReach * bulk.w, this.insideReach * bulk.w, d));
       }
       this.uniforms.uFade.value = fade;
       // A split batch keeps the main view's split (its two draw counts must match the uploaded data).

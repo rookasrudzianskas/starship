@@ -352,10 +352,12 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
       volume.updateCamera(camera);
 
       glow.uniforms.uPos.value.set(0, -1.0 - 0.8 * (1 - hs), 0);
-      glow.uniforms.uIntensity.value = power * (0.8 - 0.3 * alt + 0.5 * hs) * plumeBrightness;
+      // In vacuum the bloom is that of the glowing nozzles, not of the (faint) exhaust: small and dim, so a
+      // camera behind the ship still sees the engines.
+      glow.uniforms.uIntensity.value = power * (0.8 - 0.45 * alt + 0.5 * hs) * plumeBrightness;
       plumeLight.set(power * plumeBrightness, alt);
       plumeLight.place();
-      glow.uniforms.uSize.value = R * (1.5 + 0.7 * alt) * Math.sqrt(Math.max(power, 0.05));
+      glow.uniforms.uSize.value = R * (1.5 + 0.15 * alt) * Math.sqrt(Math.max(power, 0.05));
       glow.uniforms.uColor.value.setRGB(1.0, 0.9 - 0.12 * alt - 0.1 * hs, 0.78 + 0.22 * alt - 0.3 * hs);
       glow.mesh.visible = power > 0.002;
 

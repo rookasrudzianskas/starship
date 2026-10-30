@@ -9,8 +9,9 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, newR
  * surface: an expanding ring of churned water plus a patch round the touchdown point that stays while the
  * vehicle floats in it. Origin = impact point on the water surface, +Y up.
  * Pure function of (age, scale); `scale` is the size of the impacting body in metres (9 ≈ a vehicle
- * diameter). Heights grow sub-linearly with scale (k^0.5), widths with k^0.65, k = scale / 9, so a 70 m
- * booster raises a spray column of 50-140 m and a mist that settles within about 150 m.
+ * diameter). Heights grow sub-linearly with scale (k^0.45), widths with k^0.5, k = scale / 9, so a 70 m
+ * booster raises a spray column of 40-100 m and a mist that settles within about 120 m: a chase camera a
+ * couple of vehicle lengths away stays outside it (and the whole cloud thins out if one gets inside).
  */
 
 const COLUMN = 56;
@@ -61,8 +62,8 @@ function buildDefs(): { column: ColumnDef[]; crown: CrownDef[]; mist: MistDef[] 
   for (let i = 0; i < COLUMN; i++) {
     const phi = rnd() * Math.PI * 2;
     column.push({
-      // Peak height in units of the reference height (≈ 9 m body → 18..50 m column).
-      h: 2.0 + 3.6 * Math.pow(rnd(), 1.4),
+      // Peak height in units of the reference height (≈ 9 m body → 16..41 m column).
+      h: 1.8 + 2.8 * Math.pow(rnd(), 1.4),
       dirX: Math.cos(phi),
       dirZ: Math.sin(phi),
       lean: 0.03 + 0.2 * rnd(),
@@ -95,10 +96,10 @@ function buildDefs(): { column: ColumnDef[]; crown: CrownDef[]; mist: MistDef[] 
     mist.push({
       cos: Math.cos(phi),
       sin: Math.sin(phi),
-      reach: 1.2 + 1.9 * rnd(),
+      reach: 1.0 + 1.6 * rnd(),
       td: 2.5 + 3 * rnd(),
-      s0: 0.9 + 0.5 * rnd(),
-      grow: 0.16 + 0.14 * rnd(),
+      s0: 0.7 + 0.4 * rnd(),
+      grow: 0.12 + 0.1 * rnd(),
       delay: 0.3 + 0.9 * rnd(),
       rot: rnd() * Math.PI * 2,
       cell: Math.floor(rnd() * 4),
@@ -179,7 +180,9 @@ export function createSplash(): Splash {
   // Split around the vertical axis: a landing burn's plume shows through the spray behind it, not in front.
   const batch = new Billboards(COLUMN + MIST + CROWN, atlas, true);
   batch.mesh.name = 'splash-spray';
+  // Start thinning out well before the camera reaches the spray: the mist spreads wider than its bulk.
   batch.insideFade = 0.2;
+  batch.insideReach = 1.6;
 
   const foamMat = new THREE.ShaderMaterial({
     uniforms: {
@@ -238,8 +241,8 @@ export function createSplash(): Splash {
         return;
       }
       const k = Math.max(scale, 0.5) / 9;
-      const hRef = 9 * Math.pow(k, 0.5); // vertical reference, m
-      const wRef = 9 * Math.pow(k, 0.65); // horizontal reference, m
+      const hRef = 9 * Math.pow(k, 0.45); // vertical reference, m
+      const wRef = 9 * Math.pow(k, 0.5); // horizontal reference, m
       batch.uniforms.uGroundFade.value = 0.15 * wRef;
 
       // Column: spray launched upwards, collapsing into a widening curtain and drifting mist.
@@ -310,13 +313,13 @@ export function createSplash(): Splash {
         const vyy = vy - G * t;
         const speed = Math.sqrt(vh * vh + vyy * vyy);
         const life = (2 * vy) / G;
-        const op = 0.42 * smooth(0, 0.05, t) * (1 - smooth(life * 0.55, life * 1.02, t));
+        const op = 0.34 * smooth(0, 0.05, t) * (1 - smooth(life * 0.55, life * 1.02, t));
         if (op < 0.004) continue;
         rec.x = d.cos * R;
         rec.y = Math.max(y, 0);
         rec.z = d.sin * R;
         // Thin sheets that break up as they fly: they stretch along the flight path, not sideways.
-        rec.size = wRef * d.width * 0.55 * (1 + 0.3 * t);
+        rec.size = wRef * d.width * 0.4 * (1 + 0.3 * t);
         rec.r = 0.9;
         rec.g = 0.93;
         rec.b = 0.96;

@@ -8,19 +8,23 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, mix,
  *  - air: an incandescent fireball of lumpy puffs that cools from white through orange into dark soot
  *    and white vapour, rises buoyantly and spreads; hot debris streaks arc out on drag + gravity
  *    trajectories, some leaving persistent smoke trails.
- *  - vacuum: a short, very bright flash; a thin shell of propellant vapour expanding freely at about
- *    100 m/s, sunlit and brightest at its rim, that dilutes away within about two seconds; glowing
- *    fragments fly in straight lines. No fireball, no buoyant smoke.
+ *  - vacuum: a short, very bright flash; thin shells of propellant vapour expanding freely at about
+ *    100 m/s (like propellant vented in orbit), sunlit and brightest at their rims, that dilute away within
+ *    about two seconds, with faint clumps of vapour in them; glowing fragments fly in straight lines. No
+ *    fireball, no buoyant smoke.
  *  - in between: both models evaluated and blended by w = ratio^0.3.
  * Buoyancy and gravity act along the local vertical: the scene's HemisphereLight direction if there is
  * one, converted into the object's frame; otherwise the object's +Y (orient the object with +Y = up).
  */
 
 const FIREBALL = 90;
+const SHELLS = 5;
 const DEBRIS = 40;
 const TRAILS = 14;
 const TRAIL_SEGS = 14;
-const CAPACITY = 2 + FIREBALL + DEBRIS + TRAILS * TRAIL_SEGS;
+const CAPACITY = 2 + SHELLS + FIREBALL + DEBRIS + TRAILS * TRAIL_SEGS;
+/** Atlas cell of the billboard shader's limb-brightened shell profile (see particles.ts). */
+const SHELL_CELL = 5;
 const G = 9.81;
 
 interface PuffDef {
@@ -37,6 +41,17 @@ interface PuffDef {
   rise: number;
 }
 
+interface ShellDef {
+  /** Offset of the centre from the burst point, in shell radii. */
+  off: THREE.Vector3;
+  spd: number;
+  op: number;
+  delay: number;
+  rot: number;
+  spin: number;
+  shade: number;
+}
+
 interface DebrisDef {
   dir: THREE.Vector3;
   spd: number;
@@ -46,7 +61,7 @@ interface DebrisDef {
   hot: number;
 }
 
-function buildDefs(): { puffs: PuffDef[]; debris: DebrisDef[] } {
+function buildDefs(): { puffs: PuffDef[]; shells: ShellDef[]; debris: DebrisDef[] } {
   const rnd = seededRandom(424242);
   const puffs: PuffDef[] = [];
   for (let i = 0; i < FIREBALL; i++) {
@@ -78,7 +93,19 @@ function buildDefs(): { puffs: PuffDef[]; debris: DebrisDef[] } {
       hot: 0.5 + 0.5 * rnd(),
     });
   }
-  return { puffs, debris };
+  const shells: ShellDef[] = [];
+  for (let i = 0; i < SHELLS; i++) {
+    shells.push({
+      off: sphereDir(rnd(), rnd(), new THREE.Vector3()).multiplyScalar(0.06 + 0.1 * rnd()),
+      spd: 0.75 + 0.3 * rnd(),
+      op: 0.1 + 0.06 * rnd(),
+      delay: 0.04 * rnd(),
+      rot: rnd() * Math.PI * 2,
+      spin: (rnd() - 0.5) * 0.3,
+      shade: 0.9 + 0.15 * rnd(),
+    });
+  }
+  return { puffs, shells, debris };
 }
 
 export function createExplosion(): Explosion {
@@ -196,12 +223,39 @@ export function createExplosion(): Explosion {
         rec.mode = MODE_PUFF;
         batch.add(rec);
       }
+
+      // --- Vacuum shells: the vapour expands freely into thin, overlapping, slightly off-centre shells that
+      // glow for an instant, then show only in sunlight, brightest along their rims, thinning as 1/R².
+      for (const d of defs.shells) {
+        const tau = age - d.delay;
+        if (tau < 0) continue;
+        const op = (1 - w) * d.op * smooth(0, 0.05, tau) * (1 / (1 + (tau / 0.8) * (tau / 0.8))) * (1 - smooth(1.6, 3.2, tau));
+        if (op < 0.003) continue;
+        const radius = S * (0.1 + 2.0 * d.spd * tau);
+        rec.x = d.off.x * radius;
+        rec.y = d.off.y * radius;
+        rec.z = d.off.z * radius;
+        // The profile's outer edge sits at 0.9 of the sprite's half-size.
+        rec.size = (2 * radius) / 0.9;
+        rec.r = rec.g = rec.b = 0.75 * d.shade;
+        rec.opacity = op;
+        rec.er = rec.eg = rec.eb = 1;
+        rec.temp = 1.1 * Math.exp(-tau / 0.08);
+        rec.m0 = d.rot + d.spin * tau;
+        rec.m1 = SHELL_CELL;
+        // Breaks up into wisps as it thins.
+        rec.m2 = 0.1 + 0.4 * smooth(0.2, 2.5, tau);
+        rec.m3 = 0;
+        rec.mode = MODE_PUFF;
+        batch.add(rec);
+      }
     }
 
     // --- Fireball / smoke / vapour puffs.
     for (let i = 0; i < defs.puffs.length; i++) {
       const d = defs.puffs[i];
-      const tau = age - d.delay;
+      // Late puffs are secondary burning, which needs air: in vacuum everything leaves at once.
+      const tau = age - d.delay * mix(0.15, 1, w);
       if (tau < 0) continue;
       // Air model.
       const kA = 1 - Math.exp(-tau / (0.45 * ts));
@@ -216,9 +270,9 @@ export function createExplosion(): Explosion {
       const tempA = 1.12 * Math.exp(-tau / (d.cool * (d.soot ? 1.25 : 0.55) * ts));
       const opA = smooth(0, 0.05, tau) * (1 - smooth(28 * ts, 75 * ts, tau)) * 0.62;
       const erA = 0.06 + 0.55 * smooth(3 * ts, 60 * ts, tau);
-      // Vacuum model: a thin shell of vapour and fine debris expanding freely (no drag, no buoyancy).
-      // Soft, faint, overlapping blobs (no billowy texture: nothing condenses into puffs in vacuum) make a
-      // hollow, rim-brightened haze that dilutes away within about two seconds and glows only at first.
+      // Vacuum model: clumps of vapour and fine debris riding the shells outwards (no drag, no buoyancy):
+      // small, faint and soft (nothing condenses into billowing puffs in vacuum); they dilute away within
+      // about two seconds and glow only at first.
       const td = 6;
       const kV = td * (1 - Math.exp(-tau / td));
       const shell = 0.55 + 0.45 * Math.sqrt(d.spd);
@@ -226,9 +280,10 @@ export function createExplosion(): Explosion {
       const vx = d.dir.x * reach;
       const vy = d.dir.y * reach;
       const vz = d.dir.z * reach;
-      const sizeV = S * (d.s0 + 0.03 * tau) + reach * 0.45;
+      // In thin air (between the models) the clumps grow with the cloud so it stays continuous.
+      const sizeV = S * (0.6 * d.s0 + 0.02 * tau) + reach * (0.16 + 0.6 * w);
       const tempV = 1.15 * Math.exp(-tau / (0.12 * d.cool));
-      const opV = smooth(0, 0.04, tau) * (0.32 / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.4, 3, tau));
+      const opV = smooth(0, 0.04, tau) * (0.1 / (1 + (tau / 0.7) * (tau / 0.7))) * (1 - smooth(1.2, 2.6, tau));
       const erV = 0.25 + 0.5 * smooth(0.1, 2, tau);
 
       const op = mix(opV, opA, w);
@@ -249,7 +304,7 @@ export function createExplosion(): Explosion {
       rec.er = rec.eg = rec.eb = 1;
       rec.temp = temp;
       rec.m0 = d.rot + d.spin * tau;
-      rec.m1 = w < 0.4 ? 4 : d.cell;
+      rec.m1 = d.cell;
       rec.m2 = mix(erV, erA, w);
       rec.m3 = 0;
       rec.mode = MODE_PUFF;
