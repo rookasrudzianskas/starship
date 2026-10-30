@@ -13,6 +13,7 @@ import {
   TRANSMITTANCE_SIZE,
 } from './atmosphere';
 import type { AtmosphereTextures } from './resources';
+import { WAVE_COUNT } from './waves';
 
 /**
  * Uniform objects shared by every Earth material. Materials reference the same `{ value }` objects, so one
@@ -56,6 +57,11 @@ export function createSharedUniforms(params: AtmosphereParams, luts: AtmosphereT
     uGlintStrength: { value: 0.2 },
     uWaterAlbedo: { value: new THREE.Vector3(0.004, 0.012, 0.022) },
     uCityColour: { value: new THREE.Vector3(1.0, 0.72, 0.42) },
+    // Wind waves (WAVES_GLSL, waves.ts): wave vectors and amplitudes, phases at the camera, and
+    // x: strength (fades out with the camera's altitude), y: slope variance of the set
+    uWaveK: { value: new Float32Array(WAVE_COUNT * 4) },
+    uWavePhase: { value: new Float32Array(WAVE_COUNT) },
+    uWaveParams: { value: new THREE.Vector4(0, 0, 0, 0) },
   };
 }
 

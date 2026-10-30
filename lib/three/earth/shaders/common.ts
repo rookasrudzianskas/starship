@@ -256,27 +256,29 @@ vec3 groundIrradiance(float mus) {
 }
 
 // Outgoing radiance of the ground at a point with unit normal n, seen along unit direction v (camera → point).
-// shadow: visibility of the Sun (1 = lit).
-vec3 shadeSurface(vec3 n, vec3 v, SurfaceSample s, float shadow) {
+// Water reflects through nw, the normal of its resolved waves (n where there are none, see WAVES_GLSL), and s2 is
+// the slope variance left below the pixel (Cox–Munk). shadow: visibility of the Sun (1 = lit).
+vec3 shadeSurfaceWater(vec3 n, vec3 nw, vec3 v, SurfaceSample s, float shadow, float s2) {
   vec3 L = uSun.xyz;
   float mus = dot(n, L);
   vec3 sunT = atmoSunTransmittance(0.0, uAtmoRadii.x, mus) * shadow;
   vec3 eSun = uSun.w * sunT * max(mus, 0.0);
   vec3 eSky = uSun.w * groundIrradiance(mus);
-  float cosV = clamp(-dot(n, v), 0.0, 1.0);
+  // A wave facet turned away from the camera hides behind the crest in front of it: shade one that faces it.
+  nw = normalize(nw - v * max(0.02 + dot(nw, v), 0.0));
+  float cosV = clamp(-dot(nw, v), 0.0, 1.0);
   float fV = 0.02 + 0.98 * pow(1.0 - cosV, 5.0); // Fresnel, water n = 1.33
   vec3 albedo = mix(s.albedo, max(s.albedo, uWaterAlbedo), s.water);
   vec3 lo = albedo * (1.0 / ATMO_PI) * (eSun + eSky) * (1.0 - s.water * fV);
 
-  // Water: sun glint with a Beckmann distribution (Cox–Munk slope variance) and the reflected sky.
+  // Water: sun glint with a Beckmann distribution and the reflected sky.
   vec3 h = normalize(L - v);
-  float nh = max(dot(n, h), 1e-3);
+  float nh = max(dot(nw, h), 1e-3);
   float nh2 = nh * nh;
-  float s2 = uSurface.y;
   float D = exp((nh2 - 1.0) / (s2 * nh2)) / (ATMO_PI * s2 * nh2 * nh2);
   float fH = 0.02 + 0.98 * pow(1.0 - clamp(dot(-v, h), 0.0, 1.0), 5.0);
   // Smith shadowing-masking for a Beckmann surface (rational approximation of G1), view and sun.
-  float G = smithG1Beckmann(cosV, s2) * smithG1Beckmann(max(mus, 0.0), s2);
+  float G = smithG1Beckmann(cosV, s2) * smithG1Beckmann(max(dot(nw, L), 0.0), s2);
   vec3 glint = uSun.w * sunT * (uGlintStrength * fH * D * G / (4.0 * max(cosV, 0.02)));
   // Reflected sky: near sea level the camera's own sky table is what the water sees; higher up, approximate the
   // sky dome by its mean radiance (Esky / π), brightened towards grazing angles where the horizon sky reflects.
@@ -285,17 +287,60 @@ vec3 shadeSurface(vec3 n, vec3 v, SurfaceSample s, float shadow) {
   if (lowCam > 0.0 && s.water > 0.0) {
     vec3 skyIns;
     vec3 skyT;
-    atmosphereAlongRay(reflect(v, n), false, skyIns, skyT);
+    vec3 r = reflect(v, nw);
+    // Reflected down into the next wave: it shows sky from about as high above the horizon instead.
+    r -= 2.0 * n * min(dot(r, n), 0.0);
+    atmosphereAlongRay(r, false, skyIns, skyT);
     skyReflection = mix(skyReflection, fV * skyIns, lowCam);
   }
   lo += s.water * (glint + skyReflection);
 
   // City lights come on through dusk; at grazing view angles terrain and haze hide them (and the texture
   // footprint degenerates at the limb).
-  float night = (1.0 - smoothstep(-0.12, 0.02, mus)) * smoothstep(0.0, 0.1, cosV);
+  float night = (1.0 - smoothstep(-0.12, 0.02, mus)) * smoothstep(0.0, 0.1, -dot(n, v));
   lo += uCityColour * (uSurface.z * s.lights * s.lights * night);
   lo += albedo * (uSurface.w * uSun.w);
   return lo;
+}
+
+// The same with calm water (no resolved waves): all of the sea's roughness is sub-pixel.
+vec3 shadeSurface(vec3 n, vec3 v, SurfaceSample s, float shadow) {
+  return shadeSurfaceWater(n, n, v, s, shadow, uSurface.y);
+}
+`;
+
+/**
+ * Wind waves on open water (see waves.ts): a sum of sines anchored to the Earth, added to the water's normal where
+ * the pixels are small enough to resolve them. Needs SURFACE_GLSL (uSurface) before it.
+ */
+export const WAVES_GLSL = /* glsl */ `
+#define WAVE_COUNT 16
+uniform vec4 uWaveK[WAVE_COUNT];      // xyz: wave vector (rad/m, world axes), w: height amplitude (m)
+uniform float uWavePhase[WAVE_COUNT]; // k·camera − ωt + φ₀ (rad), worked out on the CPU in float64
+uniform vec4 uWaveParams;             // x: strength (0 with the camera too high to resolve them), y: their slope variance
+
+// Normal of the water at camera-relative point p on a surface with normal n (xyz), and the slope variance left to the
+// sun glint (w). Each wave fades out as the pixel's footprint along it nears a quarter of its wavelength, and its
+// slopes then roughen the glint instead, so the sea keeps the same sparkle and sheen as its waves blur into the
+// distance. dpdx, dpdy: screen-space derivatives of p (taken in uniform control flow by the caller).
+vec4 waveNormal(vec3 p, vec3 n, vec3 dpdx, vec3 dpdy) {
+  float rough = max(uSurface.y - uWaveParams.y, 0.002);
+  if (uWaveParams.x <= 0.0) return vec4(n, rough + uWaveParams.y);
+  float wide = max(length(dpdx), length(dpdy));
+  vec3 g = vec3(0.0);
+  for (int i = 0; i < WAVE_COUNT; i++) {
+    vec4 w = uWaveK[i];
+    vec3 kt = w.xyz - n * dot(w.xyz, n);
+    float k = length(kt);
+    // Cycles of the wave per pixel along its direction, and at least half of that over the pixel's long axis: a
+    // wave running down a grazing view would otherwise outlive the ones across it as streaks towards the camera.
+    float cycles = max(max(abs(dot(dpdx, kt)), abs(dot(dpdy, kt))), 0.5 * k * wide) * 0.15915494;
+    float keep = uWaveParams.x * (1.0 - smoothstep(0.1, 0.3, cycles));
+    float slope = w.w * k;
+    g += kt * (w.w * keep * cos(dot(w.xyz, p) + uWavePhase[i]));
+    rough += 0.5 * slope * slope * (1.0 - keep * keep);
+  }
+  return vec4(normalize(n - g), rough);
 }
 `;
 

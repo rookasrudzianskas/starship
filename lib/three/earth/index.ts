@@ -20,6 +20,9 @@ import { computeTablesGpu } from './precompute';
 import { createAtmosphereTextures, type ImageTextureOptions, placeholderTexture, TextureStreamer } from './resources';
 import { toneMapColour } from './tonemap';
 import { applyAtmosphereParams, createSharedUniforms } from './uniforms';
+import { makeWaves, wavePhases } from './waves';
+import { dataTexture, generatedOnce, NOISE_KEY, prefetchGenerated } from '@/lib/three/vehicles/procedural';
+import { noisePixels } from '@/lib/three/vehicles/pixels';
 
 export { sunDirectionEcef, greenwichSiderealTime } from './ephemeris';
 export { latLonToEcef, ecefToLatLon, enuBasis, enuToEcefRotation } from './geo';
@@ -44,6 +47,8 @@ const VIEW_LUT_SIZE: [number, number] = [48, 160];
 const SUN_METER_WEIGHT = 0.03;
 /** From this camera altitude the globe imagery fills much of the view: worth the 8K day texture where affordable. */
 const DETAIL_ALTITUDE = 50_000;
+/** Wind waves on the water fade out between these camera altitudes (m): above, no pixel resolves them. */
+const WAVE_ALTITUDE: [number, number] = [4000, 9000];
 
 /** Component of uPatchTexel for each ground patch. */
 const PATCH_INDEX: Record<PatchId, number> = { pad: 0, mid: 1, wide: 2 };
@@ -127,6 +132,9 @@ export function createEarth(options: EarthOptions): EarthHandle {
   const placeholder = placeholderTexture([0, 0, 0, 255]);
   let luts = createAtmosphereTextures(model);
   const shared = createSharedUniforms(params, luts, placeholder);
+  const waves = makeWaves();
+  shared.uWaveK.value.set(waves.k);
+  shared.uWaveParams.value.y = waves.slopeVariance;
   const viewLut = new ViewLut(shared, VIEW_LUT_SIZE[0], VIEW_LUT_SIZE[1]);
   viewLut.uniforms.uSteps.value = QUALITY[quality].lutSteps;
   const env = new EnvironmentProbe(renderer, shared, QUALITY[quality].envWidth);
@@ -137,7 +145,9 @@ export function createEarth(options: EarthOptions): EarthHandle {
   object.add(globe.mesh);
   const stars = createStars(shared);
   object.add(stars.points);
-  const patch = createPatchMaterial(shared, placeholder);
+  const detailGrey = placeholderTexture([128, 128, 128, 128]);
+  const patch = createPatchMaterial(shared, placeholder, detailGrey);
+  let detailTex: THREE.Texture | null = null;
   let patchMesh: THREE.Mesh | null = null;
   let padEcef = latLonToEcef(pad.lat, pad.lon, 0);
   const padRotation = new THREE.Quaternion().setFromRotationMatrix(enuToEcefRotation(pad.lat, pad.lon));
@@ -201,6 +211,20 @@ export function createEarth(options: EarthOptions): EarthHandle {
   const PATCH: ImageTextureOptions = { srgb: true, anisotropy: aniso };
   const PATCH_MASK: ImageTextureOptions = { srgb: false, anisotropy: aniso };
   const can8k = affords8k(renderer);
+
+  // Ground detail around the pad: the shared tiling noise, made in the procedural-texture worker (on the main thread
+  // only if that is unavailable), uploaded here with mipmaps and anisotropic filtering of its own.
+  prefetchGenerated().then(() => {
+    if (disposed) return;
+    const pixels = generatedOnce(NOISE_KEY, noisePixels);
+    const mean = [0, 0, 0, 0];
+    for (let i = 0; i < pixels.length; i += 4) for (let c = 0; c < 4; c++) mean[c] += pixels[i + c];
+    const texels = (pixels.length / 4) * 255;
+    patch.uniforms.uDetailMean.value.set(mean[0] / texels, mean[1] / texels, mean[2] / texels, mean[3] / texels);
+    detailTex = dataTexture(pixels, 256, 256, { srgb: false, repeat: true, mipmaps: true, anisotropy: aniso });
+    detailTex.name = 'earth-ground-detail';
+    patch.uniforms.uDetailTex.value = detailTex;
+  });
   /** The opening imagery has settled: the full-resolution globe may follow. */
   let opened = false;
   /** The camera has been above DETAIL_ALTITUDE (the 8K then stays, wherever it goes). */
@@ -405,6 +429,10 @@ export function createEarth(options: EarthOptions): EarthHandle {
       syncDay();
     }
 
+    // Waves: phases at the camera (float64 here, see waves.ts), only while it is low enough to resolve them.
+    wavePhases(waves, cam, frame.time, shared.uWavePhase.value);
+    shared.uWaveParams.value.x = 1 - smoothstep(WAVE_ALTITUDE[0], WAVE_ALTITUDE[1], h);
+
     shared.uCam.value.set(rc, h, rho2, -Math.sqrt(rho2) / rc);
     shared.uCamInside.value = h < ATMOSPHERE_HEIGHT ? 1 : 0;
     shared.uCamUp.value.copy(upVec);
@@ -543,6 +571,8 @@ export function createEarth(options: EarthOptions): EarthHandle {
     if (scene.fog === fog) scene.fog = null;
     Object.values(luts).forEach((t) => t.dispose());
     placeholder.dispose();
+    detailGrey.dispose();
+    detailTex?.dispose();
     textures.day?.texture.dispose();
     textures.night?.dispose();
     textures.water?.dispose();

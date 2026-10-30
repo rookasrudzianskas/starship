@@ -181,7 +181,11 @@ export function buildPatchGeometry(
   return g;
 }
 
-export function createPatchMaterial(shared: SharedUniforms, placeholder: THREE.Texture) {
+/**
+ * `detail`: the ground-detail noise, or a mid-grey stand-in until it is made (`detailMean` is then 0.5 on every
+ * channel, so the stand-in changes nothing).
+ */
+export function createPatchMaterial(shared: SharedUniforms, placeholder: THREE.Texture, detail: THREE.Texture) {
   const uniforms = {
     ...shared,
     uPatchPad: { value: placeholder as THREE.Texture },
@@ -191,7 +195,9 @@ export function createPatchMaterial(shared: SharedUniforms, placeholder: THREE.T
     uPatchParams: { value: new THREE.Vector4(1, PATCH_LAYOUT.fadeStart, PATCH_LAYOUT.fadeEnd, 0) },
     // Ground size of a texel (m) of the pad, mid and wide imagery: set from the manifest.
     uPatchTexel: { value: new THREE.Vector3(4.3, 38.6, 270) },
-    uGroundDetail: { value: 0.6 },
+    uDetailTex: { value: detail },
+    uDetailMean: { value: new THREE.Vector4(128 / 255, 128 / 255, 128 / 255, 128 / 255) },
+    uGroundDetail: { value: 0.8 },
   };
   const material = new THREE.ShaderMaterial({
     name: 'EarthGroundPatch',

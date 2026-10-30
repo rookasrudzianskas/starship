@@ -1,4 +1,4 @@
-import { ATMOSPHERE_GLSL, DEPTH_GLSL, SURFACE_GLSL, VIEW_LOOKUP_GLSL, VIEW_LUT_PARAM_GLSL } from './common';
+import { ATMOSPHERE_GLSL, DEPTH_GLSL, SURFACE_GLSL, VIEW_LOOKUP_GLSL, VIEW_LUT_PARAM_GLSL, WAVES_GLSL } from './common';
 
 /**
  * Globe + sky: one full-screen pass. Each pixel's ray is intersected analytically with the spherical Earth
@@ -20,6 +20,7 @@ ${ATMOSPHERE_GLSL}
 ${VIEW_LUT_PARAM_GLSL}
 ${VIEW_LOOKUP_GLSL}
 ${SURFACE_GLSL}
+${WAVES_GLSL}
 ${DEPTH_GLSL}
 uniform vec3 uEarthCenter;          // camera-relative position of the Earth's centre
 uniform vec4 uPatchDiscard;         // xyz: pad (camera-relative), w: radius drawn only by the ground patch (≤ 0: none)
@@ -40,8 +41,10 @@ void main() {
   vec3 p = cameraPosition + t * d;
   vec3 n = normalize(p - uEarthCenter);
   // Everything that needs screen-space derivatives is evaluated here, in uniform control flow, before any
-  // branch or discard; the texture fetches further down use these gradients explicitly.
+  // branch or discard; the texture fetches and the waves further down use these gradients explicitly.
   GlobeCoord gc = globeCoord(n);
+  vec3 dpdx = dFdx(p);
+  vec3 dpdy = dFdy(p);
   float mug = sqrt(max(discG, 0.0)) / uAtmoRadii.x; // cos-zenith of the view ray at the ground
   float mugWidth = fwidth(mug);
   float sunX = length(cross(d, uSun.xyz)) / uSunShape.x; // angle from the Sun's centre in solar radii
@@ -60,7 +63,8 @@ void main() {
   float depth = 1.0;
   if (ground) {
     SurfaceSample s = sampleGlobeGrad(gc);
-    colour = shadeSurface(n, d, s, 1.0) * T + ins;
+    vec4 wave = s.water > 0.0 ? waveNormal(p, n, dpdx, dpdy) : vec4(n, uSurface.y);
+    colour = shadeSurfaceWater(n, wave.xyz, d, s, 1.0, wave.w) * T + ins;
     vec4 vp = viewMatrix * vec4(p, 1.0);
     // Behind the patch by 0.5 % of the distance (scaling a view-space point keeps it on the ray).
     if (dPad < uPatchBiasRadius) vp.xyz *= 1.005;
@@ -120,13 +124,16 @@ ${ATMOSPHERE_GLSL}
 ${VIEW_LUT_PARAM_GLSL}
 ${VIEW_LOOKUP_GLSL}
 ${SURFACE_GLSL}
+${WAVES_GLSL}
 uniform sampler2D uPatchPad;
 uniform sampler2D uPatchMid;
 uniform sampler2D uPatchWide;
 uniform sampler2D uPatchWater;     // r: pad, g: mid, b: wide
 uniform vec4 uPatchParams;         // x: overall fade, y/z: radial fade start/end (m), w: patch textures ready
 uniform vec3 uPatchTexel;          // ground size of a texel (m): pad, mid, wide
-uniform float uGroundDetail;       // strength of the sub-texel ground detail (0: off)
+uniform sampler2D uDetailTex;      // tiling fbm noise, four channels (grey until it is made)
+uniform vec4 uDetailMean;          // mean of each of its channels
+uniform float uGroundDetail;       // strength of the ground detail (0: off)
 varying vec3 vWorldPos;
 varying vec3 vNormalW;
 varying vec2 vUvGlobe;
@@ -141,47 +148,37 @@ float edgeWeight(vec2 uv, float feather) {
   return smoothstep(0.0, feather, min(e.x, e.y));
 }
 
-float detailHash(vec2 p) {
-  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-  p3 += dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
-}
-
-float detailNoise(vec2 p) {
-  vec2 i = floor(p);
-  vec2 f = p - i;
-  vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(detailHash(i), detailHash(i + vec2(1.0, 0.0)), u.x),
-    mix(detailHash(i + vec2(0.0, 1.0)), detailHash(i + vec2(1.0, 1.0)), u.x),
-    u.y
-  );
-}
-
-// The imagery is Sentinel-2 (10 m), so seen from a few hundred metres it is one smooth blur. This adds fractal
-// brightness variation at 1–16 m, anchored to the ground, where a texel spans several pixels; each octave fades
-// out before it could alias. Centred on 1, so it does not shift the imagery's mean colour. mpp: metres per pixel.
-float groundDetail(vec2 x, float mpp, float texel) {
-  float magnified = smoothstep(1.5, 4.0, texel / max(mpp, 1e-3));
-  if (magnified <= 0.0) return 1.0;
-  float sum = 0.0;
-  float wavelength = 16.0;
-  float amp = 0.5;
-  for (int k = 0; k < 4; k++) {
-    float visible = 1.0 - smoothstep(0.25, 0.5, mpp / wavelength);
-    sum += amp * visible * (detailNoise(x / wavelength + float(k) * 7.31) - 0.5);
-    wavelength *= 0.45;
-    amp *= 0.7;
-  }
-  return 1.0 + uGroundDetail * magnified * sum;
+// The imagery is Sentinel-2 (10 m), so seen from near the ground it is one smooth blur. Four scales of tiling noise,
+// anchored to the ground (east / north of the pad) and turned against each other so the repeat doesn't show, vary
+// its brightness and its green / brown balance from tens of metres down to a few centimetres. The noise texture's mipmaps
+// and anisotropic filtering fade each scale out before it could alias, at grazing angles too, which is where a low
+// camera sees most of the ground. Only where the imagery is magnified: from altitude it shows the ground's own
+// detail. mpp: the pixel's footprint across (its short axis, m); texel: ground size of an imagery texel (m).
+vec3 groundDetail(vec3 albedo, vec2 x, float mpp, float texel) {
+  // No early out: the fetches below take their mip level from implicit derivatives (uniform control flow only).
+  float k = smoothstep(1.0, 3.0, texel / max(mpp, 1e-3)) * uGroundDetail;
+  vec4 a = texture(uDetailTex, mat2(0.8, 0.6, -0.6, 0.8) * x * (1.0 / 53.0)) - uDetailMean;
+  vec4 b = texture(uDetailTex, mat2(0.28, -0.96, 0.96, 0.28) * x * (1.0 / 11.3)) - uDetailMean;
+  vec4 c = texture(uDetailTex, x * (1.0 / 260.0)) - uDetailMean;
+  vec4 d = texture(uDetailTex, mat2(-0.6, 0.8, -0.8, -0.6) * x * (1.0 / 4.1)) - uDetailMean;
+  float shade = 1.6 * (a.r + 0.8 * b.g + 0.6 * c.r) + 1.2 * d.a;
+  // Drier, browner ground where it is positive, greener where negative.
+  float dry = 2.0 * (a.b + c.g);
+  vec3 tint = vec3(1.0 + 0.1 * dry, 1.0 + 0.03 * dry, 1.0 - 0.12 * dry);
+  return albedo * mix(vec3(1.0), max(1.0 + shade, 0.2) * tint, k);
 }
 
 void main() {
   #include <logdepthbuf_fragment>
   vec3 n = normalize(vNormalW);
   vec3 v = normalize(vWorldPos - cameraPosition);
-  // Pixel footprint on the ground (its long axis), before any branch: derivatives need uniform control flow.
-  float mpp = max(length(dFdx(vGround)), length(dFdy(vGround)));
+  // Pixel footprint on the ground, and the derivatives the waves use, before any branch: derivatives need uniform
+  // control flow.
+  vec2 gx = dFdx(vGround);
+  vec2 gy = dFdy(vGround);
+  float mpp = min(length(gx), length(gy));
+  vec3 dpdx = dFdx(vWorldPos);
+  vec3 dpdy = dFdy(vWorldPos);
   SurfaceSample s = sampleGlobe(vUvGlobe);
   vec3 cWide = texture(uPatchWide, vUvWide).rgb * uSurface.x;
   vec3 cMid = texture(uPatchMid, vUvMid).rgb * uSurface.x;
@@ -195,14 +192,15 @@ void main() {
   float kPad = edgeWeight(vUvPad, 0.08) * fade;
   s.albedo = mix(mix(mix(s.albedo, cWide, kWide), cMid, kMid), cPad, kPad);
   s.water = mix(mix(mix(s.water, wWide, kWide), wMid, kMid), wPad, kPad);
-  // Land only: water has its own glint and reflections.
+  // Land only: water has its waves, glint and reflections instead.
   float texel = mix(mix(uPatchTexel.z, uPatchTexel.y, kMid), uPatchTexel.x, kPad);
-  s.albedo *= mix(groundDetail(vGround, mpp, texel), 1.0, s.water);
+  s.albedo = mix(groundDetail(s.albedo, vGround, mpp, texel), s.albedo, s.water);
+  vec4 wave = s.water > 0.0 ? waveNormal(vWorldPos, n, dpdx, dpdy) : vec4(n, uSurface.y);
 
   vec3 ins;
   vec3 T;
   atmosphereAlongRay(v, true, ins, T);
-  gl_FragColor = vec4(shadeSurface(n, v, s, 1.0) * T + ins, 1.0);
+  gl_FragColor = vec4(shadeSurfaceWater(n, wave.xyz, v, s, 1.0, wave.w) * T + ins, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
