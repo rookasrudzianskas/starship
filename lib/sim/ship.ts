@@ -115,6 +115,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   }
   let burn: Burn | null = null;
   let burnEnd = Infinity;
+  /** Apogee altitude when the current burn began, m. */
+  let burnApo0 = 0;
   let uncontrolled = false;
   let tumbleBuild = false;
   let apogeeDone = false;
@@ -316,6 +318,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     part.throttle = b.kind === 'relight' ? p.relightThrottle : 0.6;
     burn = b;
     burnEnd = t + b.duration;
+    burnApo0 = apsisAlt(true);
     mode = 'burn';
     phase = Phase.OrbitBurn;
     ctx.addEvent(b.kind === 'relight' ? 'relight' : b.kind === 'insertion' ? 'orbit-insertion' : 'deorbit', 'ship', t, ev());
@@ -455,8 +458,12 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     if (modeIs('burn') && active) {
       let done = t >= burnEnd - 1e-9 || !part.anyLit() || part.prop <= p.shipReserve;
       // Insertion stops at the target perigee, capped just below the burn altitude (a prograde burn
-      // cannot lift the perigee above the point where it is made); deorbit at the target perigee.
-      if (active.kind === 'insertion' && apsisAlt(false) >= Math.min(p.insertionPerigee, air.alt - 3_000, apsisAlt(true) - 15_000)) done = true;
+      // cannot lift the perigee above the point where it is made), or once it mostly raises the far side of
+      // the orbit (a burn made while falling away from the top); deorbit at the target perigee.
+      if (active.kind === 'insertion') {
+        const apo = apsisAlt(true);
+        if (apsisAlt(false) >= Math.min(p.insertionPerigee, air.alt - 3_000, apo - 15_000) || apo > Math.max(burnApo0, p.insertionPerigee) + 30_000) done = true;
+      }
       if (active.kind === 'deorbit' && apsisAlt(false) <= p.deorbitPerigee) done = true;
       if (done) {
         endBurn();
@@ -598,6 +605,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         mode = 'coast';
         phase = Phase.Coast;
         secoT = t;
+        // Already falling: the top of the path was passed under power, so the coast goes straight on to entry.
+        if (vr <= 0) apogeeDone = true;
       }
     } else if (mode === 'hotstage') {
       spin(body, dt);
@@ -632,6 +641,8 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         phase = Phase.Coast;
         secoT = t;
         if (healthy) ctx.addEvent('seco', 'ship', t, ev());
+        // Already falling: the top of the path was passed under power, so the coast goes straight on to entry.
+        if (vr <= 0) apogeeDone = true;
       }
     } else if (mode === 'coast' || modeIs('burn')) {
       if (attDue) {

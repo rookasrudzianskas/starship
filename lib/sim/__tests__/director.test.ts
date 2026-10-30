@@ -254,6 +254,14 @@ describe('ship', () => {
     expect(r.ship.endKind).toBe('splashdown');
   });
 
+  it('a ship already falling at cut-off goes on to entry, and never pumps its orbit up to thousands of km', () => {
+    // Steered 16° nose down the whole climb: the path tops out before cut-off and the ship cannot make orbit.
+    const r = run(9, { ...PLAN, shipMission: 'orbital', interventions: [{ id: 'p', t: 5, kind: 'pitch', vehicle: 'ship', deg: -16 }] });
+    expect(ev(r, 'entry', 'ship')).toBeDefined();
+    expect(r.records.shipApogee).toBeLessThan(400_000);
+    expect(r.ship.endKind).toBe('splashdown');
+  });
+
   it('the deploy starts only when a satellite can still leave the bay', () => {
     // Four of six engines out on the climb: the ship never reaches orbit and falls below the deploy altitude early.
     const out = [0, 1, 3, 4].map((e) => ({ id: `e${e}`, t: 220, kind: 'engine-out' as const, vehicle: 'ship' as const, engine: e }));
