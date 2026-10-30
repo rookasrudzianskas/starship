@@ -100,7 +100,7 @@ attribute vec4 a0; // puff centre / streak head (object space, m), size (puff di
 attribute vec4 a1; // albedo rgb (linear), opacity
 attribute vec4 a2; // emission rgb (HDR multiplier), temperature (puffs: drives the fire ramp)
 attribute vec4 a3; // puff: rotation, atlas cell (4 = smooth glow, 5 = thin shell), erosion, glow weight | streak: unit dir xyz, length
-attribute vec4 a4; // mode (0 puff, 1 streak), taper (streak: 1 fades to the tail, 0 uniform segment), seed, unused
+attribute vec4 a4; // mode (0 puff, 1 streak), taper (streak: 1 fades to the tail, 0 uniform segment), seed, puff flattening
 uniform vec3 uSunDir;
 uniform vec3 uUp;
 uniform vec3 uGlowPos;
@@ -127,7 +127,8 @@ void main() {
   vColor = a1;
   vEmit = a2;
   vSunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
-  vUpV = normalize((viewMatrix * vec4(uUp, 0.0)).xyz);
+  vec3 upV = normalize((viewMatrix * vec4(uUp, 0.0)).xyz);
+  vUpV = upV;
   vec3 p;
   vec3 centre;
   if (a4.x < 0.5) {
@@ -136,6 +137,13 @@ void main() {
     float s = sin(a3.x);
     vec2 corner = position.xy;
     vec2 rc = vec2(c * corner.x - s * corner.y, s * corner.x + c * corner.y) * a0.w;
+    // A flattened puff is an oblate spheroid (vertical semi-axis a4.w times the horizontal ones): squash the
+    // sprite along the projected up direction as much as that spheroid's silhouette is from this elevation.
+    float lUp = length(upV.xy);
+    if (a4.w < 0.999 && lUp > 1e-3) {
+      vec2 u = upV.xy / lUp;
+      rc += u * dot(rc, u) * (sqrt(1.0 - lUp * lUp * (1.0 - a4.w * a4.w)) - 1.0);
+    }
     vec4 mv = modelViewMatrix * vec4(a0.xyz, 1.0);
     // Fade sprites the camera is inside of instead of letting them pop through the near plane.
     vNear = smoothstep(0.15 * a0.w, 0.6 * a0.w, -mv.z) * uFade;
@@ -378,10 +386,12 @@ export interface ParticleRecord {
   taper: number;
   /** Streaks: noise seed for irregular trails. */
   seed: number;
+  /** Puffs: height over width (1 = round, smaller = a flattened, ground-hugging puff). */
+  flat: number;
 }
 
 export function newRecord(): ParticleRecord {
-  return { x: 0, y: 0, z: 0, size: 1, r: 1, g: 1, b: 1, opacity: 1, er: 0, eg: 0, eb: 0, temp: 0, m0: 0, m1: 0, m2: 0, m3: 0, mode: 0, taper: 1, seed: 0 };
+  return { x: 0, y: 0, z: 0, size: 1, r: 1, g: 1, b: 1, opacity: 1, er: 0, eg: 0, eb: 0, temp: 0, m0: 0, m1: 0, m2: 0, m3: 0, mode: 0, taper: 1, seed: 0, flat: 1 };
 }
 
 export interface BillboardUniforms {
@@ -584,7 +594,7 @@ export class Billboards {
     s[o + 16] = p.mode;
     s[o + 17] = p.taper;
     s[o + 18] = p.seed;
-    s[o + 19] = 0;
+    s[o + 19] = p.flat;
     // Sort streaks by their midpoint.
     const sp = this.n * 3;
     const half = p.mode > 0.5 ? p.m3 * 0.5 : 0;

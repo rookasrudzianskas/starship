@@ -79,8 +79,7 @@ function buildDefs(count: number, fires: number): { clouds: CloudDef[]; fire: Fi
         birth,
         f,
         lift: rnd(),
-        // The leading edge is a low wall of dust and steam; the bulk piles up nearer the mount.
-        s0: 22 + 16 * (1 - f) + 10 * rnd(),
+        s0: 18 + 22 * f + 10 * rnd(),
         grow: 1.6 + 1.6 * rnd(),
         w: 0,
         dust: (0.25 + 0.45 * rnd()) * (birth < 0.5 ? 1 : 0.6),
@@ -181,15 +180,18 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         let R: number;
         let y: number;
         let size: number;
+        let flat = 1;
         if (d.kind === 0) {
           // Expanding torus: the exhaust drives a low, wide front along the ground while the cloud nearer the
-          // mount piles up, then the whole cloud billows up once the front slows. Built low, so the climbing
-          // vehicle and its plume clear it within seconds even from a camera on the ground nearby.
+          // mount piles up, then the whole cloud billows up once the front slows. Its puffs are flattened, so
+          // seen from above they overlap into one cloud while from the ground the climbing vehicle and its
+          // plume clear the low front within seconds, even from a camera nearby; they round out as they rise.
           const front = 22 + 250 * (1 - Math.exp(-age / 5.5)) + 2.2 * age;
           R = 6 + d.f * front;
-          size = (d.s0 + d.grow * Math.pow(age, 0.85) * (0.7 + 0.25 * d.f)) * sizeK;
+          size = (d.s0 + d.grow * Math.pow(age, 0.85) * (0.7 + 0.6 * d.f)) * sizeK * 1.4;
+          flat = 0.45 + 0.45 * smooth(8, 60, age);
           const thick = 6 + 4.2 * Math.pow(age, 0.85);
-          y = size * 0.27 + d.lift * thick * (1 - 0.6 * d.f);
+          y = size * 0.17 * flat + d.lift * thick * (1 - 0.8 * d.f);
         } else if (d.kind === 1) {
           R = d.f + 1.5 * age;
           size = (d.s0 + d.grow * Math.pow(age, 0.85)) * sizeK;
@@ -213,6 +215,7 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
         rec.z = d.sin * R + driftZ * age;
         rec.y = y;
         rec.size = size;
+        rec.flat = flat;
         const dust = d.dust;
         rec.r = (0.88 + (0.56 - 0.88) * dust) * d.shade;
         rec.g = (0.88 + (0.5 - 0.88) * dust) * d.shade;
@@ -254,6 +257,7 @@ export function createLaunchClouds(quality: Quality): LaunchClouds {
           rec.m1 = f.cell;
           rec.m2 = 0.12;
           rec.m3 = 1;
+          rec.flat = 1;
           puffs.add(rec);
         }
       }
