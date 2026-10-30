@@ -7,7 +7,8 @@ import { Billboards, MODE_PUFF, MODE_STREAK, PUFF_ATLAS_KEY, makePuffAtlas, newR
  * Water impact: a ballistic spray column that collapses into a widening curtain, a crown of droplet
  * sheets (velocity-aligned streaks), a low base surge of mist rolling out over the water, and foam on the
  * surface: an expanding ring of churned water plus a patch round the touchdown point that stays while the
- * vehicle floats in it. Origin = impact point on the water surface, +Y up.
+ * vehicle floats in it. Origin = impact point on the water surface, +Y up. Before touchdown (setApproach) the
+ * landing burn lights the water under the descending vehicle, whose base is then the origin.
  * Pure function of (age, scale); `scale` is the size of the impacting body in metres (9 ≈ a vehicle
  * diameter). Heights grow sub-linearly with scale (k^0.45), widths with k^0.5, k = scale / 9, so a 70 m
  * booster raises a spray column of 40-100 m and a mist that settles within about 120 m: a chase camera a
@@ -170,6 +171,62 @@ void main() {
   gl_FragColor = vec4(c * a, a);
 }`;
 
+const POOL_VERT = /* glsl */ `
+#include <common>
+#include <fog_pars_vertex>
+#include <logdepthbuf_pars_vertex>
+uniform float uRadius;
+uniform float uY;
+varying vec2 vXZ;
+void main() {
+  vec3 p = position * uRadius;
+  p.y += uY;
+  vXZ = p.xz;
+  vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <logdepthbuf_vertex>
+  #include <fog_vertex>
+}`;
+
+const POOL_FRAG = /* glsl */ `
+#include <common>
+#include <fog_pars_fragment>
+#include <logdepthbuf_pars_fragment>
+uniform vec3 uLight;
+uniform float uH;
+uniform float uRadius;
+varying vec2 vXZ;
+void main() {
+  #include <logdepthbuf_fragment>
+  // Irradiance on the water from the exhaust, a source uH above it: cos(theta) / d^2 = H / d^3 (softened
+  // over a few metres, the size of the glowing plume), faded out towards the rim of the disc.
+  float r2 = dot(vXZ, vXZ);
+  float d2 = r2 + uH * uH + 25.0;
+  float E = uH / (d2 * sqrt(d2));
+  vec3 c = uLight * E * (1.0 - smoothstep(0.55, 1.0, sqrt(r2) / uRadius));
+  #ifdef TONE_MAPPING
+    c = toneMapping(c);
+  #endif
+  c = linearToOutputTexel(vec4(c, 1.0)).rgb;
+  #ifdef USE_FOG
+    #ifdef FOG_EXP2
+      float fogF = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+    #else
+      float fogF = smoothstep(fogNear, fogFar, vFogDepth);
+    #endif
+    c *= 1.0 - fogF;
+  #endif
+  gl_FragColor = vec4(c, 1.0);
+}`;
+
+/** Warm colour of the exhaust's light (as the vehicles' own exhaust light). */
+const POOL_COLOR = new THREE.Color(1.0, 0.62, 0.32);
+/**
+ * Radiance scale of the lit water per full-throttle engine: the exhaust's intensity (in the units of the
+ * vehicles' exhaust light) times the reflectance of water churned up by the exhaust, 0.15, over pi.
+ */
+const POOL_GAIN = 900 * (0.15 / Math.PI);
+
 export function createSplash(): Splash {
   const scope = new SharedScope();
   const atlas = scope.get(PUFF_ATLAS_KEY, makePuffAtlas);
@@ -225,15 +282,38 @@ export function createSplash(): Splash {
     const up = Math.max(l.sunDir.dot(l.up), 0);
     (foamMat.uniforms.uLight.value as THREE.Color).copy(l.sunColor).multiplyScalar(up).add(l.skyColor);
   };
-  object.add(foam, batch.mesh);
+  // Light from a landing burn on the water below: additive, on the foam's disc.
+  const poolMat = new THREE.ShaderMaterial({
+    uniforms: {
+      ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
+      uLight: { value: new THREE.Color(0, 0, 0) },
+      uH: { value: 10 },
+      uRadius: { value: 40 },
+      uY: { value: 0 },
+    },
+    vertexShader: POOL_VERT,
+    fragmentShader: POOL_FRAG,
+    fog: true,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const pool = new THREE.Mesh(foamGeo, poolMat);
+  pool.name = 'splash-light-pool';
+  pool.frustumCulled = false;
+  pool.visible = false;
+  pool.renderOrder = -2;
+  object.add(foam, pool, batch.mesh);
 
   const defs = buildDefs();
   const rec = newRecord();
   const shadow = new THREE.Vector4();
 
-  return {
+  const api: Splash = {
     object,
     setAge(age: number, scale: number) {
+      // Lit again by setApproach, if the stage calls it this frame.
+      pool.visible = false;
       batch.begin();
       if (!(age >= 0) || age > 60) {
         foam.visible = false;
@@ -348,12 +428,27 @@ export function createSplash(): Splash {
       batch.uniforms.uShadow.value.copy(batch.bulk(shadow, 0.1));
       batch.finish();
     },
+    setApproach(height: number, thrust: number) {
+      // The source sits a few metres under the nozzles, in the brightest part of the exhaust.
+      const h = Math.max(height - 6, 2);
+      const k = Math.pow(Math.max(thrust, 0), 0.6);
+      pool.visible = k > 0.01 && height < 300;
+      if (!pool.visible) return;
+      const u = poolMat.uniforms;
+      (u.uLight.value as THREE.Color).copy(POOL_COLOR).multiplyScalar(POOL_GAIN * k);
+      u.uH.value = h;
+      u.uRadius.value = 4 * h + 20;
+      // On the water (lifted clear of it, as the foam is), not at the base of the vehicle above it.
+      u.uY.value = 0.4 - Math.max(height, 0);
+    },
     dispose() {
-      object.remove(foam, batch.mesh);
+      object.remove(foam, pool, batch.mesh);
       batch.dispose();
       foamGeo.dispose();
       foamMat.dispose();
+      poolMat.dispose();
       scope.releaseAll();
     },
   };
+  return api;
 }

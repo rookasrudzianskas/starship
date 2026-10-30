@@ -134,9 +134,13 @@ export class PlumeLight {
     m.customProgramCacheKey = () => `${key}|plume-light`;
   }
 
-  /** `power`: mean engine intensity (0..1); `alt`: altitude factor (the vacuum exhaust barely glows). */
+  /**
+   * `power`: mean engine intensity over all slots (0..1); `alt`: altitude factor (the vacuum exhaust barely
+   * glows). Brightness grows less than linearly with the number of engines, so a landing burn on one or
+   * three engines still lights the skirt and flaps.
+   */
   set(power: number, alt: number): void {
-    const k = 260 * Math.max(0, power) * (1 - 0.8 * Math.min(1, Math.max(0, (alt - 0.2) / 0.7)));
+    const k = 280 * Math.pow(Math.max(0, power), 0.6) * (1 - 0.8 * Math.min(1, Math.max(0, (alt - 0.2) / 0.7)));
     this.uniforms.uPlumeLightColor.value.copy(PLUME_LIGHT_COLOR).multiplyScalar(k);
   }
 

@@ -167,6 +167,12 @@ export interface Splash {
   object: THREE.Object3D;
   /** `age` seconds since the vehicle touched the water. Deterministic. */
   setAge(age: number, scale: number): void;
+  /**
+   * Optional, every frame after setAge: the vehicle's base is `height` m above the water below it and its engines
+   * give `thrust` (in full-throttle engines, e.g. 3 engines at 40 % = 1.2; 0 when they are off). A landing burn
+   * lights the water under it, which is what shows at night. Deterministic.
+   */
+  setApproach?(height: number, thrust: number): void;
   dispose(): void;
 }
 
