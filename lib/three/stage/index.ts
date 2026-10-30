@@ -376,7 +376,27 @@ export function createStage(): StageHandle {
   let warming = false;
   let warmToken = 0;
 
+  /**
+   * The page scrolls (narrow or short windows put the HUD below the view): the webcast, which has no controls of its
+   * own, then leaves the wheel and vertical drags to the page instead of handing over to the free camera.
+   */
+  let pageScrolls = false;
+  let touchMode = '';
+  const measurePage = () => {
+    const se = document.scrollingElement;
+    pageScrolls = se !== null && se.scrollHeight > se.clientHeight + 1;
+    updateTouchAction(useReplay.getState().camera);
+  };
+  /** Over the webcast a vertical drag scrolls a page that scrolls; the cameras keep every gesture. */
+  const updateTouchAction = (cameraMode: string) => {
+    const mode = pageScrolls && cameraMode === 'webcast' ? 'pan-y' : '';
+    if (mode === touchMode) return;
+    touchMode = mode;
+    canvas.style.touchAction = mode;
+  };
+
   const applySize = () => {
+    measurePage();
     dprSeen = window.devicePixelRatio || 1;
     const base = Math.min(dprSeen, quality === 'high' ? 2 : 1);
     governor.setBase(msaa ? base : Math.max(base, NO_MSAA_MIN_RATIO));
@@ -807,8 +827,13 @@ export function createStage(): StageHandle {
   const pointers = new Map<number, { x: number; y: number }>();
   let control: Control | null = null;
   let button = 0;
-  /** How far a drag on the webcast has moved (px): it takes over once that is clearly not a click. */
+  /**
+   * How far a drag on the webcast has moved (px) in all and sideways: it takes over once that is clearly not a
+   * click, or, on a touch screen where the page scrolls, once it is clearly not the page's vertical scroll.
+   */
   let moved = 0;
+  let sideways = 0;
+  let upDown = 0;
   /** Distance between two pointers and their midpoint, as of the last move. */
   let pinch = 0;
   const mid = { x: 0, y: 0 };
@@ -838,6 +863,8 @@ export function createStage(): StageHandle {
       control = controlAt(e.clientX - r.left, e.clientY - r.top);
       button = e.button;
       moved = 0;
+      sideways = 0;
+      upDown = 0;
     }
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     canvas.setPointerCapture(e.pointerId);
@@ -853,7 +880,11 @@ export function createStage(): StageHandle {
     if (pointers.size === 1) {
       if (!control) {
         moved += Math.abs(dx) + Math.abs(dy);
-        if (moved < 4) return;
+        sideways += dx;
+        upDown += dy;
+        // The browser scrolls the page with a vertical drag (touch-action: pan-y) and then cancels the pointer.
+        const scrolling = touchMode === 'pan-y' && e.pointerType !== 'mouse';
+        if (scrolling ? Math.abs(sideways) < 12 || Math.abs(sideways) < Math.abs(upDown) : moved < 4) return;
         control = handOver();
       }
       control.drag({ dx, dy, button });
@@ -873,11 +904,18 @@ export function createStage(): StageHandle {
     if (pointers.size === 0) control = null;
   };
   const onWheel = (e: WheelEvent) => {
-    e.preventDefault();
     const r = canvas.getBoundingClientRect();
+    const under = controlAt(e.clientX - r.left, e.clientY - r.top);
+    // Over the webcast the wheel scrolls a page that scrolls (a touchpad pinch, ctrl + wheel, still zooms); where
+    // the page can't scroll it hands over to the free camera, as a drag does.
+    if (!under && !e.ctrlKey) {
+      measurePage();
+      if (pageScrolls) return;
+    }
+    e.preventDefault();
     // Lines or pages (some mice in Firefox) count as about as far as the pixels of a touchpad.
     const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? r.height : 1);
-    (controlAt(e.clientX - r.left, e.clientY - r.top) ?? handOver()).wheel(delta);
+    (under ?? handOver()).wheel(delta);
   };
   const onDblClick = (e: MouseEvent) => {
     const st = useReplay.getState();
@@ -1449,6 +1487,7 @@ export function createStage(): StageHandle {
       seen.follow = st.follow;
       seen.shot = st.webcastShot;
       seen.pip = st.pip;
+      updateTouchAction(st.camera);
       dirty = true;
     }
     show.flown = st.settings.showFlown;
