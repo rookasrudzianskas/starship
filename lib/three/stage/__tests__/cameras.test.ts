@@ -119,6 +119,22 @@ describe('ChaseCamera', () => {
     expect(restored.quat.equals(initial.quat)).toBe(true);
   });
 
+  it('keeps a clear side view near the tower and moves smoothly to the ascent angle', () => {
+    const cam = new ChaseCamera();
+    const azimuth = (alt: number) => {
+      const f = focusAt(alt - altitude(pad), 124), p = cam.pose(f, createPose());
+      const offset = new THREE.Vector3(p.pos[0] - f.pos[0], p.pos[1] - f.pos[1], p.pos[2] - f.pos[2]);
+      offset.addScaledVector(up, -offset.dot(up)).normalize();
+      return offset.angleTo(new THREE.Vector3(...f.course).negate()) * 180 / Math.PI;
+    };
+    expect(azimuth(80)).toBeCloseTo(70, 3);
+    expect(azimuth(375)).toBeCloseTo(95, 2);
+    expect(azimuth(700)).toBeCloseTo(120, 3);
+    for (const boundary of [150, 600]) {
+      expect(Math.abs(azimuth(boundary + 0.01) - azimuth(boundary - 0.01))).toBeLessThan(0.001);
+    }
+  });
+
   it('stays above the ground, whatever the viewer asks for', () => {
     for (const alt of [60, 20, 0]) {
       const cam = new ChaseCamera();

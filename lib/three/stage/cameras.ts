@@ -117,10 +117,12 @@ export const WHEEL_ZOOM = 0.0012;
 
 /**
  * A three-quarter tracking view from the right, slightly ahead and below the vehicle. Looking up keeps the
- * ascent against the sky and reveals the hull as well as the exhaust. The ground-clearance limit still applies
- * near the pad; dragging and reset use this same reference pose at every mission time.
+ * ascent against the sky and reveals the hull as well as the exhaust. Near the ground, stay further round the
+ * side so the launch tower does not obscure the stack. Both this transition and the ground-clearance limit
+ * depend only on position, so seeking and reset always reproduce the same view.
  */
 const CHASE_AZIMUTH = 120;
+const CHASE_GROUND_AZIMUTH = 70;
 const CHASE_ELEVATION = -12;
 
 export class ChaseCamera {
@@ -151,7 +153,11 @@ export class ChaseCamera {
    */
   pose(f: Focus, out: CameraPose, reach = 1): CameraPose {
     const dist = f.size * 2.4 * this.zoom * reach + 20;
-    besideOffset(f, CHASE_AZIMUTH + this.azimuth, this.elevation, dist, out.pos);
+    const altitude = Math.hypot(f.pos[0], f.pos[1], f.pos[2]) - EARTH_RADIUS;
+    const cleared = Math.max(0, Math.min(1, (altitude - 150) / 450));
+    const turn = cleared * cleared * (3 - 2 * cleared);
+    const azimuth = CHASE_GROUND_AZIMUTH + (CHASE_AZIMUTH - CHASE_GROUND_AZIMUTH) * turn;
+    besideOffset(f, azimuth + this.azimuth, this.elevation, dist, out.pos);
     out.fov = 40;
     return lookAt(out, f.pos, up);
   }

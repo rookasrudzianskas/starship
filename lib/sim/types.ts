@@ -11,6 +11,8 @@
  * - Vehicle body frame: origin at the centre of the base (the engine gimbal plane / bottom of the skirt),
  *   +Y along the long axis towards the nose, +Z towards the "belly" (the Ship's heat-shield side;
  *   for Super Heavy the side that faces the tower chopsticks on the pad), +X = Y × Z.
+ *   The attached ship is mounted 180° about local +Y relative to the booster: its heat shield faces away
+ *   from the tower. Each track stores its own vehicle attitude, including before separation.
  * - Attitude quaternions rotate body-frame vectors into ECEF and are stored as x, y, z, w.
  */
 

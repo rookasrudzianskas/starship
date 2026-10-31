@@ -8,6 +8,7 @@ import { lossKind } from './outcome';
 import { newAirData, stepBody as stepBodyFn } from './step';
 import { EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type EndKind, type PhaseCode } from './types';
 import { planeHeading } from './guidance/plane';
+import { mountedShipAttitude } from './guidance/roll';
 import { FLAPS_STOWED, stackAero, vehicleSpec } from './vehicles';
 import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, qMul, qRotZ, v3 } from './vec';
 
@@ -130,6 +131,7 @@ export function runStack(ctx: SimContext): StackOutcome {
   const hP = v3();
   const zRef = v3(), thrDir = v3(), up = v3(), east = v3(), north = v3(), hA = v3(), hV = v3(), hW = v3(), tw = v3();
   const qT = new Float64Array(4);
+  const qShip = new Float64Array(4);
   const xAx = v3();
   holdOnPad(t);
 
@@ -143,7 +145,8 @@ export function runStack(ctx: SimContext): StackOutcome {
     ex.still = !released;
     recordSample(ctx, ctx.boosterTrack, scratchSample, t, body, booster, bo, ex);
     ex.aero = SHIP_FLAPS;
-    recordSample(ctx, ctx.shipTrack, scratchSample, t, body, ship, so, ex);
+    mountedShipAttitude(qShip, body.q);
+    recordSample(ctx, ctx.shipTrack, scratchSample, t, body, ship, so, ex, qShip);
     ex.aero = ZERO4;
     lastRec = t;
     lastPhase = phase;
@@ -465,7 +468,8 @@ export function runStack(ctx: SimContext): StackOutcome {
     b.v[0] = body.v[0] + (w[1] * oz - w[2] * oy);
     b.v[1] = body.v[1] + (w[2] * ox - w[0] * oz);
     b.v[2] = body.v[2] + (w[0] * oy - w[1] * ox);
-    b.q.set(body.q);
+    if (part.id === 'ship') mountedShipAttitude(b.q, body.q);
+    else b.q.set(body.q);
     b.w.set(body.w);
     b.acc.set(body.acc);
     return b;

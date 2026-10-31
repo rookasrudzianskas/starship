@@ -19,9 +19,10 @@ Built with **Next.js 16**, React 19, three.js and Zustand.
 
 Each vehicle is a point mass with a rate-limited attitude, flying over a spherical, rotating Earth:
 
-- **Gravity and air**: gravity includes J2, and the air follows the US Standard Atmosphere 1976.
+- **Gravity and air**: gravity includes J2, and the air follows the US Standard Atmosphere 1976. The reentry predictor uses the same altitude-dependent wind field as the flight dynamics. Plume pressure and body-relative airflow also use those models, with wind kept in sync with the displayed simulation while a new run calculates.
 - **Aerodynamics**: drag and lift depend on Mach number and angle of attack.
 - **Engines**: Raptor thrust varies with ambient pressure, and propellant drains as LOX and methane.
+- **Vehicle mounting**: the attached ship faces its heat shield away from the tower, opposite the booster's tower-facing side. That mounting attitude carries continuously into separation, including the ship's onboard cameras and airflow shading.
 - **Guidance**: the ascent is a gravity turn with a max-Q throttle bucket. Hot staging and a boostback to the tower or the Gulf follow. The ship climbs on closed-loop guidance, then flies a belly-first entry with a flip and a landing burn.
 - **Calibration**: every flight is tuned against public milestones, and the real anomalies are scripted from the public record.
 

@@ -22,7 +22,7 @@ import {
   type VehicleId,
 } from './types';
 import { PAYLOAD_MASS } from './vehicles';
-import { cross3, normalize3, qAxis, qMul, qRotZ, v3 } from './vec';
+import { cross3, normalize3, qAxis, qMul, qRotZ, v3, type Q4 } from './vec';
 
 export interface PayloadPlan {
   kind: 'starlink-sim' | 'starlink-v3';
@@ -257,12 +257,14 @@ export function recordSample(
   part: VehicleRt,
   offset: number,
   ex: SampleExtras,
+  /** Rigid axial mounting attitude only: must preserve body.q's +Y axis. Translation still uses body.q. */
+  attitude: Q4 = body.q,
 ): void {
   const th = OMEGA * t;
   const cos = Math.cos(th), sin = Math.sin(th);
   bodyPointEcefWithRotation(body, offset, cos, sin, rE, vE);
   qRotZ(qz, -OMEGA * t);
-  qMul(qe, qz, body.q);
+  qMul(qe, qz, attitude);
   const r = Math.sqrt(rE[0] * rE[0] + rE[1] * rE[1] + rE[2] * rE[2]);
   const alt = r - RE;
   up[0] = rE[0] / r;
