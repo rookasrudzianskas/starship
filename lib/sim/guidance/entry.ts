@@ -1,6 +1,6 @@
 import { atmosphereInto, type AtmosphereState } from '../atmosphere';
 import { inertialToEcef } from '../geo';
-import { gravityAccel } from '../physics';
+import { gravityAccel, jetStream } from '../physics';
 import { EARTH_OMEGA, EARTH_RADIUS } from '../types';
 import { machLookup, type AeroConfig } from '../vehicles';
 import { DEG } from '../vec';
@@ -25,6 +25,7 @@ export function trimCoefficients(cfg: AeroConfig, a: number, mach: number, out: 
 const OMEGA = EARTH_OMEGA;
 const RE = EARTH_RADIUS;
 const gravity = gravityAccel;
+const windAt = jetStream;
 const atmInto = atmosphereInto;
 const atm: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 };
 const co = { cl: 0, cd: 0 };
@@ -32,7 +33,7 @@ const s = new Float64Array(6), k1 = new Float64Array(6), mid = new Float64Array(
 const g = new Float64Array(3);
 const pe = new Float64Array(3);
 
-function entryDeriv(st: Float64Array, out: Float64Array, mass: number, cfg: AeroConfig, aoaHyp: number, cosB: number, sinB: number): number {
+function entryDeriv(st: Float64Array, out: Float64Array, mass: number, cfg: AeroConfig, aoaHyp: number, cosB: number, sinB: number, windPeak: number): number {
   const x = st[0], y = st[1], z = st[2];
   const r = Math.sqrt(x * x + y * y + z * z);
   const alt = r - RE;
@@ -44,7 +45,20 @@ function entryDeriv(st: Float64Array, out: Float64Array, mass: number, cfg: Aero
   out[4] = g[1];
   out[5] = g[2];
   atmInto(alt, atm);
-  const vx = st[3] + OMEGA * y, vy = st[4] - OMEGA * x, vz = st[5];
+  let vx = st[3] + OMEGA * y, vy = st[4] - OMEGA * x;
+  const vz = st[5];
+  // Match airVelocity without allocating vectors or changing the calm-air arithmetic. Position
+  // derivatives above remain inertial; only Mach and aerodynamic forces see the eastward wind.
+  if (windPeak !== 0) {
+    const w = windAt(alt, windPeak);
+    if (w !== 0) {
+      const h = Math.sqrt(x * x + y * y);
+      if (h > 1) {
+        vx -= (w * -y) / h;
+        vy -= (w * x) / h;
+      }
+    }
+  }
   const V = Math.sqrt(vx * vx + vy * vy + vz * vz);
   if (V < 1 || atm.density < 1e-12) return V / atm.speedOfSound;
   const mach = V / atm.speedOfSound;
@@ -87,6 +101,8 @@ export function predictEntry(
   cosBank: number,
   sinSign: number,
   out: EntryPrediction,
+  /** Peak eastward jet-stream speed, m/s; omitted or 0 for calm air. */
+  windPeak = 0,
 ): EntryPrediction {
   for (let i = 0; i < 3; i++) {
     s[i] = r[i];
@@ -99,10 +115,10 @@ export function predictEntry(
     const alt = Math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]) - RE;
     if (alt < 3000) break;
     const dt = alt > 100_000 ? 6 : alt > 40_000 ? 3 : 2;
-    const mach = entryDeriv(s, k1, mass, cfg, aoaHyp, cb, sb);
+    const mach = entryDeriv(s, k1, mass, cfg, aoaHyp, cb, sb, windPeak);
     if (mach < 0.7 && alt < 15_000) break;
     for (let i = 0; i < 6; i++) mid[i] = s[i] + 0.5 * dt * k1[i];
-    entryDeriv(mid, k2, mass, cfg, aoaHyp, cb, sb);
+    entryDeriv(mid, k2, mass, cfg, aoaHyp, cb, sb, windPeak);
     for (let i = 0; i < 6; i++) s[i] += dt * k2[i];
     t += dt;
     if (t > 4000) break;

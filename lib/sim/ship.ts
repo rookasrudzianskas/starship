@@ -701,10 +701,10 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         lastNpc = t;
         npcCount++;
         // Predictor–corrector: Newton step on cos(bank) to null the along-track miss.
-        const m0 = missAlong(body, t, part.spec.aero, p.entryAoA, cosBank, bankSign, landing, p.entryAim, predOut, tmp);
+        const m0 = missAlong(body, t, part.spec.aero, p.entryAoA, cosBank, bankSign, landing, p.entryAim, predOut, tmp, ctx.windPeak);
         if (npcCount === 1 || npcCount % 4 === 0 || dMiss <= 1000) {
           const dx = cosBank > 0.85 ? -0.15 : 0.15;
-          const m1 = missAlong(body, t, part.spec.aero, p.entryAoA, cosBank + dx, bankSign, landing, p.entryAim, predOut, tmp);
+          const m1 = missAlong(body, t, part.spec.aero, p.entryAoA, cosBank + dx, bankSign, landing, p.entryAim, predOut, tmp, ctx.windPeak);
           dMiss = Math.max(1000, (m1 - m0) / dx);
         }
         cosBank = clamp(cosBank - clamp(m0 / dMiss, -0.35, 0.35), -0.4, 1);
@@ -933,10 +933,10 @@ const mr = v3(), mv = v3();
  * circle from the current ground point through the predicted end point. The target always counts as ahead (up
  * to a full turn of the globe), so a ship that cannot reach it sees an undershoot and flies for range.
  */
-function missAlong(body: Body, t: number, cfg: Body['aero'], aoa: number, cosBank: number, sign: number, target: Float64Array, aim: number, out: EntryPrediction, tmp: Float64Array): number {
+function missAlong(body: Body, t: number, cfg: Body['aero'], aoa: number, cosBank: number, sign: number, target: Float64Array, aim: number, out: EntryPrediction, tmp: Float64Array, windPeak: number): number {
   mr.set(body.r);
   mv.set(body.v);
-  predictEntry(mr, mv, t, body.mass, cfg, aoa, cosBank, sign, out);
+  predictEntry(mr, mv, t, body.mass, cfg, aoa, cosBank, sign, out, windPeak);
   inertialToEcef(tmp, body.r, t);
   const e = out.end;
   const r0 = Math.sqrt(tmp[0] * tmp[0] + tmp[1] * tmp[1] + tmp[2] * tmp[2]);
