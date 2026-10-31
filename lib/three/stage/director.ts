@@ -1,5 +1,5 @@
 import type { FlightResult, VehicleId } from '@/lib/sim/types';
-import type { FollowMode } from '@/lib/store/replay';
+import type { CameraMode, FollowMode } from '@/lib/store/replay';
 // Relative so the director can be unit tested (vitest has no @/ alias).
 import { Phase } from '../../sim/types';
 import { firstPhaseTime } from './sample';
@@ -13,6 +13,14 @@ export type ShotId = 'pad' | 'tracking' | 'booster-top' | 'booster-aft' | 'ship-
 export interface Shot {
   readonly id: ShotId;
   readonly vehicle: VehicleId;
+}
+
+/** The inset complements the resolved main shot, including manual cameras and director overrides. */
+export function pipVehicle(camera: CameraMode, follow: FollowMode, separated: boolean, mainShot: Shot | null): VehicleId | null {
+  if (camera === 'globe') return !separated || follow === 'booster' ? 'booster' : 'ship';
+  if (!separated) return null;
+  if (camera === 'webcast' && mainShot) return mainShot.vehicle === 'ship' ? 'booster' : 'ship';
+  return follow === 'booster' ? 'ship' : follow === 'ship' ? 'booster' : null;
 }
 
 const SHOT_IDS: readonly ShotId[] = ['pad', 'tracking', 'booster-top', 'booster-aft', 'ship-aft', 'ship-nose', 'buoy', 'tower', 'separation', 'payload'];

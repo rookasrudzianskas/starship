@@ -12,7 +12,7 @@ import type { EarthFrame, Explosion, LaunchClouds, PadModel, Quality, ShipModel,
 import { alongsidePose, blendAround, blendPose, ChaseCamera, copyPose, createPose, fitPoints, FreeCamera, GlobeCamera, onboardPose, trackerPose, WHEEL_ZOOM, type CameraPose, type DragInput, type Focus } from './cameras';
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
 import { computeCourse, courseAt } from './course';
-import { AERIAL_TRACKING_FROM, autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
+import { AERIAL_TRACKING_FROM, autoShot, pickedShot, pipVehicle, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
 import { flightEnvironmentInto, resultWindPeak } from './flightEnvironment';
 import { copy3, damp, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
 import { Overlay } from './overlay';
@@ -1657,17 +1657,8 @@ export function createStage(): StageHandle {
     }
 
     // Small frame: the other vehicle (or the followed one when the main view is the globe).
-    const pipTarget: Rig | null = !st.pip || split
-      ? null
-      : st.camera === 'globe'
-        ? sep ? (follow === 'booster' ? booster : ship) : booster
-        : sep && follow === 'booster'
-          ? ship
-          : sep && follow === 'ship'
-            ? booster
-            : sep && follow === 'both' && st.camera === 'webcast' && lastShot
-              ? lastShot.vehicle === 'booster' ? ship : booster
-              : null;
+    const insetVehicle = !st.pip || split ? null : pipVehicle(st.camera, follow, sep, lastShot);
+    const pipTarget = insetVehicle === 'booster' ? booster : insetVehicle === 'ship' ? ship : null;
     const pip = pipTarget && pipTarget.visible && width > 520 ? pipTarget : null;
     const pipFocus = st.camera === 'globe' && !sep ? focusStack : pip?.id === 'booster' ? focusB : focusS;
     if (pip) chasePip.pose(pipFocus, pipPose);

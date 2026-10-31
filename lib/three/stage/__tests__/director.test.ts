@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Phase, type FlightResult, type Track } from '../../../sim/types';
-import { autoShot, pickedShot, planDirector, type DirectorPlan } from '../director';
+import { autoShot, pickedShot, pipVehicle, planDirector, type DirectorPlan } from '../director';
 
 /** The plan of a nominal flight like Flight 14: the booster lands (at sea) long before the ship's engine cutoff. */
 const nominal: DirectorPlan = {
@@ -42,6 +42,33 @@ const terminated: DirectorPlan = {
   boosterBreaksUp: true,
   shipBreaksUp: true,
 };
+
+describe('picture in picture follows the resolved main camera', () => {
+  it('shows the booster when a ship-mounted shot overrides the booster follow selection', () => {
+    const shot = pickedShot('ship-aft', 300, nominal, 'booster');
+    expect(shot.vehicle).toBe('ship');
+    expect(pipVehicle('webcast', 'booster', true, shot)).toBe('booster');
+  });
+
+  it('shows the ship during a director cut to booster hot staging, even when following the ship', () => {
+    const shot = autoShot(140, nominal, 'ship');
+    expect(shot.vehicle).toBe('booster');
+    expect(pipVehicle('webcast', 'ship', true, shot)).toBe('ship');
+  });
+
+  it('preserves follow-based chase, free and globe insets regardless of the previous webcast shot', () => {
+    const staleShot = pickedShot('ship-aft', 300, nominal, 'booster');
+    for (const camera of ['chase', 'free'] as const) {
+      expect(pipVehicle(camera, 'booster', true, staleShot)).toBe('ship');
+      expect(pipVehicle(camera, 'ship', true, staleShot)).toBe('booster');
+      expect(pipVehicle(camera, 'both', true, staleShot)).toBeNull();
+    }
+    expect(pipVehicle('globe', 'booster', true, staleShot)).toBe('booster');
+    expect(pipVehicle('globe', 'ship', true, staleShot)).toBe('ship');
+    expect(pipVehicle('globe', 'both', false, staleShot)).toBe('booster');
+    expect(pipVehicle('webcast', 'ship', false, staleShot)).toBeNull();
+  });
+});
 
 describe('autoShot', () => {
   it('shows the booster land in the main view while the ship is still burning, as the broadcast does', () => {
