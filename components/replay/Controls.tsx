@@ -13,7 +13,10 @@ import {
   IconPause,
   IconPlay,
   IconPrevEvent,
+  IconSound,
+  IconSkipCoast,
 } from '@/components/icons';
+import { toggleSound } from '@/lib/audio/replay';
 import { useLocalFlag } from '@/lib/clientState';
 import type { FlightResult } from '@/lib/sim/types';
 import { COAST_RATE, isSkipping, PLAYBACK_RATES, useReplay, type CameraMode, type FollowMode } from '@/lib/store/replay';
@@ -53,6 +56,8 @@ export function toggleFullscreen(el: HTMLElement | null): void {
 export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () => HTMLElement | null }) {
   // Display-level selections only, so the controls re-render when what they show changes, not every frame.
   const playing = useReplay((s) => s.playing);
+  const soundEnabled = useReplay((s) => s.soundEnabled);
+  const soundError = useReplay((s) => s.soundError);
   const rate = useReplay((s) => s.rate);
   const hasResult = useReplay((s) => s.result !== null);
   const hasNext = useReplay((s) => nextEventTime(s.result, s.t) !== null);
@@ -112,14 +117,27 @@ export function PlaybackControls({ fullscreenTarget }: { fullscreenTarget: () =>
       <button
         type="button"
         className={`${styles.ctl} ${styles.ctlText}`}
+        aria-label="Skip coast"
         aria-pressed={skipCoasts}
         data-active={skipping || undefined}
         title={noCoasts ? 'This flight has no long coasts' : `Fast-forward through long coasts at ${COAST_RATE}× (${skipCoasts ? 'on' : 'off'})`}
         disabled={noCoasts}
         onClick={() => setSkipCoasts(!skipCoasts)}
       >
-        Skip coast
+        <span className={styles.coastText}>Skip coast</span>
+        <IconSkipCoast className={styles.coastIcon} size={15} />
       </button>
+      <button
+        type="button"
+        className={styles.ctl}
+        aria-label={soundEnabled ? 'Mute sound (M)' : 'Enable sound (M)'}
+        aria-pressed={soundEnabled}
+        title={soundError ?? 'Synthesized engine and airflow sound (M)'}
+        onClick={toggleSound}
+      >
+        <IconSound muted={!soundEnabled} size={15} />
+      </button>
+      {soundError ? <span role="status" className={styles.soundError}>{soundError}</span> : null}
       <button
         type="button"
         className={`${styles.ctl} ${styles.ctlDirector}`}

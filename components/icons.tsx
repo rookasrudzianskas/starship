@@ -74,6 +74,19 @@ export const IconPause = (p: IconProps) => (
   </Svg>
 );
 
+export const IconSound = ({ muted, ...p }: IconProps & { muted: boolean }) => (
+  <Svg {...p}>
+    <path d="M4 9h4l5-4v14l-5-4H4z" />
+    {muted ? <path d="m17 9 5 6m0-6-5 6" /> : <path d="M16 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14" />}
+  </Svg>
+);
+
+export const IconSkipCoast = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m3 5 9 7-9 7zm10 0 9 7-9 7z" />
+  </Svg>
+);
+
 export const IconLive = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="12" cy="12" r="1.8" fill="currentColor" />

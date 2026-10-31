@@ -207,7 +207,7 @@
   bottom: 0;
   z-index: 10;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 460px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 500px) minmax(0, 1fr);
   align-items: end;
   gap: 24px;
   padding: 70px 20px 14px;
@@ -614,13 +614,20 @@
 
 /* -------------------------------------------------------------- controls */
 
-/* One row where the column is wide enough for all ten buttons; two in the narrower desktop layout (960 px and less). */
+/* One row where the column is wide enough; two in the narrower desktop layout. */
 .controls {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 6px 5px;
   margin-top: 4px;
+}
+
+.soundError {
+  flex-basis: 100%;
+  color: var(--mod);
+  font-size: 11px;
+  text-align: center;
 }
 
 .ctl {
@@ -668,6 +675,10 @@
 
 .ctlText {
   padding: 0 12px;
+}
+
+.coastIcon {
+  display: none;
 }
 
 /* Skip coast while it is fast-forwarding. */
@@ -732,6 +743,27 @@
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.popoverHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: -8px -8px 8px 0;
+}
+
+.popoverHeading h2 {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: var(--track-wide);
+  text-transform: uppercase;
+}
+
+.popoverHeading button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
 }
 
 .section + .section {
@@ -1344,7 +1376,7 @@ kbd.key {
 
   .popover {
     position: fixed;
-    bottom: 12px;
+    bottom: calc(58px + env(safe-area-inset-bottom));
     max-height: 70vh;
   }
 
@@ -1452,8 +1484,16 @@ kbd.key {
   }
 }
 
-/* The narrowest phones (360 px): the controls stay on one row at every speed, 100× included. */
-@media (max-width: 370px) {
+/* Keep the sound and director buttons reachable on narrow phones without squeezing their hit targets. */
+@media (max-width: 400px) {
+  .coastText {
+    display: none;
+  }
+
+  .coastIcon {
+    display: block;
+  }
+
   .controls {
     gap: 3px;
   }

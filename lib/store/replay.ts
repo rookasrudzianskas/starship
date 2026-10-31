@@ -126,6 +126,9 @@ export interface ReplayState {
   rate: number;
   /** Fast-forward through long coasts at COAST_RATE (the "Skip coast" toggle). */
   skipCoasts: boolean;
+  /** Opt-in synthesized sound; never enabled by a shared URL or saved preference. */
+  soundEnabled: boolean;
+  soundError: string | null;
   /** Wall-clock sync to a live webcast: T+0 as epoch ms. */
   liveLiftoffMs: number | null;
   /**
@@ -222,6 +225,8 @@ export function isSkipping(s: Pick<ReplayState, 'playing' | 'skipCoasts' | 'live
 }
 
 export const useReplay = create<ReplayState>()((set, get) => ({
+  soundEnabled: false,
+  soundError: null,
   flight: LATEST_FLIGHT,
   scenario: AS_FLOWN,
   result: null,

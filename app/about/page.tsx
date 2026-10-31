@@ -76,6 +76,11 @@ export default function AboutPage() {
             along during a launch. The <Link href="/compare">compare</Link> view puts all fourteen flights on shared axes, and every
             flight downloads as a CSV from the <Link href="/flights">flights</Link> list.
           </p>
+          <p>
+            Enable sound with the speaker button or M. Engine rumble and airflow are synthesized from the simulation, including
+            engine failures and throttle changes; they are not webcast recordings. Sound starts muted and pauses when you pause
+            playback, leave the replay, switch tabs, or fast-forward above 5×.
+          </p>
 
           <h2 className={styles.h2} id="credits">
             Credits

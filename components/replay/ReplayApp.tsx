@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { IconShare } from '@/components/icons';
+import { mountReplaySound, toggleSound } from '@/lib/audio/replay';
 import { SiteHeader } from '@/components/shell/SiteHeader';
 import { useWebgl2 } from '@/lib/clientState';
 import { getFlight } from '@/lib/flights/catalog';
@@ -84,6 +85,7 @@ function UrlSync() {
 }
 
 export function ReplayApp() {
+  useEffect(mountReplaySound, []);
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
   const flightN = useReplay((s) => s.flight);
@@ -356,6 +358,10 @@ export function ReplayApp() {
         case 'k':
         case 'K':
           st.togglePanel('director');
+          break;
+        case 'm':
+        case 'M':
+          if (!e.repeat) toggleSound();
           break;
         case 'f':
         case 'F':

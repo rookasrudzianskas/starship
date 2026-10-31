@@ -59,6 +59,10 @@ export function SettingsPanel() {
   const set = <K extends keyof Settings>(k: K) => (v: Settings[K]) => update({ [k]: v } as Partial<Settings>);
   return (
     <div className={styles.popover} ref={ref} role="dialog" aria-label="Settings">
+      <div className={styles.popoverHeading}>
+        <h2>Settings</h2>
+        <button type="button" aria-label="Close settings" onClick={() => setPanel('none')}><IconClose size={16} /></button>
+      </div>
       <div className={styles.section}>
         <div className={styles.sectionLabel}>Speed</div>
         <Segmented label="Speed unit" value={settings.speedUnit} onChange={set('speedUnit')} options={[['kmh', 'km/h'], ['mph', 'mph'], ['ms', 'm/s']]} />
@@ -115,6 +119,7 @@ const SHORTCUTS: [string[], string][] = [
   [['P'], 'Small frame on or off'],
   [['R'], 'Reset the cameras you turned or zoomed'],
   [['K'], 'Flight director: take control'],
+  [['M'], 'Synthesized engine sound on or off'],
   [['F'], 'Full screen'],
   [['S'], 'Copy a link to this moment'],
   [['?'], 'This list'],
@@ -221,7 +226,10 @@ export function LivePanel() {
   };
   return (
     <div className={styles.popover} ref={ref} role="dialog" aria-label="Sync to a live webcast">
-      <div className={styles.sectionLabel}>Sync to a live webcast</div>
+      <div className={styles.popoverHeading}>
+        <h2>Sync to a live webcast</h2>
+        <button type="button" aria-label="Close webcast sync" onClick={() => setPanel('none')}><IconClose size={16} /></button>
+      </div>
       <p className={styles.cardLineText} style={{ marginTop: 0 }}>
         Type the clock the webcast shows right now. The replay then runs on the same mission clock, so the simulated
         flight plays alongside the real one.
