@@ -174,6 +174,13 @@ export const IconUndo = (p: IconProps) => (
   </Svg>
 );
 
+export const IconRedo = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m15 14 5-5-5-5" />
+    <path d="M20 9H10a6 6 0 0 0 0 12h3" />
+  </Svg>
+);
+
 export const IconDownload = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 20h14" />

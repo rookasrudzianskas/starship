@@ -277,15 +277,27 @@ export function ReplayApp() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Tab') clickedButton = null;
       // A key a control has already used (the timeline, the engine map) is not a shortcut as well.
-      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.defaultPrevented || e.altKey || e.isComposing) return;
       const target = e.target instanceof Element ? e.target : null;
       const key = e.key;
       // Menus and lists handle their own keys. Text fields keep every key but Escape, which closes their
       // panel; sliders keep the keys that move them.
       if (target?.closest('[role="menu"], [role="listbox"]')) return;
-      const field = target?.closest('input, textarea, select, [contenteditable="true"]');
-      if (field && key !== 'Escape' && !(field instanceof HTMLInputElement && field.type === 'range' && !SLIDER_KEYS.has(key))) return;
+      const field = target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
       const st = useReplay.getState();
+      if (e.metaKey || e.ctrlKey) {
+        // History belongs to the open director. Text/range controls retain their native shortcuts.
+        if (st.panel === 'director' && !field && e.metaKey !== e.ctrlKey) {
+          const undo = key.toLowerCase() === 'z' && !e.shiftKey;
+          const redo = (key.toLowerCase() === 'z' && e.shiftKey) || (e.ctrlKey && key.toLowerCase() === 'y' && !e.shiftKey);
+          if (undo || redo) {
+            e.preventDefault();
+            if (!e.repeat) (undo ? st.undoScenario : st.redoScenario)();
+          }
+        }
+        return;
+      }
+      if (field && key !== 'Escape' && !(field instanceof HTMLInputElement && field.type === 'range' && !SLIDER_KEYS.has(key))) return;
       // The keyboard help is modal: only closing it works while it is open.
       if (st.panel === 'help' && key !== 'Escape' && key !== '?') return;
       let handled = true;

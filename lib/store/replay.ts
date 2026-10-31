@@ -4,6 +4,7 @@ import { create } from 'zustand';
 import type { AltUnit, SpeedUnit } from '@/lib/format';
 import type { FlightEvent, FlightResult, Intervention, Scenario, VehicleId } from '@/lib/sim/types';
 import { LATEST_FLIGHT } from '../flights/catalog';
+import { canonicalScenario } from '../sim/scenario';
 import { commandsUntil } from '../telemetry';
 
 export type CameraMode = 'webcast' | 'chase' | 'free' | 'globe';
@@ -48,6 +49,8 @@ export const COAST_EXIT = 5;
 
 /** The real flight: no changes. */
 export const AS_FLOWN: Scenario = { asFlown: true, interventions: [] };
+/** Maximum number of scenario changes available to undo or redo. */
+export const SCENARIO_HISTORY_LIMIT = 50;
 
 /**
  * Largest steering bias the flight director sets, degrees either way. The simulation takes any value, but a stronger
@@ -114,6 +117,9 @@ function saveSettings(s: Settings): void {
 export interface ReplayState {
   flight: number;
   scenario: Scenario;
+  /** Immutable scenario snapshots, with the next undo/redo target last. */
+  scenarioPast: Scenario[];
+  scenarioFuture: Scenario[];
   /** Result being shown (matches `scenario` once loaded). */
   result: FlightResult | null;
   /** The as-flown run of the same flight, for the planned path and "modified" badges. */
@@ -178,6 +184,8 @@ export interface ReplayState {
   removeIntervention(id: string): void;
   updateScenario(patch: Partial<Omit<Scenario, 'interventions'>>): void;
   resetScenario(): void;
+  undoScenario(): void;
+  redoScenario(): void;
 }
 
 let interventionCounter = 0;
@@ -195,16 +203,28 @@ function clampTime(t: number, r: FlightResult | null): number {
   return Math.min(Math.max(t, r.tStart), r.tEnd);
 }
 
+function pushScenario(history: Scenario[], scenario: Scenario): Scenario[] {
+  return [...history, scenario].slice(-SCENARIO_HISTORY_LIMIT);
+}
+
+/** Record only effective changes, preserving the current object and redo stack for equivalent defaults. */
+function changeScenario(s: ReplayState, scenario: Scenario): Partial<ReplayState> {
+  if (canonicalScenario(s.scenario) === canonicalScenario(scenario)) return s;
+  return { scenario, scenarioPast: pushScenario(s.scenarioPast, s.scenario), scenarioFuture: [] };
+}
+
 /**
  * State for starting `flight` under `scenario` at `t`. The same run (same flight and scenario object)
  * keeps its result or pending simulation; any other run reloads, and then the flight or the scenario
- * object differs, which is what makes the replay request the new simulation.
+ * object differs, which is what makes the replay request the new simulation. Starting a run clears its history.
  */
 function startRun(s: ReplayState, flight: number, scenario: Scenario, t: number, playing: boolean): Partial<ReplayState> {
   const same = flight === s.flight && scenario === s.scenario;
   return {
     flight,
     scenario,
+    scenarioPast: [],
+    scenarioFuture: [],
     ...(same ? { t: clampTime(t, s.result) } : { result: null, baseline: null, loading: true, error: null, t }),
     playing,
     ...NOT_LIVE,
@@ -229,6 +249,8 @@ export const useReplay = create<ReplayState>()((set, get) => ({
   soundError: null,
   flight: LATEST_FLIGHT,
   scenario: AS_FLOWN,
+  scenarioPast: [],
+  scenarioFuture: [],
   result: null,
   baseline: null,
   loading: true,
@@ -357,22 +379,58 @@ export const useReplay = create<ReplayState>()((set, get) => ({
   },
 
   addIntervention(i) {
-    const intervention = { ...i, t: commandTimeOf(i.t), id: newInterventionId() } as Intervention;
-    const s = get();
-    set({
-      scenario: { ...s.scenario, interventions: [...s.scenario.interventions, intervention].sort((a, b) => a.t - b.t) },
+    const t = commandTimeOf(i.t);
+    set((s) => {
+      let interventions = s.scenario.interventions;
+      if (i.kind === 'throttle' || i.kind === 'pitch') {
+        const matching = interventions.filter((previous) =>
+          previous.kind === i.kind && previous.vehicle === i.vehicle && commandTimeOf(previous.t) === t,
+        );
+        const previous = matching[0];
+        if (matching.length === 1 && (
+          (i.kind === 'throttle' && previous.kind === 'throttle' && i.value === previous.value) ||
+          (i.kind === 'pitch' && previous.kind === 'pitch' && i.deg === previous.deg)
+        )) return s;
+        // At one instant the latest control value wins, independent of the simulator's signature ordering.
+        interventions = interventions.filter((previous) => !matching.includes(previous));
+      }
+      const intervention = { ...i, t, id: newInterventionId() } as Intervention;
+      return changeScenario(s, {
+        ...s.scenario,
+        interventions: [...interventions, intervention].sort((a, b) => a.t - b.t),
+      });
     });
   },
   removeIntervention(id) {
-    const s = get();
-    set({ scenario: { ...s.scenario, interventions: s.scenario.interventions.filter((i) => i.id !== id) } });
+    set((s) => changeScenario(s, { ...s.scenario, interventions: s.scenario.interventions.filter((i) => i.id !== id) }));
   },
   updateScenario(patch) {
-    const s = get();
-    set({ scenario: { ...s.scenario, ...patch } });
+    set((s) => changeScenario(s, { ...s.scenario, ...patch }));
   },
   resetScenario() {
-    set({ scenario: AS_FLOWN });
+    set((s) => changeScenario(s, AS_FLOWN));
+  },
+  undoScenario() {
+    set((s) => {
+      const scenario = s.scenarioPast[s.scenarioPast.length - 1];
+      if (!scenario) return s;
+      return {
+        scenario,
+        scenarioPast: s.scenarioPast.slice(0, -1),
+        scenarioFuture: pushScenario(s.scenarioFuture, s.scenario),
+      };
+    });
+  },
+  redoScenario() {
+    set((s) => {
+      const scenario = s.scenarioFuture[s.scenarioFuture.length - 1];
+      if (!scenario) return s;
+      return {
+        scenario,
+        scenarioPast: pushScenario(s.scenarioPast, s.scenario),
+        scenarioFuture: s.scenarioFuture.slice(0, -1),
+      };
+    });
   },
 }));
 

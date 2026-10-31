@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { IconClose, IconUndo } from '@/components/icons';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { IconClose, IconRedo, IconUndo } from '@/components/icons';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatEventTime } from '@/lib/format';
+import { sortInterventions } from '@/lib/sim/scenario';
 import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipMission, type VehicleId } from '@/lib/sim/types';
-import { isModified, MAX_STEERING_BIAS, takesCommands, useReplay } from '@/lib/store/replay';
+import { commandTimeOf, isModified, MAX_STEERING_BIAS, takesCommands, useReplay } from '@/lib/store/replay';
 import { engineStates, isStacked } from '@/lib/telemetry';
 import styles from './director.module.css';
 
@@ -32,7 +33,8 @@ function describe(i: Intervention, engineCount: (v: VehicleId) => number): strin
 
 function currentBias(list: Intervention[], vehicle: VehicleId, t: number): number {
   let bias = 0;
-  for (const i of list) if (i.kind === 'pitch' && i.vehicle === vehicle && i.t <= t + 1e-6) bias = i.deg;
+  const at = commandTimeOf(t);
+  for (const i of list) if (i.kind === 'pitch' && i.vehicle === vehicle && i.t <= at) bias = i.deg;
   return bias;
 }
 
@@ -137,7 +139,51 @@ function commandTime(): number {
   return Math.max(s.t, s.result?.tStart ?? -10);
 }
 
+function currentThrottle(list: Intervention[], vehicle: VehicleId, t: number): number {
+  let throttle = 100;
+  const at = commandTimeOf(t);
+  for (const i of list) if (i.kind === 'throttle' && i.vehicle === vehicle && i.t <= at) throttle = Math.round(i.value * 100);
+  return throttle;
+}
+
+/** A pending choice is local; a different active limit or flight starts a fresh draft. */
+function ThrottleControl({ vehicle, alive, applied }: { vehicle: VehicleId; alive: boolean; applied: number }) {
+  const [throttle, setThrottle] = useState(applied);
+  return (
+    <div className={styles.row}>
+      <label className={styles.sliderLabel} htmlFor={`thr-${vehicle}`}>
+        Throttle limit <b>{throttle}%</b>
+        {throttle !== applied ? <span className={styles.pending}> · {applied}% applied</span> : null}
+      </label>
+      <div className={styles.sliderRow}>
+        <input
+          id={`thr-${vehicle}`}
+          type="range"
+          min={40}
+          max={100}
+          step={5}
+          value={throttle}
+          onChange={(e) => setThrottle(Number(e.target.value))}
+          className={styles.slider}
+        />
+        <button
+          type="button"
+          className={styles.action}
+          disabled={!alive || throttle === applied}
+          onClick={() => useReplay.getState().addIntervention({ t: commandTime(), kind: 'throttle', vehicle, value: throttle / 100 })}
+        >
+          Apply
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
+  const interventions = useReplay((s) => s.scenario.interventions);
+  // Shared links can contain simultaneous commands. Display the same ordering the simulator applies,
+  // and sort only when the commands change, never on each playback frame.
+  const ordered = useMemo(() => sortInterventions(interventions), [interventions]);
   // Display-level selections: the block re-renders when an action becomes (un)available, not every frame.
   const hasResult = useReplay((s) => s.result !== null);
   // Until the vehicle's flight ends, not its track: a click is never taken and then ignored.
@@ -145,13 +191,13 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
   const stacked = useReplay((s) => s.result !== null && isStacked(s.result, s.t));
   const flying = useReplay((s) => s.t >= 0);
   const canStage = useReplay((s) => s.t >= 20);
-  const bias = useReplay((s) => currentBias(s.scenario.interventions, vehicle, s.t));
+  const bias = useReplay((s) => currentBias(ordered, vehicle, s.t));
+  const appliedThrottle = useReplay((s) => currentThrottle(ordered, vehicle, s.t));
   const boosterRecovery = useReplay((s) => s.scenario.boosterRecovery);
   const shipMission = useReplay((s) => s.scenario.shipMission);
   const payloadCount = useReplay((s) => s.scenario.payloadCount);
   const flightN = useReplay((s) => s.flight);
   const { addIntervention, updateScenario } = useReplay.getState();
-  const [throttle, setThrottle] = useState(100);
   const flight = getFlight(flightN);
   const realLoad = flight.plan.ship.payloadCount;
 
@@ -176,31 +222,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
         {!alive && hasResult ? <span className={styles.blockState}>Flight over</span> : null}
       </div>
 
-      <div className={styles.row}>
-        <label className={styles.sliderLabel} htmlFor={`thr-${vehicle}`}>
-          Throttle limit <b>{throttle}%</b>
-        </label>
-        <div className={styles.sliderRow}>
-          <input
-            id={`thr-${vehicle}`}
-            type="range"
-            min={40}
-            max={100}
-            step={5}
-            value={throttle}
-            onChange={(e) => setThrottle(Number(e.target.value))}
-            className={styles.slider}
-          />
-          <button
-            type="button"
-            className={styles.action}
-            disabled={!alive}
-            onClick={() => addIntervention({ t: commandTime(), kind: 'throttle', vehicle, value: throttle / 100 })}
-          >
-            Apply
-          </button>
-        </div>
-      </div>
+      <ThrottleControl key={`${flightN}:${appliedThrottle}`} vehicle={vehicle} alive={alive} applied={appliedThrottle} />
 
       <div className={styles.actions}>
         <button type="button" className={styles.action} disabled={!alive} onClick={randomEngineOut} title="Shut down a random running engine (or click one on the engine map)">
@@ -334,7 +356,9 @@ function DirectorBody() {
   const loading = useReplay((s) => s.loading);
   const error = useReplay((s) => s.error);
   const flightN = useReplay((s) => s.flight);
-  const { setPanel, updateScenario, removeIntervention, resetScenario } = useReplay.getState();
+  const canUndo = useReplay((s) => s.scenarioPast.length > 0);
+  const canRedo = useReplay((s) => s.scenarioFuture.length > 0);
+  const { setPanel, updateScenario, removeIntervention, resetScenario, undoScenario, redoScenario } = useReplay.getState();
   const modified = isModified(scenario);
   const settings = settingChanges(scenario, getFlight(flightN).plan.ship.payloadCount);
   const changes = settings.length + scenario.interventions.length;
@@ -353,6 +377,17 @@ function DirectorBody() {
           <IconClose size={16} />
         </button>
       </header>
+
+      <div className={styles.history} role="group" aria-label="Simulation history">
+        <button type="button" className={styles.action} disabled={!canUndo} onClick={undoScenario}
+          aria-label="Undo last simulation change" aria-keyshortcuts="Control+z Meta+z" title="Undo last change (Ctrl/⌘ Z)">
+          <IconUndo size={13} /> Undo
+        </button>
+        <button type="button" className={styles.action} disabled={!canRedo} onClick={redoScenario}
+          aria-label="Redo simulation change" aria-keyshortcuts="Control+Shift+z Meta+Shift+z Control+y" title="Redo (Ctrl/⌘ Shift Z or Ctrl Y)">
+          <IconRedo size={13} /> Redo
+        </button>
+      </div>
 
       <div className={styles.scroll}>
         <section className={styles.block}>

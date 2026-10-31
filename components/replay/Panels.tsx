@@ -119,6 +119,8 @@ const SHORTCUTS: [string[], string][] = [
   [['P'], 'Small frame on or off'],
   [['R'], 'Reset the cameras you turned or zoomed'],
   [['K'], 'Flight director: take control'],
+  [['Ctrl/⌘ Z'], 'Undo a change (director open)'],
+  [['Ctrl/⌘ Shift Z'], 'Redo a change (director open; also Ctrl Y)'],
   [['M'], 'Synthesized engine sound on or off'],
   [['F'], 'Full screen'],
   [['S'], 'Copy a link to this moment'],

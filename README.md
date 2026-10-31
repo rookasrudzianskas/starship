@@ -11,6 +11,7 @@ Built with **Next.js 16**, React 19, three.js and Zustand.
 - **Optional audio**: synthesized engine and airflow sound, enabled with the speaker button or `M`. Sound starts muted on each visit and is silent while paused, when the tab is hidden, during coast skipping, or above 5× playback speed.
 - **Cameras**: a webcast-style director that cuts between ground trackers and onboard views (or pick one), chase, free, and a whole-Earth globe view with trajectories and event markers. Follow either vehicle, view both side by side, or use the small picture-in-picture frame.
 - **Flight director**: change the flight while it plays. You can shut down any engine, cap the throttle, nudge the steering, stage early, cancel burns, trigger flight termination, send the booster to the tower, the Gulf or nowhere, aim the ship for orbit, change the payload, add wind, or replay a flight "as planned" without its real failures. The flight is re-simulated in a Web Worker in milliseconds, and your changes show on the timeline.
+- **Undo and redo experiments**: the director keeps the last 50 scenario changes, including resets and removed commands. Use the buttons or, while the director is open, Ctrl/⌘ Z and Ctrl/⌘ Shift Z (also Ctrl Y). History stays in the current session and resets when you open another flight or shared run.
 - **Compare** all flights on shared axes: speed, altitude, engines, propellant, vertical speed, acceleration, Mach, dynamic pressure and pitch.
 - **Flights** list with outcomes, records and event times, and a CSV download of each simulated flight.
 
