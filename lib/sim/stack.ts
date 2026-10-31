@@ -1,15 +1,15 @@
-import { slew, spin } from './attitude';
-import { eventState, recordSample, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
+import { slew as slewFn, spin as spinFn } from './attitude';
+import { eventState, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
 import { engineName, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
-import { ecefToInertial, enuAt, latLonAltToEcef } from './geo';
+import { ecefToInertial, enuAt as enuAtFn, latLonAltToEcef } from './geo';
 import { Body, VehicleRt } from './runtime';
 import { lossKind } from './outcome';
-import { newAirData, stepBody } from './step';
+import { newAirData, stepBody as stepBodyFn } from './step';
 import { EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type EndKind, type PhaseCode } from './types';
 import { planeHeading } from './guidance/plane';
 import { FLAPS_STOWED, stackAero, vehicleSpec } from './vehicles';
-import { clamp, DEG, qAxis, qLook, qMul, qRotZ, v3 } from './vec';
+import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, qMul, qRotZ, v3 } from './vec';
 
 export interface StackOutcome {
   booster: VehicleRt;
@@ -21,6 +21,15 @@ export interface StackOutcome {
   end: { kind: EndKind; t: number } | null;
   boosterLoad: number;
 }
+
+// Bind the frequently called helpers once, matching the post-separation guidance loops.
+const slew = slewFn;
+const spin = spinFn;
+const recordSample = recordSampleFn;
+const enuAt = enuAtFn;
+const stepBody = stepBodyFn;
+const qAxis = qAxisFn;
+const qLook = qLookFn;
 
 const ZERO4 = [0, 0, 0, 0];
 const SHIP_FLAPS = [FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED];

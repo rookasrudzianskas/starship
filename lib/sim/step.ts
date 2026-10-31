@@ -5,7 +5,6 @@ import {
   gravityAccel as gravityAccelFn,
   heatingIndex as heatingIndexFn,
   rk4 as rk4Fn,
-  type AeroResult,
 } from './physics';
 import type { Body } from './runtime';
 import { EARTH_OMEGA, EARTH_RADIUS } from './types';
@@ -49,10 +48,8 @@ export function newAirData(): AirData {
 }
 
 const atm: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 };
-const res: AeroResult = { q: 0, mach: 0, aoa: 0, airspeed: 0 };
 const yAx = v3();
 const aNg = v3();
-const g = v3();
 
 export interface StepOptions {
   /** Per-part multiplier on thrust (hot staging: the attached ship's plume is half deflected). */
@@ -77,22 +74,24 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
   vg[0] = body.v[0] + OMEGA * r[1];
   vg[1] = body.v[1] - OMEGA * r[0];
   vg[2] = body.v[2];
-  airVelocity(air.vAir, r, body.v, alt, windPeak);
+  if (windPeak === 0) {
+    // With no wind, the air co-rotates with Earth: both relative velocities are identical.
+    air.vAir[0] = vg[0];
+    air.vAir[1] = vg[1];
+    air.vAir[2] = vg[2];
+  } else airVelocity(air.vAir, r, body.v, alt, windPeak);
   qAxis(yAx, body.q, 1);
-  if (alt < 180_000) aeroForce(air.aero, res, yAx, air.vAir, atm.density, atm.speedOfSound, body.aero);
+  // AirData already contains the AeroResult fields; write them in place instead of copying scratch.
+  if (alt < 180_000) aeroForce(air.aero, air, yAx, air.vAir, atm.density, atm.speedOfSound, body.aero);
   else {
     air.aero[0] = air.aero[1] = air.aero[2] = 0;
-    res.q = 0;
-    res.mach = 0;
-    res.aoa = 0;
+    air.q = 0;
+    air.mach = 0;
+    air.aoa = 0;
     const va = air.vAir;
-    res.airspeed = Math.sqrt(va[0] * va[0] + va[1] * va[1] + va[2] * va[2]);
+    air.airspeed = Math.sqrt(va[0] * va[0] + va[1] * va[1] + va[2] * va[2]);
   }
-  air.q = res.q;
-  air.mach = res.mach;
-  air.aoa = res.aoa;
-  air.airspeed = res.airspeed;
-  air.heating = heatingIndex(atm.density, res.airspeed);
+  air.heating = heatingIndex(atm.density, air.airspeed);
   let thrust = 0;
   const parts = body.parts;
   for (let i = 0; i < parts.length; i++) {
@@ -117,10 +116,10 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
     parts[i].spoolStep(dt);
   }
   air.depleted = depleted;
-  gravityAccel(r[0], r[1], r[2], g, true);
-  body.acc[0] = g[0] + aNg[0];
-  body.acc[1] = g[1] + aNg[1];
-  body.acc[2] = g[2] + aNg[2];
+  gravityAccel(r[0], r[1], r[2], body.acc, true);
+  body.acc[0] += aNg[0];
+  body.acc[1] += aNg[1];
+  body.acc[2] += aNg[2];
 }
 
 /** Drag-free, thrust-free coast step (vacuum). */

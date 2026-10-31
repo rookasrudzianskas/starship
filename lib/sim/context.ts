@@ -1,7 +1,7 @@
 import { ANOMALY_PHASE_TARGET, GULF_SPLASHDOWN, PADS, type Anomaly, type AnomalyPhase, type Flight, type PadSite } from '../flights/catalog';
 import { atmosphereInto, type AtmosphereState } from './atmosphere';
 import { makeEvent, type EventState } from './events';
-import { inertialToEcef, latLonAltToEcef, localEnuBasis } from './geo';
+import { latLonAltToEcef, localEnuBasis } from './geo';
 import type { FlightParams } from './params';
 import { jetStream } from './physics';
 import { emptySample, TrackBuilder, type RawSample } from './recorder';
@@ -191,13 +191,21 @@ function resolvePayload(flight: Flight, scenario: Scenario): PayloadPlan | null 
 
 const OMEGA = EARTH_OMEGA;
 const RE = EARTH_RADIUS;
-const toEcef = inertialToEcef;
 const atmInto = atmosphereInto;
 const axis = qAxis;
 const windAt = jetStream;
 const atm: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 };
 const yAx = v3(), rI = v3(), vI = v3(), rE = v3(), vE = v3(), aE = v3(), up = v3(), vAir = v3(), hd = v3(), tmp = v3();
 const qz = new Float64Array(4), qe = new Float64Array(4);
+
+/** Same arithmetic order as inertialToEcef, reusing one rotation across a sample's vectors. */
+function toEcef(out: Float64Array, a: Float64Array, c: number, s: number): void {
+  const x = c * a[0] + s * a[1];
+  const y = -s * a[0] + c * a[1];
+  out[0] = x;
+  out[1] = y;
+  out[2] = a[2];
+}
 
 export interface SampleExtras {
   phase: PhaseCode;
@@ -209,6 +217,12 @@ export interface SampleExtras {
 
 /** ECEF position/velocity of a point `offset` metres along the body +Y axis from the body's CoM. */
 export function bodyPointEcef(body: Body, offset: number, t: number, outR: Float64Array, outV: Float64Array): void {
+  const th = OMEGA * t;
+  bodyPointEcefWithRotation(body, offset, Math.cos(th), Math.sin(th), outR, outV);
+}
+
+/** Also leaves the body's inertial +Y axis in yAx for recordSample. */
+function bodyPointEcefWithRotation(body: Body, offset: number, c: number, s: number, outR: Float64Array, outV: Float64Array): void {
   axis(yAx, body.q, 1);
   for (let i = 0; i < 3; i++) rI[i] = body.r[i] + yAx[i] * offset;
   // v = v_cm + w × (y * offset)
@@ -220,8 +234,8 @@ export function bodyPointEcef(body: Body, offset: number, t: number, outR: Float
   // ECEF velocity = R(v_i − ω × r_i)
   vI[0] += OMEGA * rI[1];
   vI[1] -= OMEGA * rI[0];
-  toEcef(outR, rI, t);
-  toEcef(outV, vI, t);
+  toEcef(outR, rI, c, s);
+  toEcef(outV, vI, c, s);
 }
 
 const evR = v3(), evV = v3();
@@ -244,7 +258,9 @@ export function recordSample(
   offset: number,
   ex: SampleExtras,
 ): void {
-  bodyPointEcef(body, offset, t, rE, vE);
+  const th = OMEGA * t;
+  const cos = Math.cos(th), sin = Math.sin(th);
+  bodyPointEcefWithRotation(body, offset, cos, sin, rE, vE);
   qRotZ(qz, -OMEGA * t);
   qMul(qe, qz, body.q);
   const r = Math.sqrt(rE[0] * rE[0] + rE[1] * rE[1] + rE[2] * rE[2]);
@@ -257,7 +273,7 @@ export function recordSample(
   // d|v|/dt in the rotating frame: a_e = R a_i − 2ω×v_e − ω×(ω×r_e)
   let accel = 0;
   if (!ex.still) {
-    toEcef(aE, body.acc, t);
+    toEcef(aE, body.acc, cos, sin);
     aE[0] += 2 * OMEGA * vE[1] + OMEGA * OMEGA * rE[0];
     aE[1] += -2 * OMEGA * vE[0] + OMEGA * OMEGA * rE[1];
     accel = speed > 0.5 ? (aE[0] * vE[0] + aE[1] * vE[1] + aE[2] * vE[2]) / speed : Math.sqrt(aE[0] * aE[0] + aE[1] * aE[1] + aE[2] * aE[2]);
@@ -270,8 +286,7 @@ export function recordSample(
   vAir[1] = vE[1] - (wind * rE[0]) / hxy;
   vAir[2] = vE[2];
   const va = Math.sqrt(vAir[0] * vAir[0] + vAir[1] * vAir[1] + vAir[2] * vAir[2]);
-  axis(yAx, body.q, 1);
-  toEcef(tmp, yAx, t);
+  toEcef(tmp, yAx, cos, sin);
   let aoa = 0;
   if (va > 0.5) {
     const c = (tmp[0] * vAir[0] + tmp[1] * vAir[1] + tmp[2] * vAir[2]) / va;
