@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { getFlight, PADS, type Flight } from '@/lib/flights/catalog';
+import type { AtmosphereState } from '@/lib/sim/atmosphere';
 import { EARTH_RADIUS, ENGINE_LIT, ENGINE_OFF, Phase, type FlightResult, type Generation, type PadId, type Track, type VehicleId } from '@/lib/sim/types';
 import { COAST_RATE, useReplay, type ReplayState } from '@/lib/store/replay';
-import { ambientPressureApprox, engineStates, isStacked } from '@/lib/telemetry';
+import { engineStates, isStacked } from '@/lib/telemetry';
 import { createEarth, sunDirectionEcef, type EarthHandle } from '@/lib/three/earth';
 import { createExplosion, createLaunchClouds, createSplash, createStarlinkSwarm } from '@/lib/three/effects';
 import { CHOPSTICK_RAIL_TOP, createPad } from '@/lib/three/pad';
@@ -12,6 +13,7 @@ import { alongsidePose, blendAround, blendPose, ChaseCamera, copyPose, createPos
 import { createCoastPrediction, predictCoast, type CoastPrediction } from './coast';
 import { computeCourse, courseAt } from './course';
 import { AERIAL_TRACKING_FROM, autoShot, pickedShot, planDirector, type DirectorPlan, type Shot, type ShotId } from './director';
+import { flightEnvironmentInto, resultWindPeak } from './flightEnvironment';
 import { copy3, damp, dist3, enuQuaternion, latLonToEcef, offsetEnu, type V3 } from './geo';
 import { Overlay } from './overlay';
 import { EventGates, TrajectoryLines, type GateMark } from './paths';
@@ -78,6 +80,7 @@ interface Rig {
   center: V3;
   visible: boolean;
   visual: VehicleVisualState;
+  atmosphere: AtmosphereState;
   explosion: Explosion | null;
   splash: Splash | null;
   touchdown: number | null;
@@ -108,6 +111,7 @@ function makeRig(id: VehicleId): Rig {
       phase: Phase.Pad,
       sunBody: new THREE.Vector3(0, 1, 0),
     },
+    atmosphere: { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 },
     explosion: null,
     splash: null,
     touchdown: null,
@@ -446,6 +450,10 @@ export function createStage(): StageHandle {
   let plan: DirectorPlan | null = null;
   let current: FlightResult | null = null;
   let currentBaseline: FlightResult | null = null;
+  /** Wind belongs to the displayed worker result, which may lag behind the director's scenario. */
+  let environmentResult: FlightResult | null = null;
+  let environmentScenario: ReplayState['scenario'] | null = null;
+  let windPeak = 0;
   /** Side of the booster its onboard cameras are on (see sunlitMount). */
   let boosterMount = 0;
   let catchTime: number | null = null;
@@ -1011,14 +1019,11 @@ export function createStage(): StageHandle {
     if (after) vis.engines.fill(ENGINE_OFF);
     else vis.engines.set(rig.engines);
     vis.throttle = after ? 0 : s.throttle;
-    vis.ambientPressure = ambientPressureApprox(s.alt);
+    flightEnvironmentInto(s, windPeak, rig.atmosphere, vis);
     vis.mach = s.mach;
     vis.aero = s.aero;
     vis.heating = after ? 0 : s.heating;
     qInv.copy(s.quat).invert();
-    v2.set(-s.vel[0], -s.vel[1], -s.vel[2]);
-    if (v2.lengthSq() > 1) vis.airflowBody.copy(v2.normalize().applyQuaternion(qInv));
-    else vis.airflowBody.set(0, 1, 0);
     vis.hotStage = !after && s.phase === Phase.HotStage ? 1 : 0;
     vis.phase = s.phase;
     vis.sunBody.copy(sunDir).applyQuaternion(qInv);
@@ -1506,6 +1511,14 @@ export function createStage(): StageHandle {
     if (!result) {
       blank();
       return;
+    }
+    if (result !== environmentResult || st.scenario !== environmentScenario) {
+      const matchedWind = resultWindPeak(result.scenarioKey, st.scenario, st.scenarioPast, st.scenarioFuture);
+      // Retain a known wind while a replacement run loads. A new result with no matching snapshot
+      // falls back to calm air rather than borrowing wind from an unrelated, possibly pending run.
+      windPeak = matchedWind ?? (result === environmentResult ? windPeak : 0);
+      environmentResult = result;
+      environmentScenario = st.scenario;
     }
     if (result !== current || st.baseline !== currentBaseline) {
       if (rebuild(result, st.baseline)) warm();

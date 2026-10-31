@@ -1170,6 +1170,71 @@ kbd.key {
 
 /* ------------------------------------------------------------ responsive */
 
+/* Webcast proportions on wide desktops. Keep the compact instruments below this breakpoint. */
+@media (min-width: 1200px) {
+  .hud {
+    grid-template-columns: minmax(0, 1fr) clamp(500px, 38vw, 580px) minmax(0, 1fr);
+    padding: 70px 26px 20px;
+  }
+
+  .readouts {
+    gap: 32px;
+  }
+
+  .readoutValue {
+    font-size: 46px;
+  }
+
+  .readoutUnit {
+    font-size: 12px;
+    margin-left: 6px;
+  }
+
+  .instruments {
+    align-items: flex-end;
+    gap: 22px;
+  }
+
+  /* The hull and dial rims sit just inside the SVG viewboxes: visible diameters are about 82 / 50 px. */
+  .engineMap {
+    width: 86px;
+    height: 86px;
+  }
+
+  .attitudeDial {
+    width: 54px;
+    height: 54px;
+  }
+
+  .propSplit {
+    gap: 10px;
+  }
+
+  .propSplit > .propRow {
+    display: none;
+  }
+
+  .propTank {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .propTank .barSub {
+    order: -1;
+    font-size: 10px;
+    color: var(--text-2);
+  }
+
+  .clockTime {
+    font-size: 56px;
+  }
+
+  .clockSign {
+    font-size: 20px;
+  }
+}
+
 /* The outcome summary only where there is room for it: on a short screen it would squeeze the flight director. */
 @media (min-width: 1200px) and (min-height: 800px) {
   .outcome {
@@ -1214,6 +1279,39 @@ kbd.key {
 
   .hud {
     grid-template-columns: minmax(0, 1fr) minmax(300px, 360px) minmax(0, 1fr);
+  }
+}
+
+/* Give the side panels real space between the mobile layout and the wide webcast layout. A fixed 500 px
+   timeline left only 195 px per side at 961 px; the instruments alone need 220 px there. */
+@media (min-width: 861px) and (max-width: 1199px) {
+  .hud {
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 42vw, 500px) minmax(0, 1fr);
+    column-gap: 16px;
+  }
+}
+
+@media (min-width: 861px) {
+  /* Long values (including feet), outcome badges and derived telemetry stay inside their own column. */
+  .panelHead,
+  .readouts,
+  .instruments {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .vehicleName {
+    white-space: nowrap;
+  }
+
+  .engineBlock,
+  .propBlock,
+  .attitude {
+    flex-shrink: 0;
+  }
+
+  .derived {
+    white-space: normal;
   }
 }
 

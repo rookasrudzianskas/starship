@@ -116,11 +116,12 @@ export const WHEEL_ZOOM = 0.0012;
 // ---------------------------------------------------------------- chase
 
 /**
- * Where the chase camera sits by default: off the vehicle's right-hand side, a little behind and above, so it sees
- * the vehicle side on (the way the broadcast's tracking views show it) and never looks up its exhaust.
+ * A three-quarter tracking view from the right, slightly ahead and below the vehicle. Looking up keeps the
+ * ascent against the sky and reveals the hull as well as the exhaust. The ground-clearance limit still applies
+ * near the pad; dragging and reset use this same reference pose at every mission time.
  */
-const CHASE_AZIMUTH = 70;
-const CHASE_ELEVATION = 8;
+const CHASE_AZIMUTH = 120;
+const CHASE_ELEVATION = -12;
 
 export class ChaseCamera {
   /** The viewer's turn round the vehicle away from the default side view, degrees. */

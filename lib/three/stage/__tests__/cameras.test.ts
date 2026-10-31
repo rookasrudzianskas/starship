@@ -95,15 +95,28 @@ describe('pointer input turns every camera with the pointer', () => {
 });
 
 describe('ChaseCamera', () => {
-  it('looks at the vehicle side on from its right, a little behind, never up its exhaust', () => {
+  it('frames the hull from the right and slightly ahead, looking up against the sky', () => {
     const f = focusAt(20_000);
     const pose = new ChaseCamera().pose(f, createPose());
     const off = new THREE.Vector3(pose.pos[0] - f.pos[0], pose.pos[1] - f.pos[1], pose.pos[2] - f.pos[2]).normalize();
     const course = new THREE.Vector3(...f.course);
     const right = new THREE.Vector3().crossVectors(course, up);
-    // 70 degrees round from straight behind, on the right-hand side.
-    expect((off.angleTo(course.clone().negate()) * 180) / Math.PI).toBeCloseTo(70, 0);
-    expect(off.dot(right)).toBeGreaterThan(0.9);
+    const horizontal = off.clone().addScaledVector(up, -off.dot(up)).normalize();
+    expect((horizontal.angleTo(course.clone().negate()) * 180) / Math.PI).toBeCloseTo(120, 5);
+    expect(off.dot(right)).toBeGreaterThan(0.8);
+    expect((Math.asin(off.dot(up)) * 180) / Math.PI).toBeCloseTo(-12, 3);
+  });
+
+  it('restores the original framing after orbiting and zooming', () => {
+    const f = focusAt(20_000);
+    const cam = new ChaseCamera();
+    const initial = cam.pose(f, createPose());
+    cam.drag({ dx: 260, dy: 170, button: 0 });
+    cam.wheel(250);
+    cam.reset();
+    const restored = cam.pose(f, createPose());
+    expect(restored.pos).toEqual(initial.pos);
+    expect(restored.quat.equals(initial.quat)).toBe(true);
   });
 
   it('stays above the ground, whatever the viewer asks for', () => {
