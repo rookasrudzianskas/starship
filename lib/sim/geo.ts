@@ -66,10 +66,7 @@ export function surfaceDistance(a: V3, b: V3): number {
 
 /** Local east/north/up unit vectors at a position (any frame sharing the polar axis with ECEF). */
 export function enuAt(r: V3, east: V3, north: V3, up: V3): void {
-  const l = Math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
-  up[0] = r[0] / l;
-  up[1] = r[1] / l;
-  up[2] = r[2] / l;
+  radialUp(r, up);
   const h = Math.sqrt(up[0] * up[0] + up[1] * up[1]);
   if (h < 1e-9) {
     // At a pole: pick +Y as east.
@@ -84,6 +81,15 @@ export function enuAt(r: V3, east: V3, north: V3, up: V3): void {
   north[0] = up[1] * east[2] - up[2] * east[1];
   north[1] = up[2] * east[0] - up[0] * east[2];
   north[2] = up[0] * east[1] - up[1] * east[0];
+}
+
+/** Writes the radial unit vector and returns the radius, without building unused east/north axes. */
+export function radialUp(r: V3, up: V3): number {
+  const l = Math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+  up[0] = r[0] / l;
+  up[1] = r[1] / l;
+  up[2] = r[2] / l;
+  return l;
 }
 
 /** Rotates an inertial vector into ECEF at time t (inertial frame = ECEF at T+0). */

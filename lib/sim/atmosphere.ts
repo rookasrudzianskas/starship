@@ -112,7 +112,12 @@ export function atmosphere(altM: number): AtmosphereState {
 
 /** Density only (cheaper call for predictors). */
 export function airDensity(alt: number): number {
-  return atmosphereInto(alt, scratch).density;
+  if (!(alt >= 0 && alt < 200_000)) return atmosphereExact(alt, scratch).density;
+  const x = alt / TAB_DZ;
+  const k = x | 0;
+  const f = x - k;
+  // Keep the operation order identical to atmosphereInto for deterministic predictions.
+  return Math.exp(TAB_LNRHO[k] + f * (TAB_LNRHO[k + 1] - TAB_LNRHO[k]));
 }
 
 const scratch: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 };

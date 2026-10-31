@@ -1,19 +1,19 @@
 import { slew as slewFn, spin as spinFn } from './attitude';
 import { bodyPointEcef, eventState, landingTargetEcef, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
-import { engineName, MIN_THROTTLE, pickFailingEngines } from './engines';
+import { engineName, MIN_THROTTLE as MIN_THROTTLE_VALUE, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
-import { enuAt as enuAtFn, inertialToEcef } from './geo';
+import { radialUp as radialUpFn, inertialToEcef } from './geo';
 import { entryAoA, predictEntry, type EntryPrediction } from './guidance/entry';
 import { landingThrust, landingTiltCap } from './guidance/landing';
 import { newPeg, pegStep } from './guidance/peg';
 import { planeHeading } from './guidance/plane';
 import { isLand } from './land';
 import { lossKind } from './outcome';
-import { SPOOL_DOWN, type Body, type VehicleRt } from './runtime';
+import { SPOOL_DOWN as SPOOL_DOWN_VALUE, type Body, type VehicleRt } from './runtime';
 import { coastBody, newAirData, stepBody as stepBodyFn } from './step';
-import { FLAPS_STOWED } from './vehicles';
+import { FLAPS_STOWED as FLAPS_STOWED_VALUE } from './vehicles';
 import { newTipState, startTip, tipOver, type TipState } from './surface';
-import { EARTH_MU, EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type EndKind, type PhaseCode } from './types';
+import { EARTH_MU, EARTH_OMEGA, EARTH_RADIUS, G0, Phase as PhaseCodes, type EndKind, type PhaseCode } from './types';
 import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, v3 } from './vec';
 
 const OMEGA = EARTH_OMEGA;
@@ -21,11 +21,15 @@ const RE = EARTH_RADIUS;
 const MU = EARTH_MU;
 const GEE = G0;
 const D = DEG;
+const Phase = PhaseCodes;
+const MIN_THROTTLE = MIN_THROTTLE_VALUE;
+const SPOOL_DOWN = SPOOL_DOWN_VALUE;
+const FLAPS_STOWED = FLAPS_STOWED_VALUE;
 const slew = slewFn;
 const spin = spinFn;
 const stepBody = stepBodyFn;
 const recordSample = recordSampleFn;
-const enuAt = enuAtFn;
+const radialUp = radialUpFn;
 const qAxis = qAxisFn;
 const qLook = qLookFn;
 
@@ -178,7 +182,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   let landingFailT = Infinity;
   const tip: TipState = newTipState();
 
-  const up = v3(), east = v3(), north = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
+  const up = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
   const hp = v3();
   const vn = v3(), tmp = v3(), tmp2 = v3(), rE = v3(), vE = v3(), latA = v3();
   const qT = new Float64Array(4);
@@ -455,8 +459,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     while (actIdx < acts.length && acts[actIdx].t <= t + 1e-9 && !modeIs('done')) applyAction(acts[actIdx++]);
     if (modeIs('done')) break;
 
-    enuAt(body.r, east, north, up);
-    const rl = Math.sqrt(body.r[0] ** 2 + body.r[1] ** 2 + body.r[2] ** 2);
+    const rl = radialUp(body.r, up);
     const vr = body.v[0] * up[0] + body.v[1] * up[1] + body.v[2] * up[2];
 
     // --- Scheduled transitions ----------------------------------------------------------------
@@ -605,7 +608,6 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     const adt = attAcc;
     if (attDue) {
       attAcc = 0;
-      qAxis(xAx, body.q, 0);
       qAxis(zAx, body.q, 2);
       aero[0] = aero[1] = aero[2] = aero[3] = FLAPS_STOWED;
       // Horizontal direction of motion (inertial), for prograde attitudes.
@@ -851,7 +853,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         const r2 = Math.sqrt(tmp2[0] ** 2 + tmp2[1] ** 2 + tmp2[2] ** 2);
         const onLand = isLand((Math.asin(tmp2[2] / r2) * 180) / Math.PI, (Math.atan2(tmp2[1], tmp2[0]) * 180) / Math.PI);
         if (vRel < 15 && baseAlt <= nose && !onLand) {
-          enuAt(body.r, east, north, up);
+          radialUp(body.r, up);
           splashT = t;
           finish('splashdown', t, false);
           mode = 'splashed';

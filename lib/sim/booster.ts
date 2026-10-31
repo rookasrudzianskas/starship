@@ -2,16 +2,16 @@ import { slew as slewFn, spin as spinFn } from './attitude';
 import { airDensity } from './atmosphere';
 import { flyBallistic, type DragTable, type FlightOut } from './ballistic';
 import { eventState, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
-import { engineName, MIN_THROTTLE, pickFailingEngines, selectBoosterEngines } from './engines';
+import { engineName, MIN_THROTTLE as MIN_THROTTLE_VALUE, pickFailingEngines, selectBoosterEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
-import { ecefToInertial as ecefToInertialFn, enuAt as enuAtFn, inertialToEcef } from './geo';
+import { ecefToInertial as ecefToInertialFn, radialUp as radialUpFn, inertialToEcef } from './geo';
 import { landingThrust, landingTiltCap } from './guidance/landing';
 import { isLand } from './land';
 import { lossKind } from './outcome';
 import type { Body, VehicleRt } from './runtime';
 import { newAirData, stepBody as stepBodyFn } from './step';
 import { holdInArms, newTipState, startArms, startTip, tipOver, type ArmsState, type TipState } from './surface';
-import { EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type BoosterRecovery, type EndKind, type PhaseCode } from './types';
+import { EARTH_OMEGA, EARTH_RADIUS, G0, Phase as PhaseCodes, type BoosterRecovery, type EndKind, type PhaseCode } from './types';
 import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, qMul, qRotZ, v3 } from './vec';
 import { withTailDrag } from './vehicles';
 
@@ -19,11 +19,13 @@ const OMEGA = EARTH_OMEGA;
 const RE = EARTH_RADIUS;
 const GEE = G0;
 const D = DEG;
+const Phase = PhaseCodes;
+const MIN_THROTTLE = MIN_THROTTLE_VALUE;
 const slew = slewFn;
 const spin = spinFn;
 const stepBody = stepBodyFn;
 const recordSample = recordSampleFn;
-const enuAt = enuAtFn;
+const radialUp = radialUpFn;
 const ecefToInertial = ecefToInertialFn;
 const qAxis = qAxisFn;
 const qLook = qLookFn;
@@ -166,7 +168,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
   const segN: number[] = [];
   const seq = plan.landingEngines.length > 0 ? plan.landingEngines : [13, 3];
 
-  const up = v3(), east = v3(), north = v3(), xAx = v3(), yAx = v3(), zAx = v3(), dirH = v3(), d0 = v3(), thr = v3();
+  const up = v3(), xAx = v3(), yAx = v3(), zAx = v3(), dirH = v3(), d0 = v3(), thr = v3();
   const tgtI = v3(), hv = v3(), lat = v3(), tmp = v3(), tmp2 = v3(), vAirN = v3(), extra = v3();
   const qT = new Float64Array(4), qz = new Float64Array(4);
   const tip: TipState = newTipState();
@@ -538,7 +540,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     }
 
     // --- Guidance and attitude ------------------------------------------------------------------
-    enuAt(body.r, east, north, up);
+    radialUp(body.r, up);
     const vr = body.v[0] * up[0] + body.v[1] * up[1] + body.v[2] * up[2];
     if (!apogeeDone && t > tSep + 2 && prevVr > 0 && vr <= 0) {
       apogeeDone = true;
@@ -827,7 +829,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
     if (baseAlt <= (nearPad ? ctx.pad.groundAlt : 0)) {
       const rl = Math.sqrt(tmp2[0] * tmp2[0] + tmp2[1] * tmp2[1] + tmp2[2] * tmp2[2]);
       const ashore = !nearPad && isLand((Math.asin(tmp2[2] / rl) * 180) / Math.PI, (Math.atan2(tmp2[1], tmp2[0]) * 180) / Math.PI);
-      enuAt(body.r, east, north, up);
+      radialUp(body.r, up);
       const vRel = Math.sqrt((body.v[0] + OMEGA * body.r[1]) ** 2 + (body.v[1] - OMEGA * body.r[0]) ** 2 + body.v[2] ** 2);
       if (vRel < 15 && !nearPad && !ashore) {
         splashT = t;

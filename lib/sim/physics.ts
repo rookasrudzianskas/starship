@@ -29,8 +29,6 @@ export function gravityAccel(x: number, y: number, z: number, out: V3, j2 = true
 }
 
 const ga = new Float64Array(3);
-const k1v = new Float64Array(3), k2v = new Float64Array(3), k3v = new Float64Array(3), k4v = new Float64Array(3);
-const k1r = new Float64Array(3), k2r = new Float64Array(3), k3r = new Float64Array(3);
 
 /**
  * One RK4 step of r'' = g(r) + aNg in an inertial frame, in place. The non-gravitational acceleration
@@ -39,29 +37,32 @@ const k1r = new Float64Array(3), k2r = new Float64Array(3), k3r = new Float64Arr
 export function rk4(r: V3, v: V3, aNg: V3 | null, dt: number, j2 = true): void {
   const ax = aNg ? aNg[0] : 0, ay = aNg ? aNg[1] : 0, az = aNg ? aNg[2] : 0;
   const h2 = dt / 2;
-  gravityAccel(r[0], r[1], r[2], ga, j2);
-  k1v[0] = ga[0] + ax; k1v[1] = ga[1] + ay; k1v[2] = ga[2] + az;
-  k1r[0] = v[0]; k1r[1] = v[1]; k1r[2] = v[2];
+  // Keep the RK stages in local scalars so V8 can retain them in registers. The arithmetic order
+  // is unchanged; repeatedly loading/storing shared typed-array scratch added cost at every step.
+  const rx = r[0], ry = r[1], rz = r[2];
+  const vx = v[0], vy = v[1], vz = v[2];
+  gravityAccel(rx, ry, rz, ga, j2);
+  const k1vx = ga[0] + ax, k1vy = ga[1] + ay, k1vz = ga[2] + az;
 
-  gravityAccel(r[0] + h2 * k1r[0], r[1] + h2 * k1r[1], r[2] + h2 * k1r[2], ga, j2);
-  k2v[0] = ga[0] + ax; k2v[1] = ga[1] + ay; k2v[2] = ga[2] + az;
-  k2r[0] = v[0] + h2 * k1v[0]; k2r[1] = v[1] + h2 * k1v[1]; k2r[2] = v[2] + h2 * k1v[2];
+  gravityAccel(rx + h2 * vx, ry + h2 * vy, rz + h2 * vz, ga, j2);
+  const k2vx = ga[0] + ax, k2vy = ga[1] + ay, k2vz = ga[2] + az;
+  const k2rx = vx + h2 * k1vx, k2ry = vy + h2 * k1vy, k2rz = vz + h2 * k1vz;
 
-  gravityAccel(r[0] + h2 * k2r[0], r[1] + h2 * k2r[1], r[2] + h2 * k2r[2], ga, j2);
-  k3v[0] = ga[0] + ax; k3v[1] = ga[1] + ay; k3v[2] = ga[2] + az;
-  k3r[0] = v[0] + h2 * k2v[0]; k3r[1] = v[1] + h2 * k2v[1]; k3r[2] = v[2] + h2 * k2v[2];
+  gravityAccel(rx + h2 * k2rx, ry + h2 * k2ry, rz + h2 * k2rz, ga, j2);
+  const k3vx = ga[0] + ax, k3vy = ga[1] + ay, k3vz = ga[2] + az;
+  const k3rx = vx + h2 * k2vx, k3ry = vy + h2 * k2vy, k3rz = vz + h2 * k2vz;
 
-  gravityAccel(r[0] + dt * k3r[0], r[1] + dt * k3r[1], r[2] + dt * k3r[2], ga, j2);
-  k4v[0] = ga[0] + ax; k4v[1] = ga[1] + ay; k4v[2] = ga[2] + az;
-  const k4rx = v[0] + dt * k3v[0], k4ry = v[1] + dt * k3v[1], k4rz = v[2] + dt * k3v[2];
+  gravityAccel(rx + dt * k3rx, ry + dt * k3ry, rz + dt * k3rz, ga, j2);
+  const k4vx = ga[0] + ax, k4vy = ga[1] + ay, k4vz = ga[2] + az;
+  const k4rx = vx + dt * k3vx, k4ry = vy + dt * k3vy, k4rz = vz + dt * k3vz;
 
   const s = dt / 6;
-  r[0] += s * (k1r[0] + 2 * k2r[0] + 2 * k3r[0] + k4rx);
-  r[1] += s * (k1r[1] + 2 * k2r[1] + 2 * k3r[1] + k4ry);
-  r[2] += s * (k1r[2] + 2 * k2r[2] + 2 * k3r[2] + k4rz);
-  v[0] += s * (k1v[0] + 2 * k2v[0] + 2 * k3v[0] + k4v[0]);
-  v[1] += s * (k1v[1] + 2 * k2v[1] + 2 * k3v[1] + k4v[1]);
-  v[2] += s * (k1v[2] + 2 * k2v[2] + 2 * k3v[2] + k4v[2]);
+  r[0] = rx + s * (vx + 2 * k2rx + 2 * k3rx + k4rx);
+  r[1] = ry + s * (vy + 2 * k2ry + 2 * k3ry + k4ry);
+  r[2] = rz + s * (vz + 2 * k2rz + 2 * k3rz + k4rz);
+  v[0] = vx + s * (k1vx + 2 * k2vx + 2 * k3vx + k4vx);
+  v[1] = vy + s * (k1vy + 2 * k2vy + 2 * k3vy + k4vy);
+  v[2] = vz + s * (k1vz + 2 * k2vz + 2 * k3vz + k4vz);
 }
 
 /** Jet-stream profile: westerly wind peaking at 11.5 km, fading by ~20 km. Returns m/s toward the east. */
