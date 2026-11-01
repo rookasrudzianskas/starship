@@ -1,8 +1,8 @@
 import { Euler, Quaternion, Vector3 } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { flapGeometry, flapPivot } from '../../three/vehicles/parts';
-import { flapLoads, flapResponse } from '../flap-aero';
-import { commandFlaps, newFlaps, type FlapPhase } from '../guidance/flaps';
+import { flapLoads, flapNormalPressures, flapResponse } from '../flap-aero';
+import { advanceFlaps, commandFlaps, newFlaps, type FlapPhase } from '../guidance/flaps';
 import { aeroForce, airVelocity } from '../physics';
 import { Body, VehicleRt } from '../runtime';
 import { SHIP_GEOMETRY, shipNoseRadius } from '../ship-geometry';
@@ -83,6 +83,7 @@ function meshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[]
 /** Absolute plate oracle: compute each local speed, pressure and incidence independently. */
 function rotatingMeshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[], flow: V3, density: number, com: number, omega: V3, hingeRates?: number[]) {
   const force = new Vector3(), moment = new Vector3();
+  const normalPressures: number[] = [];
   let dissipatedPower = 0, hingePower = 0;
   for (let i = 0; i < 4; i++) {
     const p = plates[i];
@@ -95,13 +96,65 @@ function rotatingMeshWrench(plates: ReturnType<typeof renderedPlate>[], angles: 
     localFlow.add(hingeVelocity);
     const pressure = 0.5 * density * localFlow.lengthSq();
     const incidence = localFlow.clone().normalize().dot(normal);
+    normalPressures.push(pressure * incidence * incidence);
     const f = normal.clone().multiplyScalar(-2 * pressure * p.area * incidence * Math.abs(incidence));
     force.add(f); moment.add(arm.clone().cross(f));
     hingePower += f.dot(hingeVelocity);
     dissipatedPower -= density * p.area * Math.abs(localFlow.dot(normal)) ** 3;
   }
-  return { force, moment, dissipatedPower, hingePower };
+  return { force, moment, dissipatedPower, hingePower, normalPressures };
 }
+
+describe('actual plate normal pressure for actuator loading', () => {
+  it.each(GENERATIONS)('%s matches the independent Three mesh oracle for body and hinge rates in any attitude', (gen) => {
+    const plates = [0, 1, 2, 3].map(i => renderedPlate(gen, i, 128));
+    const angles = [7, 60, 31, 89], rates = [-12, 18, -27, 9], pressures = new Float64Array(4);
+    for (const attitude of [new Quaternion(), BODY_TO_WORLD]) {
+      const q = Float64Array.from(attitude.toArray());
+      for (const flow of [v3(), v3(70, -40, 180)]) for (const omega of [v3(), v3(0.17, -0.23, 0.11)]) {
+        for (const hingeRates of [undefined, rates]) for (const com of [20, 30]) {
+          const expected = rotatingMeshWrench(plates, angles, flow, 0.37, com, omega, hingeRates).normalPressures;
+          const worldFlow = Float64Array.from(vec(flow).applyQuaternion(attitude).toArray());
+          const worldOmega = Float64Array.from(vec(omega).applyQuaternion(attitude).toArray());
+          flapNormalPressures(pressures, gen, angles, q, worldFlow, 0.37, com, worldOmega, hingeRates);
+          for (let i = 0; i < 4; i++) expect(Math.abs(pressures[i] - expected[i])).toBeLessThanOrEqual(0.0001 * Math.max(1, expected[i]));
+        }
+      }
+    }
+  });
+
+  it.each(GENERATIONS)('%s mirrors pressures with mirrored translation, axial body rates and hinge rates', (gen) => {
+    const q = Float64Array.of(0, 0, 0, 1), a = new Float64Array(4), b = new Float64Array(4);
+    const angles = [7, 60, 31, 89], rates = [-12, 18, -27, 9], mirror = (v: number[]) => [v[1], v[0], v[3], v[2]];
+    flapNormalPressures(a, gen, angles, q, v3(70, -40, 180), 0.37, 23, v3(0.17, -0.23, 0.11), rates);
+    flapNormalPressures(b, gen, mirror(angles), q, v3(-70, -40, 180), 0.37, 23, v3(0.17, 0.23, -0.11), mirror(rates));
+    for (let i = 0; i < 4; i++) expect(b[i]).toBeCloseTo(a[i ^ 1], 10);
+  });
+
+  it('leaves an edge-on plate unloaded while a broadside plate slows under the same CM flow', () => {
+    const pressures = new Float64Array(4), state = newFlaps();
+    state.angles.set([45, 45, 90, 0]); state.targets.set([45, 45, 0, 90]);
+    flapNormalPressures(pressures, 'v3', state.angles, Float64Array.of(0, 0, 0, 1), v3(0, 0, 200), 1, 25);
+    expect(pressures[2]).toBeLessThan(1e-20);
+    expect(pressures[3]).toBe(20_000);
+    advanceFlaps(state, 0.75, pressures);
+    expect(state.rates[2]).toBe(-30);
+    expect(state.rates[3]).toBeCloseTo(20.25, 12);
+  });
+
+  it('clears reused output in vacuum and treats omitted body/hinge rates exactly as explicit zeros', () => {
+    const pressures = new Float64Array(4), q = Float64Array.of(0, 0, 0, 1), angles = [7, 60, 31, 89], flow = v3(70, -40, 180);
+    flapNormalPressures(pressures, 'b2', angles, q, flow, 0.37, 23);
+    const noRates = pressures.slice();
+    flapNormalPressures(pressures, 'b2', angles, q, flow, 0.37, 23, v3(), [0, 0, 0, 0]);
+    expect(pressures).toEqual(noRates);
+    for (const density of [0, -1, NaN, Infinity]) {
+      pressures.fill(123);
+      flapNormalPressures(pressures, 'b2', angles, q, flow, density, 23, v3(1, 2, 3), [30, -30, 20, -20]);
+      expect(Array.from(pressures)).toEqual([0, 0, 0, 0]);
+    }
+  });
+});
 
 function rotatingResidual(plates: ReturnType<typeof renderedPlate>[], angles: number[], automatic: number[], flow: V3, density: number, com: number, omega: V3, hingeRates?: number[]) {
   const actual = rotatingMeshWrench(plates, angles, flow, density, com, omega, hingeRates);

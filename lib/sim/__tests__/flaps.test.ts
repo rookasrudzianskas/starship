@@ -117,6 +117,42 @@ describe('flap command mixer', () => {
 });
 
 describe('flap actuator', () => {
+  it('keeps omitted, scalar and uniform ArrayLike pressure paths bit-identical through mixed commands', () => {
+    const scalar = newFlaps(), array = newFlaps(), omitted = newFlaps(), zero = newFlaps();
+    for (let n = 0; n < 80; n++) {
+      const dt = [0.001, 0.02, 0.17, 2][n % 4], q = [0, 20_000, 100_000, Infinity, NaN, -1][n % 6];
+      for (const s of [scalar, array, omitted, zero]) commandFlaps(s, phases[n % 4], Math.sin(n), Math.cos(n));
+      advanceFlaps(scalar, dt, q);
+      advanceFlaps(array, dt, { length: 4, 0: q, 1: q, 2: q, 3: q });
+      expect(array).toEqual(scalar);
+      advanceFlaps(omitted, dt);
+      advanceFlaps(zero, dt, 0);
+      expect(omitted).toEqual(zero);
+    }
+  });
+
+  it('decelerates independently and continuously when per-flap pressure changes', () => {
+    const s = newFlaps(), pressure = new Float64Array(4), independent = Array.from({ length: 4 }, () => newFlaps());
+    s.targets.fill(0);
+    for (const state of independent) state.targets.fill(0);
+    for (let step = 0; step < 50; step++) {
+      pressure.set(step < 25 ? [0, 0, 0, 0] : [Infinity, 0, 20_000, 100_000]);
+      const before = s.rates.slice();
+      advanceFlaps(s, 0.02, pressure);
+      for (let i = 0; i < 4; i++) {
+        advanceFlaps(independent[i], 0.02, pressure[i]);
+        expect(s.angles[i]).toBe(independent[i].angles[i]);
+        expect(s.rates[i]).toBe(independent[i].rates[i]);
+        expect(Math.abs(s.rates[i] - before[i])).toBeLessThanOrEqual(A * 0.02 + 1e-12);
+      }
+      if (step === 25) {
+        expect(s.rates[0]).toBeCloseTo(-30 + A * 0.02, 12);
+        expect(s.rates[1]).toBe(-30);
+      }
+    }
+    expect(s.rates[0]).toBe(-V * DEFAULT_FLAP_ACTUATOR.minRateFraction);
+  });
+
   it('integrates a trapezoidal slew and stops at the target without skipping the braking point', () => {
     const s = newFlaps();
     s.targets.fill(0);

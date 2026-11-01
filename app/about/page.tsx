@@ -64,7 +64,7 @@ export default function AboutPage() {
           </ul>
           <p>
             The flap readout shows actual angles and motion rates alongside your targets. Positive flap rates mean folding.
-            The surfaces take time to move, and their motion
+            Surfaces facing more airflow can move more slowly. The surfaces take time to move, and their motion
             can change the ship&apos;s attitude and path in the atmosphere. Roll is measured from heat shield down: 0° is down,
             ±90° is side-on and 180° is up. Near a vertical nose, that reference is undefined and the readout shows a dash.
             The separate axial rate measures Earth-relative rotation about the nose, including when vertical. Rates estimate

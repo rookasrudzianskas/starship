@@ -50,6 +50,49 @@ function platePose(g: Plate, sample: number, angle: number): PlatePose {
   return p;
 }
 
+/** Centroid velocity projected on the actual plate normal, including its own hinge motion. */
+function plateNormalSpeed(g: Plate, pose: PlatePose, flow: V3, com: number, wx: number, wy: number, wz: number, hingeRate: number): number {
+  const rx = pose.rx, ry = pose.ry - com, rz = pose.rz;
+  const vx = flow[0] + wy * rz - wz * ry;
+  const vy = flow[1] + wz * rx - wx * rz;
+  const vz = flow[2] + wx * ry - wy * rx;
+  let speed = vx * pose.nx + vy * pose.ny + vz * pose.nz;
+  // (hingeY × centroidOffset)·normal = -cx; hingeRate is signed deg/s.
+  if (hingeRate !== 0) speed -= g.cx * hingeRate * D;
+  return speed;
+}
+
+/**
+ * Absolute effective actuator loading, Pa, in [forward left, forward right, aft left, aft right].
+ * Uses rho * vn² / 2 at each ACTUAL plate centroid, not a measured hinge moment or trim residual.
+ * vAir and airAngularVelocity are inertial; the latter must already subtract atmospheric rotation.
+ * Angles and actual hingeRates are deg and deg/s. Omitted rates mean zero; density <= 0 means vacuum.
+ * The caller owns the persistent four-element output and enforces its atmospheric altitude cutoff.
+ * Shares cached geometry/poses with flapLoads and allocates nothing per call.
+ */
+export function flapNormalPressures(
+  pressures: Float64Array, gen: Generation, angles: ArrayLike<number>, q: Q4, vAir: V3,
+  density: number, com: number, airAngularVelocity?: V3, hingeRates?: ArrayLike<number>,
+): void {
+  pressures.fill(0);
+  if (!(density > 0) || !Number.isFinite(density)) return;
+  qAxis(xAxis, q, 0); qAxis(yAxis, q, 1); qAxis(zAxis, q, 2);
+  localFlow[0] = vAir[0] * xAxis[0] + vAir[1] * xAxis[1] + vAir[2] * xAxis[2];
+  localFlow[1] = vAir[0] * yAxis[0] + vAir[1] * yAxis[1] + vAir[2] * yAxis[2];
+  localFlow[2] = vAir[0] * zAxis[0] + vAir[1] * zAxis[1] + vAir[2] * zAxis[2];
+  const wx = airAngularVelocity?.[0] ?? 0, wy = airAngularVelocity?.[1] ?? 0, wz = airAngularVelocity?.[2] ?? 0;
+  const lx = wx * xAxis[0] + wy * xAxis[1] + wz * xAxis[2];
+  const ly = wx * yAxis[0] + wy * yAxis[1] + wz * yAxis[2];
+  const lz = wx * zAxis[0] + wy * zAxis[1] + wz * zAxis[2];
+  const plates = PLATES[gen];
+  for (let i = 0; i < 4; i++) {
+    const g = plates[i], side = (i & 1) === 0 ? 1 : -1;
+    const pose = platePose(g, 0, angles[i] * D * side);
+    const vn = plateNormalSpeed(g, pose, localFlow, com, lx, ly, lz, side * (hingeRates?.[i] ?? 0));
+    pressures[i] = 0.5 * density * vn * vn;
+  }
+}
+
 /**
  * Trim-relative four-plate loads in body axes. The calibrated whole-ship coefficients already
  * include trimmed flaps and ideal attitude control; only the difference from the automatic
@@ -99,14 +142,7 @@ export function flapLoads(
       const rx = pose.rx, ry = pose.ry - com, rz = pose.rz;
       let pressure: number;
       if (movingSurface) {
-        const vx = flow[0] + wy * rz - wz * ry;
-        const vy = flow[1] + wz * rx - wx * rz;
-        const vz = flow[2] + wx * ry - wy * rx;
-        let normalSpeed = vx * nx + vy * ny + vz * nz;
-        // The moving centroid's hinge offset is cx * rotatedX + cy * hingeY.
-        // (hingeY × offset)·normal = -cx, with signed hinge speed side * rate * DEG.
-        // Apply this only to the actual plate, never the stationary automatic reference.
-        if (sample === 0 && hingeRate !== 0) normalSpeed -= g.cx * side * hingeRate * D;
+        const normalSpeed = plateNormalSpeed(g, pose, flow, com, wx, wy, wz, sample === 0 ? side * hingeRate : 0);
         // -2q_local A incidence|incidence| = -rho A vn|vn|. The normal-speed form
         // avoids division by near-zero local speed, even when rotation cancels translation.
         pressure = -rho * g.area * normalSpeed * Math.abs(normalSpeed) * (sample === 0 ? 1 : -1);

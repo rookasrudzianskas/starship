@@ -1,8 +1,10 @@
 import { spin as spinFn } from './attitude';
+import { airDensity as airDensityFn } from './atmosphere';
 import { shipRollReference, steerFlight as slewFn } from './guidance/roll';
 import { bodyPointEcef, eventState, landingTargetEcef, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
 import { engineName, MIN_THROTTLE as MIN_THROTTLE_VALUE, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
+import { flapNormalPressures as flapNormalPressuresFn } from './flap-aero';
 import { radialUp as radialUpFn, inertialToEcef } from './geo';
 import { entryAoA, predictEntry, type EntryPrediction } from './guidance/entry';
 import { landingThrust, landingTiltCap } from './guidance/landing';
@@ -27,6 +29,8 @@ const MIN_THROTTLE = MIN_THROTTLE_VALUE;
 const SPOOL_DOWN = SPOOL_DOWN_VALUE;
 const slew = slewFn;
 const commandFlaps = commandFlapsFn, advanceFlaps = advanceFlapsFn;
+const flapNormalPressures = flapNormalPressuresFn;
+const airDensity = airDensityFn;
 const spin = spinFn;
 const stepBody = stepBodyFn;
 const recordSample = recordSampleFn;
@@ -100,6 +104,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const tb = ctx.shipTrack;
   const flaps = newFlaps(), aero = flaps.angles;
   const automaticFlaps = flaps.targets.slice();
+  const flapPressures = new Float64Array(4), flapAirAngularVelocity = v3();
   const flapOverride: Array<number | null> = [null, null, null, null];
   let flapPhase: FlapPhase = 'stow';
   let flapRoll = 0, flapPitch = 0;
@@ -848,7 +853,21 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       lastFlapPhase = flapPhase; lastFlapRoll = flapRoll; lastFlapPitch = flapPitch;
       for (let i = 0; i < 4; i++) if (flapOverride[i] !== null) flaps.targets[i] = flapOverride[i]!;
     }
-    advanceFlaps(flaps, dt, air.q);
+    if (surfacesMoving()) {
+      // Keep the existing explicit step scheme: prior AirData, current actual attitude/rates.
+      // Gravity-only coasts do not refresh AirData density. Refresh just this actuator input
+      // while moving above 140 km, without changing the coast's translation model.
+      // Co-rotating air has angular velocity [0, 0, OMEGA] in inertial axes.
+      if (air.alt < 180_000 && air.density > 0) {
+        flapAirAngularVelocity[0] = body.w[0];
+        flapAirAngularVelocity[1] = body.w[1];
+        flapAirAngularVelocity[2] = body.w[2] - OMEGA;
+        const density = mode === 'coast' && air.alt > 140_000 ? airDensity(air.alt) : air.density;
+        flapNormalPressures(flapPressures, ctx.flight.generation, aero, body.q, air.vAir,
+          density, part.com(), flapAirAngularVelocity, flaps.rates);
+      } else flapPressures.fill(0);
+      advanceFlaps(flaps, dt, flapPressures);
+    }
 
     if (!powered && mode === 'coast' && air.alt > 140_000) {
       coastBody(body, dt, air);

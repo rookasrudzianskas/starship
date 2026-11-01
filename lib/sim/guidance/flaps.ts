@@ -88,6 +88,8 @@ export function flapRateLimit(q: number, actuator: Readonly<FlapActuator> = DEFA
 
 /**
  * Advance four independent rate/acceleration-limited hinges, in place; dt is seconds, q is Pa.
+ * q may be a shared scalar (legacy behavior), or four actual plate normal pressures in flap order.
+ * Omitted q means unloaded. The per-flap form changes only cruise speed, not braking authority.
  * Uses exact constant-acceleration/coast segments, so a 2 s coast step cannot skip the braking point.
  * Commands and pressure are held throughout the step. Finite positive actuator parameters required.
  * Nonpositive/nonfinite dt freezes state. Invalid target values hold the current angle.
@@ -98,14 +100,16 @@ export function flapRateLimit(q: number, actuator: Readonly<FlapActuator> = DEFA
  * with finite deceleration, not an instantaneous rate clamp. Braking authority stays constant with q.
  * Callers may override targets, but must leave the internally maintained angles/rates intact.
  */
-export function advanceFlaps(state: FlapState, dt: number, q: number, actuator: Readonly<FlapActuator> = DEFAULT_FLAP_ACTUATOR): void {
+export function advanceFlaps(state: FlapState, dt: number, q: number | ArrayLike<number> = 0, actuator: Readonly<FlapActuator> = DEFAULT_FLAP_ACTUATOR): void {
   if (!(dt > 0) || !Number.isFinite(dt)) return;
   if (state.angles[0] === state.targets[0] && state.angles[1] === state.targets[1] && state.angles[2] === state.targets[2] && state.angles[3] === state.targets[3]
       && state.rates[0] === 0 && state.rates[1] === 0 && state.rates[2] === 0 && state.rates[3] === 0) return;
   const acceleration = actuator.maxAcceleration;
-  const speedLimit = flapRateLimit(q, actuator);
-  if (!(acceleration > 0) || !Number.isFinite(acceleration) || !(speedLimit > 0) || !Number.isFinite(speedLimit)) return;
+  const sharedLimit = typeof q === 'number' ? flapRateLimit(q, actuator) : 0;
+  if (!(acceleration > 0) || !Number.isFinite(acceleration)) return;
   for (let i = 0; i < 4; i++) {
+    const speedLimit = typeof q === 'number' ? sharedLimit : flapRateLimit(q[i], actuator);
+    if (!(speedLimit > 0) || !Number.isFinite(speedLimit)) continue;
     let angle = state.angles[i], rate = state.rates[i], remaining = dt;
     const command = state.targets[i];
     const target = Number.isFinite(command) ? Math.max(0, Math.min(90, command)) : angle;

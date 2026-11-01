@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { atmosphere } from '../atmosphere';
 import { advanceFlaps, newFlaps } from '../guidance/flaps';
 import { Body, VehicleRt } from '../runtime';
 import { createTrackSample, sampleTrack } from '../sample';
@@ -9,10 +10,53 @@ import { vehicleSpec } from '../vehicles';
 
 // Observe the real ship -> stepBody boundary while retaining the complete real integration.
 const rateProbe = vi.hoisted(() => ({ enabled: false, missing: false, changedReference: false, aliasedAngles: false, sawDeployment: false, reference: null as ArrayLike<number> | null }));
+const pressureProbe = vi.hoisted(() => ({
+  body: null as Body | null, air: null as AirData | null, reference: null as ArrayLike<number> | null,
+  omegaReference: null as ArrayLike<number> | null, invalid: false, sawLocal: false, sawVacuum: false, sawFreshCoast: false,
+}));
+vi.mock('../flap-aero', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../flap-aero')>();
+  return { ...actual, flapNormalPressures(...args: Parameters<typeof actual.flapNormalPressures>) {
+    if (rateProbe.enabled) {
+      const [out, , angles, q, flow, density, com, omega, rates] = args;
+      const { body, air } = pressureProbe;
+      const refreshed = air !== null && air.alt > 140_000 && density === atmosphere(air.alt).density;
+      pressureProbe.sawFreshCoast ||= refreshed && density !== air?.density;
+      pressureProbe.invalid ||= !body || !air || q !== body.q || flow !== air.vAir || (density !== air.density && !refreshed)
+        || com !== body.parts[0].com() || air.alt >= 180_000 || !(density > 0)
+        || !omega || omega[0] !== body.w[0] || omega[1] !== body.w[1] || omega[2] !== body.w[2] - EARTH_OMEGA
+        || rates !== rateProbe.reference || out === angles || out === rates;
+      if (pressureProbe.omegaReference && pressureProbe.omegaReference !== omega) pressureProbe.invalid = true;
+      pressureProbe.omegaReference = omega ?? null;
+      pressureProbe.sawLocal = true;
+    }
+    actual.flapNormalPressures(...args);
+  } };
+});
+vi.mock('../guidance/flaps', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../guidance/flaps')>();
+  return { ...actual, advanceFlaps(...args: Parameters<typeof actual.advanceFlaps>) {
+    if (rateProbe.enabled) {
+      const [state, , pressure] = args;
+      pressureProbe.invalid ||= !(pressure instanceof Float64Array) || pressure.length !== 4
+        || pressure === state.angles || pressure === state.rates || pressure === state.targets;
+      if (typeof pressure !== 'number' && pressure) {
+        if (pressureProbe.reference && pressureProbe.reference !== pressure) pressureProbe.invalid = true;
+        pressureProbe.reference = pressure;
+        if (pressureProbe.air && pressureProbe.air.alt >= 180_000) {
+          pressureProbe.sawVacuum = true;
+          for (let i = 0; i < 4; i++) pressureProbe.invalid ||= pressure[i] !== 0;
+        }
+      }
+    }
+    actual.advanceFlaps(...args);
+  } };
+});
 vi.mock('../step', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../step')>();
   return { ...actual, stepBody(body: Body, dt: number, wind: number, air: AirData, opts?: StepOptions) {
     if (rateProbe.enabled && opts?.flaps) {
+      pressureProbe.body = body; pressureProbe.air = air;
       const f = opts.flaps;
       if (!f.rates) rateProbe.missing = true;
       else {
@@ -35,29 +79,35 @@ describe('flap commands through the flight integrator', () => {
     const baseline = simulateFlight(5, nominal);
     Object.assign(rateProbe, { enabled: true, missing: false, changedReference: false, aliasedAngles: false, sawDeployment: false, reference: null });
     let changed: ReturnType<typeof simulateFlight>;
-    try { changed = simulateFlight(5, { ...nominal, interventions: [flap(600, 2, 0), flap(620, 2, null)] }); }
+    // First exercise the 140–180 km coast's fresh density, then the >=180 km cutoff.
+    try { changed = simulateFlight(5, { ...nominal, interventions: [flap(600, 2, 0), flap(620, 2, null), flap(800, 2, 0), flap(820, 2, null)] }); }
     finally { rateProbe.enabled = false; }
     expect(rateProbe.missing).toBe(false);
     expect(rateProbe.reference).toBeInstanceOf(Float64Array);
     expect(rateProbe.changedReference).toBe(false);
     expect(rateProbe.aliasedAngles).toBe(false);
     expect(rateProbe.sawDeployment).toBe(true);
-    const before = at(changed.ship, 600), halfway = at(changed.ship, 601), held = at(changed.ship, 615), released = at(changed.ship, 620), restored = at(changed.ship, 630);
+    expect(pressureProbe.invalid).toBe(false);
+    expect(pressureProbe.reference).toBeInstanceOf(Float64Array);
+    expect(pressureProbe.sawLocal).toBe(true);
+    expect(pressureProbe.sawVacuum).toBe(true);
+    expect(pressureProbe.sawFreshCoast).toBe(true);
+    const before = at(changed.ship, 800), halfway = at(changed.ship, 801), held = at(changed.ship, 815), released = at(changed.ship, 820), restored = at(changed.ship, 830);
     expect(before.aero).toEqual([75, 75, 75, 75]);
     expect(halfway.aero[2]).toBeGreaterThan(0);
     expect(halfway.aero[2]).toBeLessThan(75);
     expect(held.aero).toEqual([75, 75, 0, 75]);
     expect(released.aero[2]).toBe(0);
     expect(restored.aero).toEqual([75, 75, 75, 75]);
-    const sameTime = at(baseline.ship, 630);
-    expect(restored.alt).toBeGreaterThan(140_000);
+    const sameTime = at(baseline.ship, 830);
+    expect(restored.alt).toBeGreaterThan(180_000);
     expect(restored.q).toBeLessThan(0.05);
     // Actuator movement refines coast timesteps; gravity integration remains equivalent to sub-mm precision.
     for (const key of ['x', 'y', 'z'] as const) {
       expect(restored.pos[key]).toBeCloseTo(sameTime.pos[key], 3);
       expect(restored.vel[key]).toBeCloseTo(sameTime.vel[key], 5);
     }
-    expect(changed.events.filter(e => e.short === 'FLAP')).toHaveLength(2);
+    expect(changed.events.filter(e => e.short === 'FLAP').map(e => e.t)).toEqual([600, 620, 800, 820]);
   });
 
   it('changes both trajectory and attitude in air, preserving the exact past and continuous surface motion', () => {
