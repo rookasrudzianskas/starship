@@ -1,7 +1,30 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { advanceFlaps, newFlaps } from '../guidance/flaps';
+import { Body, VehicleRt } from '../runtime';
 import { createTrackSample, sampleTrack } from '../sample';
 import { simulateFlight } from '../simulate';
-import type { Intervention, Track } from '../types';
+import { newAirData, stepBody, type AirData, type StepOptions } from '../step';
+import { EARTH_OMEGA, EARTH_RADIUS, type Generation, type Intervention, type Track } from '../types';
+import { vehicleSpec } from '../vehicles';
+
+// Observe the real ship -> stepBody boundary while retaining the complete real integration.
+const rateProbe = vi.hoisted(() => ({ enabled: false, missing: false, changedReference: false, aliasedAngles: false, sawDeployment: false, reference: null as ArrayLike<number> | null }));
+vi.mock('../step', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../step')>();
+  return { ...actual, stepBody(body: Body, dt: number, wind: number, air: AirData, opts?: StepOptions) {
+    if (rateProbe.enabled && opts?.flaps) {
+      const f = opts.flaps;
+      if (!f.rates) rateProbe.missing = true;
+      else {
+        if (rateProbe.reference && rateProbe.reference !== f.rates) rateProbe.changedReference = true;
+        rateProbe.reference = f.rates;
+        rateProbe.aliasedAngles ||= f.rates === f.angles;
+        for (let i = 0; i < 4; i++) rateProbe.sawDeployment ||= f.rates[i] < 0;
+      }
+    }
+    actual.stepBody(body, dt, wind, air, opts);
+  } };
+});
 
 const nominal = { asFlown: true, interventions: [] };
 const flap = (t: number, index: 0 | 1 | 2 | 3, deg: number | null): Intervention => ({ id: `${t}-${index}`, kind: 'flap', vehicle: 'ship', flap: index, deg, t });
@@ -10,7 +33,15 @@ function at(track: Track, t: number) { return sampleTrack(track, t, createTrackS
 describe('flap commands through the flight integrator', () => {
   it('moves one surface in vacuum, holds its command, then returns smoothly to automatic without changing the coast', () => {
     const baseline = simulateFlight(5, nominal);
-    const changed = simulateFlight(5, { ...nominal, interventions: [flap(600, 2, 0), flap(620, 2, null)] });
+    Object.assign(rateProbe, { enabled: true, missing: false, changedReference: false, aliasedAngles: false, sawDeployment: false, reference: null });
+    let changed: ReturnType<typeof simulateFlight>;
+    try { changed = simulateFlight(5, { ...nominal, interventions: [flap(600, 2, 0), flap(620, 2, null)] }); }
+    finally { rateProbe.enabled = false; }
+    expect(rateProbe.missing).toBe(false);
+    expect(rateProbe.reference).toBeInstanceOf(Float64Array);
+    expect(rateProbe.changedReference).toBe(false);
+    expect(rateProbe.aliasedAngles).toBe(false);
+    expect(rateProbe.sawDeployment).toBe(true);
     const before = at(changed.ship, 600), halfway = at(changed.ship, 601), held = at(changed.ship, 615), released = at(changed.ship, 620), restored = at(changed.ship, 630);
     expect(before.aero).toEqual([75, 75, 75, 75]);
     expect(halfway.aero[2]).toBeGreaterThan(0);
@@ -64,5 +95,59 @@ describe('flap commands through the flight integrator', () => {
     const changed = simulateFlight(5, { ...nominal, interventions: [flap(0, 0, 0), flap(end + 1, 0, 90)] });
     expect(changed.ship.aero).toEqual(baseline.ship.aero);
     expect(changed.events.filter(e => e.short === 'FLAP')).toHaveLength(0);
+  });
+});
+
+function stationaryBody(gen: Generation, altitude: number) {
+  const spec = vehicleSpec('ship', gen), part = new VehicleRt(spec, spec.dryMass, 30_000, 0);
+  const body = new Body([part], spec.aero, spec.length);
+  body.r.set([EARTH_RADIUS + altitude, 0, 0]);
+  body.v.set([0, EARTH_OMEGA * body.r[0], 0]);
+  body.w.set([0, 0, EARTH_OMEGA]);
+  return body;
+}
+
+describe('persistent actuators through the force integrator', () => {
+  it.each(['b1', 'b2', 'v3'] as const)('%s uses actual hinge motion at zero CM airspeed and becomes exactly trim-neutral when settled', (gen) => {
+    const flaps = newFlaps(), automatic = flaps.angles.slice(), rates = flaps.rates;
+    const opts: StepOptions = { flaps: { gen, angles: flaps.angles, automatic, rates } };
+    flaps.targets[2] = 15;
+    // Issuing a new target has no aerodynamic hinge-velocity effect before the actuator moves.
+    const waiting = stationaryBody(gen, 11_500), waitingAir = newAirData();
+    stepBody(waiting, 0.02, 0, waitingAir, opts);
+    expect(Array.from(waitingAir.aero)).toEqual([0, 0, 0]);
+    advanceFlaps(flaps, 0.1, 0);
+    expect(flaps.rates).toBe(rates);
+    expect(flaps.rates[2]).toBeLessThan(0);
+    // Equal instantaneous angles isolate the rate term during a moving hinge's crossing of trim.
+    automatic.set(flaps.angles);
+    const moving = stationaryBody(gen, 11_500), air = newAirData(), originalW = moving.w.slice();
+    stepBody(moving, 0.02, 0, air, opts);
+    expect(air.q).toBe(0);
+    expect(Math.hypot(...air.aero)).toBeGreaterThan(0);
+    expect(moving.w).not.toEqual(originalW);
+    advanceFlaps(flaps, 10, air.q);
+    expect(flaps.rates).toBe(rates);
+    expect(Array.from(flaps.rates)).toEqual([0, 0, 0, 0]);
+    automatic.set(flaps.angles);
+    const noFlaps = stationaryBody(gen, 11_500), baselineAir = newAirData();
+    for (const key of ['r', 'v', 'q', 'w', 'acc'] as const) noFlaps[key].set(moving[key]);
+    stepBody(noFlaps, 0.02, 0, baselineAir);
+    stepBody(moving, 0.02, 0, air, opts);
+    for (const key of ['r', 'v', 'q', 'w', 'acc'] as const) expect(moving[key]).toEqual(noFlaps[key]);
+    expect(air).toEqual(baselineAir);
+  });
+
+  it.each(['b1', 'b2', 'v3'] as const)('%s preserves the atmospheric cutoff for moving hinges at equal trim angles', (gen) => {
+    const flaps = newFlaps(); flaps.targets[0] = 15;
+    advanceFlaps(flaps, 0.1, 0);
+    const opts: StepOptions = { flaps: { gen, angles: flaps.angles, automatic: flaps.angles.slice(), rates: flaps.rates } };
+    for (const altitude of [179_999, 180_000, 200_000]) {
+      const body = stationaryBody(gen, altitude), air = newAirData(), initialW = body.w.slice();
+      stepBody(body, 0.02, 0, air, opts);
+      expect(air.q).toBe(0);
+      if (altitude < 180_000) expect(Math.hypot(...air.aero)).toBeGreaterThan(0);
+      else { expect(Array.from(air.aero)).toEqual([0, 0, 0]); expect(body.w).toEqual(initialW); }
+    }
   });
 });

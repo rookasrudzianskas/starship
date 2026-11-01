@@ -55,25 +55,30 @@ function platePose(g: Plate, sample: number, angle: number): PlatePose {
  * include trimmed flaps and ideal attitude control; only the difference from the automatic
  * commands is added. This avoids counting their drag twice while retaining actuator lag and
  * manual overrides. Normals follow each actual hinge rotation; moments use the current CoM.
- * At equal actual/automatic angles the incremental wrench is exactly zero.
+ * At equal actual/automatic angles and stationary hinges the incremental wrench is exactly zero.
  *
  * Optional airAngularVelocity is the body's angular rate relative to the atmosphere, in BODY
  * axes (rad/s). Each actual/automatic centroid sees flow + omega × (centroid - CoM). Density
  * is optional for moving-body callers (inferred from 2q/|flow|²), but must be supplied for
  * rotation with zero centre-of-mass airspeed. An explicit zero density means vacuum.
- * With no angular rate, keep the legacy arithmetic and its low-speed cutoff exactly.
+ * Optional hingeRates contains actual actuator rates in deg/s (positive folds leeward). Only
+ * the actual plate moves about its hinge; automatic trim is a stationary-hinge reference.
+ * With no angular or hinge rate, keep the legacy arithmetic and its low-speed cutoff exactly.
+ * This is a centroid pressure approximation, not a model of flap inertia or actuator reaction torque.
  */
 export function flapLoads(
   force: V3, moment: V3, gen: Generation, angles: ArrayLike<number>, automatic: ArrayLike<number>,
-  flow: V3, dynamicPressure: number, com: number, airAngularVelocity?: V3, density?: number,
+  flow: V3, dynamicPressure: number, com: number, airAngularVelocity?: V3, density?: number, hingeRates?: ArrayLike<number>,
 ): void {
   force.fill(0); moment.fill(0);
   if (density !== undefined && !(density > 0)) return;
   const wx = airAngularVelocity?.[0] ?? 0, wy = airAngularVelocity?.[1] ?? 0, wz = airAngularVelocity?.[2] ?? 0;
   const rotating = wx !== 0 || wy !== 0 || wz !== 0;
+  const movingHinges = hingeRates !== undefined && (hingeRates[0] !== 0 || hingeRates[1] !== 0 || hingeRates[2] !== 0 || hingeRates[3] !== 0);
+  const movingSurface = rotating || movingHinges;
   const speed2 = flow[0] * flow[0] + flow[1] * flow[1] + flow[2] * flow[2];
   let rho = 0, ux = 0, uy = 0, uz = 0;
-  if (rotating) {
+  if (movingSurface) {
     rho = density ?? (speed2 > 0 ? 2 * dynamicPressure / speed2 : 0);
     if (!(rho > 0) || !Number.isFinite(rho)) return;
   } else {
@@ -83,7 +88,8 @@ export function flapLoads(
   }
   const plates = PLATES[gen];
   for (let i = 0; i < 4; i++) {
-    if (angles[i] === automatic[i]) continue;
+    const hingeRate = hingeRates?.[i] ?? 0;
+    if (angles[i] === automatic[i] && hingeRate === 0) continue;
     const g = plates[i];
     const side = (i & 1) === 0 ? 1 : -1;
     for (let sample = 0; sample < 2; sample++) {
@@ -92,11 +98,15 @@ export function flapLoads(
       const nx = pose.nx, ny = pose.ny, nz = pose.nz;
       const rx = pose.rx, ry = pose.ry - com, rz = pose.rz;
       let pressure: number;
-      if (rotating) {
+      if (movingSurface) {
         const vx = flow[0] + wy * rz - wz * ry;
         const vy = flow[1] + wz * rx - wx * rz;
         const vz = flow[2] + wx * ry - wy * rx;
-        const normalSpeed = vx * nx + vy * ny + vz * nz;
+        let normalSpeed = vx * nx + vy * ny + vz * nz;
+        // The moving centroid's hinge offset is cx * rotatedX + cy * hingeY.
+        // (hingeY × offset)·normal = -cx, with signed hinge speed side * rate * DEG.
+        // Apply this only to the actual plate, never the stationary automatic reference.
+        if (sample === 0 && hingeRate !== 0) normalSpeed -= g.cx * side * hingeRate * D;
         // -2q_local A incidence|incidence| = -rho A vn|vn|. The normal-speed form
         // avoids division by near-zero local speed, even when rotation cancels translation.
         pressure = -rho * g.area * normalSpeed * Math.abs(normalSpeed) * (sample === 0 ? 1 : -1);
@@ -119,14 +129,16 @@ export function flapLoads(
  * airAngularVelocity, if provided, has INERTIAL components and is already relative to the
  * local air (body.w minus Earth's rotation for the co-rotating atmosphere). Omission means
  * zero relative rate, preserving existing callers. Density resolves zero-CM-speed rotation.
- * This changes only the trim-relative wrench, not the calibrated body's angular damping.
+ * hingeRates are actual actuator deg/s, not target derivatives; omitted/zero rates retain
+ * the prior response. This changes only the trim-relative wrench, not calibrated body damping.
  */
 export function flapResponse(
   force: V3, acceleration: V3, moment: V3, gen: Generation, angles: ArrayLike<number>, automatic: ArrayLike<number>,
   q: Q4, vAir: V3, dynamicPressure: number, mass: number, length: number, com: number,
-  airAngularVelocity?: V3, density?: number,
+  airAngularVelocity?: V3, density?: number, hingeRates?: ArrayLike<number>,
 ): void {
-  if (angles[0] === automatic[0] && angles[1] === automatic[1] && angles[2] === automatic[2] && angles[3] === automatic[3]) {
+  if (angles[0] === automatic[0] && angles[1] === automatic[1] && angles[2] === automatic[2] && angles[3] === automatic[3]
+      && (!hingeRates || (hingeRates[0] === 0 && hingeRates[1] === 0 && hingeRates[2] === 0 && hingeRates[3] === 0))) {
     force.fill(0); acceleration.fill(0); moment.fill(0);
     return;
   }
@@ -143,7 +155,7 @@ export function flapResponse(
     localOmega[2] = wx * zAxis[0] + wy * zAxis[1] + wz * zAxis[2];
     omega = localOmega;
   }
-  flapLoads(force, moment, gen, angles, automatic, localFlow, dynamicPressure, com, omega, density);
+  flapLoads(force, moment, gen, angles, automatic, localFlow, dynamicPressure, com, omega, density, hingeRates);
   const fx = force[0], fy = force[1], fz = force[2];
   const transverse = mass * (length * length / 12 + 4.5 * 4.5 / 4);
   const axial = mass * 4.5 * 4.5 / 2;

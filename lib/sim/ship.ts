@@ -190,7 +190,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const up = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
   const hp = v3();
   const vn = v3(), tmp = v3(), tmp2 = v3(), rE = v3(), vE = v3(), latA = v3();
-  const stepOpts = { extra: null, flaps: { angles: aero, automatic: automaticFlaps, gen: ctx.flight.generation } };
+  const stepOpts = { extra: null, flaps: { angles: aero, rates: flaps.rates, automatic: automaticFlaps, gen: ctx.flight.generation } };
 
   const surfacesMoving = () => {
     for (let i = 0; i < 4; i++) if (flaps.rates[i] !== 0 || flaps.angles[i] !== flaps.targets[i]) return true;

@@ -81,26 +81,30 @@ function meshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[]
 }
 
 /** Absolute plate oracle: compute each local speed, pressure and incidence independently. */
-function rotatingMeshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[], flow: V3, density: number, com: number, omega: V3) {
+function rotatingMeshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[], flow: V3, density: number, com: number, omega: V3, hingeRates?: number[]) {
   const force = new Vector3(), moment = new Vector3();
-  let dissipatedPower = 0;
+  let dissipatedPower = 0, hingePower = 0;
   for (let i = 0; i < 4; i++) {
     const p = plates[i];
     const rotation = p.pivot.quaternion.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), angles[i] * DEG * (p.right ? -1 : 1)));
     const normal = new Vector3(0, 0, 1).applyQuaternion(rotation);
     const arm = p.centroid.clone().applyQuaternion(rotation).add(p.pivot.position).sub(new Vector3(0, com, 0));
     const localFlow = vec(omega).cross(arm).add(vec(flow));
+    const hingeVelocity = p.p1.clone().sub(p.p0).normalize().cross(p.centroid.clone().applyQuaternion(rotation))
+      .multiplyScalar((hingeRates?.[i] ?? 0) * DEG * (p.right ? -1 : 1));
+    localFlow.add(hingeVelocity);
     const pressure = 0.5 * density * localFlow.lengthSq();
     const incidence = localFlow.clone().normalize().dot(normal);
     const f = normal.clone().multiplyScalar(-2 * pressure * p.area * incidence * Math.abs(incidence));
     force.add(f); moment.add(arm.clone().cross(f));
+    hingePower += f.dot(hingeVelocity);
     dissipatedPower -= density * p.area * Math.abs(localFlow.dot(normal)) ** 3;
   }
-  return { force, moment, dissipatedPower };
+  return { force, moment, dissipatedPower, hingePower };
 }
 
-function rotatingResidual(plates: ReturnType<typeof renderedPlate>[], angles: number[], automatic: number[], flow: V3, density: number, com: number, omega: V3) {
-  const actual = rotatingMeshWrench(plates, angles, flow, density, com, omega);
+function rotatingResidual(plates: ReturnType<typeof renderedPlate>[], angles: number[], automatic: number[], flow: V3, density: number, com: number, omega: V3, hingeRates?: number[]) {
+  const actual = rotatingMeshWrench(plates, angles, flow, density, com, omega, hingeRates);
   const trim = rotatingMeshWrench(plates, automatic, flow, density, com, omega);
   return { force: actual.force.sub(trim.force), moment: actual.moment.sub(trim.moment) };
 }
@@ -327,6 +331,108 @@ describe('centroid-local rotational airflow', () => {
       }
     }
     expect(positiveResidual).toBe(true); expect(negativeResidual).toBe(true);
+  });
+});
+
+describe('actual hinge-rate airflow', () => {
+  it.each(GENERATIONS)('%s hinge velocity agrees with finite differences of the rendered centroid', (gen) => {
+    for (let index = 0; index < 4; index++) {
+      const p = renderedPlate(gen, index, 128), side = p.right ? -1 : 1;
+      const centre = (angle: number) => p.centroid.clone().applyAxisAngle(new Vector3(0, 1, 0), side * angle * DEG).applyQuaternion(p.pivot.quaternion).add(p.p0);
+      for (const angle of [0, 18, 45, 75, 90]) for (const rate of [-17, 17]) {
+        const h = 1e-4;
+        const derivative = centre(angle + rate * h).sub(centre(angle - rate * h)).divideScalar(2 * h);
+        const rotation = p.pivot.quaternion.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), side * angle * DEG));
+        const normal = new Vector3(0, 0, 1).applyQuaternion(rotation);
+        const expectedNormalSpeed = -p.centroid.x * side * rate * DEG;
+        expect(derivative.distanceTo(normal.clone().multiplyScalar(expectedNormalSpeed))).toBeLessThan(1e-8);
+        expect(derivative.dot(normal) * rate).toBeLessThan(0); // folding moves leeward on BOTH sides
+      }
+    }
+  });
+
+  it.each(GENERATIONS)('%s matches independent vector hinge/body airflow with a stationary automatic reference', (gen) => {
+    const plates = [0, 1, 2, 3].map((i) => renderedPlate(gen, i, 128)), density = 0.37, angles = [7, 60, 31, 89], rates = [-12, 18, -27, 9];
+    const force = v3(), moment = v3(), acceleration = v3(), mass = 180_000, length = SHIP_GEOMETRY[gen].length;
+    for (const flow of [v3(), v3(1e-9, -1e-9, 0), v3(70, -40, 180)]) for (const omega of [v3(), v3(0.17, -0.23, 0.11)]) {
+      const pressure = 0.5 * density * vec(flow).lengthSq();
+      // Include equality: moving actual hinges must not be subtracted out with static trim.
+      for (const automatic of [TRIM, angles]) {
+        const expected = rotatingResidual(plates, angles, automatic, flow, density, 23, omega, rates);
+        flapLoads(force, moment, gen, angles, automatic, flow, pressure, 23, omega, density, rates);
+        closeVector(force, expected.force, 0.0001); closeVector(moment, expected.moment, 0.0001);
+        expect(Math.hypot(...force, ...moment)).toBeGreaterThan(0);
+        const worldFlow = Float64Array.from(vec(flow).applyQuaternion(BODY_TO_WORLD).toArray());
+        const worldRate = Float64Array.from(vec(omega).applyQuaternion(BODY_TO_WORLD).toArray());
+        flapResponse(force, acceleration, moment, gen, angles, automatic, Float64Array.from(BODY_TO_WORLD.toArray()), worldFlow, pressure, mass, length, 23, worldRate, density, rates);
+        closeVector(force, expected.force.clone().applyQuaternion(BODY_TO_WORLD), 0.0001);
+        closeVector(moment, expected.moment, 0.0001);
+        const transverse = mass * (length ** 2 / 12 + 4.5 ** 2 / 4), axial = mass * 4.5 ** 2 / 2;
+        closeVector(acceleration, new Vector3(expected.moment.x / transverse, expected.moment.y / axial, expected.moment.z / transverse).applyQuaternion(BODY_TO_WORLD), 0.0001);
+      }
+    }
+  });
+
+  it.each(GENERATIONS)('%s retains bit-for-bit results for omitted or zero hinge rates', (gen) => {
+    const force = v3(), moment = v3(), acceleration = v3(), angles = [7, 60, 31, 89], zeroRates = [0, 0, 0, 0];
+    for (const omega of [undefined, v3(), v3(0.17, -0.23, 0.11)]) for (const flow of [v3(), v3(70, -40, 180)]) for (const automatic of [TRIM, angles]) {
+      const pressure = 0.5 * 0.37 * vec(flow).lengthSq(), q = Float64Array.from(BODY_TO_WORLD.toArray());
+      flapLoads(force, moment, gen, angles, automatic, flow, pressure, 23, omega, 0.37);
+      const before = { force: force.slice(), moment: moment.slice() };
+      flapLoads(force, moment, gen, angles, automatic, flow, pressure, 23, omega, 0.37, zeroRates);
+      expect(force).toEqual(before.force); expect(moment).toEqual(before.moment);
+      flapResponse(force, acceleration, moment, gen, angles, automatic, q, flow, pressure, 180_000, SHIP_GEOMETRY[gen].length, 23, omega, 0.37);
+      const response = { force: force.slice(), moment: moment.slice(), acceleration: acceleration.slice() };
+      flapResponse(force, acceleration, moment, gen, angles, automatic, q, flow, pressure, 180_000, SHIP_GEOMETRY[gen].length, 23, omega, 0.37, zeroRates);
+      expect(force).toEqual(response.force); expect(moment).toEqual(response.moment); expect(acceleration).toEqual(response.acceleration);
+      if (automatic === angles) expect(Math.hypot(...force, ...moment, ...acceleration)).toBe(0);
+    }
+  });
+
+  it.each(GENERATIONS)('%s mirrors hinge-only loads and reverses them when actual hinge motion reverses', (gen) => {
+    const angles = [45, 45, 45, 45], force = v3(), moment = v3();
+    for (const index of [0, 2]) {
+      const rates = [0, 0, 0, 0]; rates[index] = 12;
+      flapLoads(force, moment, gen, angles, angles, v3(), 0, 25, undefined, 1.2, rates);
+      const left = { force: force.slice(), moment: moment.slice() };
+      expect(force[2]).toBeGreaterThan(0); // air resists folding into the leeward direction
+      expect(moment[0] * (index === 0 ? 1 : -1)).toBeGreaterThan(0);
+      rates[index] = -12;
+      flapLoads(force, moment, gen, angles, angles, v3(), 0, 25, undefined, 1.2, rates);
+      closeVector(force, vec(left.force).negate()); closeVector(moment, vec(left.moment).negate());
+      rates[index] = 0; rates[index + 1] = 12;
+      flapLoads(force, moment, gen, angles, angles, v3(), 0, 25, undefined, 1.2, rates);
+      closeVector(force, new Vector3(-left.force[0], left.force[1], left.force[2]));
+      closeVector(moment, new Vector3(left.moment[0], -left.moment[1], -left.moment[2]));
+    }
+  });
+
+  it.each(GENERATIONS)('%s requires density for hinge-only airflow and adds no loads in vacuum', (gen) => {
+    const angles = [45, 45, 45, 45], rates = [12, -18, 21, -9], force = v3(), moment = v3(), acceleration = v3();
+    flapLoads(force, moment, gen, angles, angles, v3(), 0, 25, undefined, undefined, rates);
+    expect(Math.hypot(...force, ...moment)).toBe(0);
+    flapLoads(force, moment, gen, angles, angles, v3(), 0, 25, undefined, 0.37, rates);
+    expect(Math.hypot(...force, ...moment)).toBeGreaterThan(0);
+    const flow = v3(70, -40, 180), pressure = 0.5 * 0.37 * vec(flow).lengthSq();
+    flapLoads(force, moment, gen, angles, angles, flow, pressure, 25, undefined, 0.37, rates);
+    const explicit = { force: force.slice(), moment: moment.slice() };
+    flapLoads(force, moment, gen, angles, angles, flow, pressure, 25, undefined, undefined, rates);
+    closeVector(force, vec(explicit.force)); closeVector(moment, vec(explicit.moment));
+    flapResponse(force, acceleration, moment, gen, angles, angles, Float64Array.from(BODY_TO_WORLD.toArray()), flow, pressure, 180_000, SHIP_GEOMETRY[gen].length, 25, v3(0.1, 0.2, 0.3), 0, rates);
+    expect(Math.hypot(...force, ...moment, ...acceleration)).toBe(0);
+  });
+
+  it.each(GENERATIONS)('%s accounts for hinge work in the absolute-plate dissipation balance', (gen) => {
+    const plates = [0, 1, 2, 3].map((i) => renderedPlate(gen, i, 128)), density = 0.37, angles = [7, 60, 31, 89], rates = [-12, 18, -27, 9];
+    const force = v3(), moment = v3(), flow = v3(20, -10, 30), omega = v3(0.17, -0.23, 0.11);
+    const actual = rotatingMeshWrench(plates, angles, flow, density, 23, omega, rates);
+    const trim = rotatingMeshWrench(plates, TRIM, flow, density, 23, omega);
+    const power = actual.force.dot(vec(flow)) + actual.moment.dot(vec(omega)) + actual.hingePower;
+    expect(power).toBeLessThan(0);
+    expect(Math.abs(power - actual.dissipatedPower)).toBeLessThan(1e-9 * -power);
+    flapLoads(force, moment, gen, angles, TRIM, flow, 0.5 * density * vec(flow).lengthSq(), 23, omega, density, rates);
+    const residualWork = vec(force).dot(vec(flow)) + vec(moment).dot(vec(omega)) + actual.hingePower;
+    expect(Math.abs(residualWork - (actual.dissipatedPower - trim.dissipatedPower))).toBeLessThan(0.0001 * Math.max(1, -actual.dissipatedPower, -trim.dissipatedPower));
   });
 });
 

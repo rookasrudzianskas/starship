@@ -61,21 +61,28 @@ export interface StepOptions {
   /** Extra non-gravitational acceleration, m/s² (inertial). */
   extra?: Float64Array | null;
   /** Ship surface state and automatic commands (the trimmed force model's reference). */
-  flaps?: { angles: ArrayLike<number>; automatic: ArrayLike<number>; gen: Generation };
+  flaps?: {
+    angles: ArrayLike<number>;
+    automatic: ArrayLike<number>;
+    gen: Generation;
+    /** Actual actuator rates, deg/s; automatic reference hinges are stationary. */
+    rates?: ArrayLike<number>;
+  };
 }
 
 /** Keep the optional surface calculation out of the shared translation step's hot path. */
 function applyFlapForces(body: Body, dt: number, air: AirData, flaps: NonNullable<StepOptions['flaps']>, mass: number): void {
-  const angles = flaps.angles, automatic = flaps.automatic;
-  // Equal actual/automatic angles give exactly zero incremental wrench. Check before
+  const angles = flaps.angles, automatic = flaps.automatic, rates = flaps.rates;
+  // Equal actual/automatic angles and stopped hinges give zero incremental wrench. Check before
   // computing CoM or clearing scratch vectors; a settled manual override still has loads.
-  if (angles[0] === automatic[0] && angles[1] === automatic[1] && angles[2] === automatic[2] && angles[3] === automatic[3]) return;
+  if (angles[0] === automatic[0] && angles[1] === automatic[1] && angles[2] === automatic[2] && angles[3] === automatic[3]
+      && (!rates || (rates[0] === 0 && rates[1] === 0 && rates[2] === 0 && rates[3] === 0))) return;
   // The atmosphere rotates too: v_point - v_air_point = vAir + (w - Omega) × arm.
   flapAirAngularVelocity[0] = body.w[0];
   flapAirAngularVelocity[1] = body.w[1];
   flapAirAngularVelocity[2] = body.w[2] - OMEGA;
   flapResponse(flapForce, flapAcceleration, flapMoment, flaps.gen, angles, automatic,
-    body.q, air.vAir, air.q, mass, body.length, body.parts[0].com(), flapAirAngularVelocity, air.density);
+    body.q, air.vAir, air.q, mass, body.length, body.parts[0].com(), flapAirAngularVelocity, air.density, rates);
   for (let i = 0; i < 3; i++) {
     air.aero[i] += flapForce[i];
     body.w[i] += flapAcceleration[i] * dt;
