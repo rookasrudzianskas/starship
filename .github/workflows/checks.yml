@@ -21,4 +21,17 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+        id: tests
       - run: npm run build
+      - name: Profile simulator after a test failure
+        if: failure() && steps.tests.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          mkdir -p .next/diagnostics
+          node --cpu-prof --cpu-prof-dir=.next/diagnostics node_modules/vitest/vitest.mjs run lib/sim/__tests__/performance.test.ts
+      - uses: actions/upload-artifact@v4
+        if: failure() && steps.tests.outcome == 'failure'
+        with:
+          name: simulator-cpu-profile
+          path: .next/diagnostics/*.cpuprofile
+          retention-days: 7

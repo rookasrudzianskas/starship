@@ -52,6 +52,7 @@ Other scripts:
 - `npm run typecheck`: generate Next.js route types and check TypeScript.
 - `npm test`: run all Vitest tests serially, including the simulator performance checks with their existing limits.
 - `npm run check`: run lint, type checking, tests and the production build in sequence. CI runs these checks on Node.js 22 after `npm ci`.
+- Failed CI test runs attach a simulator CPU profile to the Checks workflow for investigating performance regressions; the original test result remains a failure.
 - `node scripts/fetch-imagery.mjs`: rebuilds the Earth textures in `public/earth`.
 
 ## Limitations
