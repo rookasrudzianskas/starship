@@ -1,4 +1,5 @@
-import { slew as slewFn, spin as spinFn } from './attitude';
+import { spin as spinFn } from './attitude';
+import { steerFlight as slewFn } from './guidance/roll';
 import { eventState, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
 import { engineName, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
@@ -8,7 +9,7 @@ import { lossKind } from './outcome';
 import { newAirData, stepBody as stepBodyFn } from './step';
 import { EARTH_OMEGA, EARTH_RADIUS, G0, Phase, type EndKind, type PhaseCode } from './types';
 import { planeHeading } from './guidance/plane';
-import { mountedShipAttitude } from './guidance/roll';
+import { mountedShipAttitude, shipRollReference } from './guidance/roll';
 import { FLAPS_STOWED, stackAero, vehicleSpec } from './vehicles';
 import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, qMul, qRotZ, v3 } from './vec';
 
@@ -130,9 +131,8 @@ export function runStack(ctx: SimContext): StackOutcome {
   const stepOpts = { thrustScale: [1, 0.5], extra: null };
   const hP = v3();
   const zRef = v3(), thrDir = v3(), up = v3(), east = v3(), north = v3(), hA = v3(), hV = v3(), hW = v3(), tw = v3();
-  const qT = new Float64Array(4);
   const qShip = new Float64Array(4);
-  const xAx = v3();
+  const xAx = v3(), tumbleAxis = v3();
   holdOnPad(t);
 
   const ex: SampleExtras = { phase, heating: 0, aero: ZERO4, still: true };
@@ -251,6 +251,9 @@ export function runStack(ctx: SimContext): StackOutcome {
       case 'tumble':
         ctx.addEvent('anomaly', evVehicle, at, s, an.note);
         tumbling = true;
+        // Flight 1's observed cartwheel is in the flight plane, not tied to whichever
+        // hull panel happens to face downrange after the ascent roll maneuver.
+        for (let i = 0; i < 3; i++) tumbleAxis[i] = -ctx.planeNormal[i];
         break;
       case 'fts': {
         const later = ctx.flight.anomalies.some((b) => b.kind === 'breakup' && b.t > an.t && (b.vehicle === an.vehicle || b.vehicle === 'stack' || an.vehicle === 'stack'));
@@ -357,9 +360,14 @@ export function runStack(ctx: SimContext): StackOutcome {
         const bias = hsStart === null ? ctx.boosterPitchBias : 0;
         // Short of planned thrust (more engines out than the rest can make up for, or a throttle limit),
         // the pitch-over is held back: the same schedule would bend a slower stack down into thick air.
-        const loft = hsStart === null ? thrustRatio() ** LOFT : 1;
+        const available = thrustRatio();
+        const loft = hsStart === null ? available ** LOFT : 1;
         const gRef = (90 - (90 - p.gammaEnd) * Math.pow(sp, p.turnShape) * loft + bias) * D;
-        const aMax = (air.q >= 20_000 ? 3 : air.q <= 2_000 ? 10 : 10 - (7 * (air.q - 2_000)) / 18_000) * D;
+        const nominalAlpha = (air.q >= 20_000 ? 3 : air.q <= 2_000 ? 10 : 10 - (7 * (air.q - 2_000)) / 18_000) * D;
+        // Low thrust needs more nose-up authority to arrest a gravity turn. Bound that recovery
+        // by the same q·alpha load envelope instead of trapping a weakened stack in a shallow dive.
+        const climbAuthority = clamp(booster.litThrustPotential(air.pressure) * Math.min(1, booster.ceiling) / (body.mass * GEE) - 1, 0, 1);
+        const aMax = Math.max(nominalAlpha, Math.min(15 * D, QALPHA_MAX / Math.max(air.q, 1), nominalAlpha + (1 - available) * climbAuthority * 10 * D));
         el = clamp(gam - 2.5 * (gam - gRef), gam - aMax, gam + aMax);
         // Against the actual airflow a wind may add angle of attack, up to the structure's q·α limit.
         const va = air.vAir;
@@ -370,21 +378,20 @@ export function runStack(ctx: SimContext): StackOutcome {
         el = clamp(clamp(el, gAir - aAir, gAir + aAir), -10 * D, 90 * D);
       }
       for (let i = 0; i < 3; i++) thrDir[i] = Math.sin(el) * up[i] + Math.cos(el) * hA[i];
-      // Roll: from facing the tower to belly-down (+Z opposite the downrange direction).
+      // The ship rolls heat-shield right of track; the booster has the opposite axial mount.
       ecefToInertial(tw, towerE, t);
       const rs = clamp((t - 2) / 10, 0, 1);
       const rb = rs * rs * (3 - 2 * rs);
       const twl = Math.sqrt(tw[0] * tw[0] + tw[1] * tw[1] + tw[2] * tw[2]) || 1;
-      for (let i = 0; i < 3; i++) zRef[i] = (1 - rb) * (tw[i] / twl) - rb * hA[i];
+      shipRollReference(zRef, up, hA, ctx.flight.n, t);
+      for (let i = 0; i < 3; i++) zRef[i] = (1 - rb) * (tw[i] / twl) - rb * zRef[i];
       if (hsStart === null) {
-        qLook(qT, thrDir, zRef);
-        slew(body, qT, 5 * D, 2 * D, adt);
+        slew(body, thrDir, zRef, 5 * D, 2 * D, adt);
       } else spin(body, adt);
     } else if (tumbling) {
       // Thrust vector control lost: the stack cartwheels about its pitch axis.
-      qAxis(xAx, body.q, 0);
       const wl = Math.sqrt(body.w[0] * body.w[0] + body.w[1] * body.w[1] + body.w[2] * body.w[2]);
-      if (wl < p.tumbleRate * D) for (let i = 0; i < 3; i++) body.w[i] += xAx[i] * 3 * D * dt;
+      if (wl < p.tumbleRate * D) for (let i = 0; i < 3; i++) body.w[i] += tumbleAxis[i] * 3 * D * dt;
       spin(body, dt);
     }
     if (hsStart === null) {

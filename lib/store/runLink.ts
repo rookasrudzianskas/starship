@@ -9,11 +9,12 @@
  * (P fly the plan, B<c|s|e> booster recovery, M<s|o> ship mission, N payload count, W wind m/s,
  * L booster propellant %), then each command as <time><kind><b|s><value>:
  * e engine out (engine index), h throttle limit (%), x terminate, g stage now, p steering bias (deg),
- * k skip the next burn.
+ * k skip the next burn. Flaps use <time>fs<index>d<degrees>, or <time>fs<index>a for automatic.
  */
 import type { BoosterRecovery, Intervention, Scenario, ShipMission, VehicleId } from '@/lib/sim/types';
 import { FLIGHTS, getFlight, LATEST_FLIGHT } from '../flights/catalog';
 import { engineLayout } from '../sim/engines';
+import { normalizeFlapCommand } from '../sim/scenario';
 import { AS_FLOWN, isModified, MAX_STEERING_BIAS, newInterventionId, type CameraMode, type FollowMode, type ReplayState } from './replay';
 
 export interface RunLink {
@@ -56,6 +57,11 @@ function commandCode(i: Intervention): string {
       return `${at}g`;
     case 'pitch':
       return `${at}p${VEHICLE_CODE[i.vehicle]}${num(i.deg)}`;
+    case 'flap': {
+      const command = normalizeFlapCommand(i);
+      if (!command || !Number.isFinite(i.t) || i.t < 0 || i.t > 1e5) return '';
+      return `${at}fs${command.flap}${command.deg === null ? 'a' : `d${num(command.deg)}`}`;
+    }
     case 'skip-burn':
       return `${at}k${VEHICLE_CODE[i.vehicle]}`;
   }
@@ -71,11 +77,15 @@ export function encodeScenario(s: Scenario): string {
   if (s.payloadCount !== undefined) tokens.push(`N${Math.round(s.payloadCount)}`);
   if ((s.wind ?? 0) !== 0) tokens.push(`W${num(s.wind ?? 0)}`);
   if ((s.boosterLoad ?? 1) !== 1) tokens.push(`L${num((s.boosterLoad ?? 1) * 100)}`);
-  for (const i of s.interventions) tokens.push(commandCode(i));
+  for (const i of s.interventions) {
+    const code = commandCode(i);
+    if (code) tokens.push(code);
+  }
   return tokens.join('_');
 }
 
 const COMMAND = /^(-?\d+(?:\.\d+)?)([ehxgpk])([bs]?)(-?\d+(?:\.\d+)?)?$/;
+const FLAP_COMMAND = /^(\d+(?:\.\d+)?)fs([0-3])(?:d(-?\d+(?:\.\d+)?)|(a))$/;
 const SETTING = /^([PBMNWL])([a-z]|\d+(?:\.\d+)?)?$/;
 
 /**
@@ -86,6 +96,15 @@ export function decodeScenario(code: string, flight: number): Scenario {
   const { generation, plan } = getFlight(flight);
   const s: Scenario = { asFlown: true, interventions: [] };
   for (const token of code.split('_')) {
+    const flap = FLAP_COMMAND.exec(token);
+    if (flap) {
+      const rawTime = Number(flap[1]);
+      const t = Math.round(rawTime * 1000) / 1000;
+      const command = normalizeFlapCommand({ vehicle: 'ship', flap: Number(flap[2]), deg: flap[4] ? null : Number(flap[3]) });
+      // Separation and end-of-flight availability depend on the resulting run, not the URL parser.
+      if (command && Number.isFinite(rawTime) && rawTime >= 0 && rawTime <= 1e5) s.interventions.push({ id: newInterventionId(), t, kind: 'flap', ...command });
+      continue;
+    }
     const set = SETTING.exec(token);
     if (set) {
       const [, key, arg = ''] = set;

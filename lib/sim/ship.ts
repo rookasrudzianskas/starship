@@ -1,20 +1,21 @@
-import { slew as slewFn, spin as spinFn } from './attitude';
+import { spin as spinFn } from './attitude';
+import { shipRollReference, steerFlight as slewFn } from './guidance/roll';
 import { bodyPointEcef, eventState, landingTargetEcef, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
 import { engineName, MIN_THROTTLE as MIN_THROTTLE_VALUE, pickFailingEngines } from './engines';
 import { makeEndEvent, makeEngineOutEvent, makeInterventionEvent } from './events';
 import { radialUp as radialUpFn, inertialToEcef } from './geo';
 import { entryAoA, predictEntry, type EntryPrediction } from './guidance/entry';
 import { landingThrust, landingTiltCap } from './guidance/landing';
+import { newFlaps, commandFlaps as commandFlapsFn, advanceFlaps as advanceFlapsFn, flapFeedback, type FlapPhase } from './guidance/flaps';
 import { newPeg, pegStep } from './guidance/peg';
 import { planeHeading } from './guidance/plane';
 import { isLand } from './land';
 import { lossKind } from './outcome';
 import { SPOOL_DOWN as SPOOL_DOWN_VALUE, type Body, type VehicleRt } from './runtime';
 import { coastBody, newAirData, stepBody as stepBodyFn } from './step';
-import { FLAPS_STOWED as FLAPS_STOWED_VALUE } from './vehicles';
 import { newTipState, startTip, tipOver, type TipState } from './surface';
 import { EARTH_MU, EARTH_OMEGA, EARTH_RADIUS, G0, Phase as PhaseCodes, type EndKind, type PhaseCode } from './types';
-import { clamp, DEG, qAxis as qAxisFn, qLook as qLookFn, v3 } from './vec';
+import { clamp, DEG, qAxis as qAxisFn, v3 } from './vec';
 
 const OMEGA = EARTH_OMEGA;
 const RE = EARTH_RADIUS;
@@ -24,14 +25,13 @@ const D = DEG;
 const Phase = PhaseCodes;
 const MIN_THROTTLE = MIN_THROTTLE_VALUE;
 const SPOOL_DOWN = SPOOL_DOWN_VALUE;
-const FLAPS_STOWED = FLAPS_STOWED_VALUE;
 const slew = slewFn;
+const commandFlaps = commandFlapsFn, advanceFlaps = advanceFlapsFn;
 const spin = spinFn;
 const stepBody = stepBodyFn;
 const recordSample = recordSampleFn;
 const radialUp = radialUpFn;
 const qAxis = qAxisFn;
-const qLook = qLookFn;
 
 /** Planned net deceleration of the ship's landing burn after the flip, m/s². */
 const SHIP_LANDING_DECEL = 4;
@@ -98,7 +98,12 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const plan = ctx.flight.plan.ship;
   const air = newAirData();
   const tb = ctx.shipTrack;
-  const aero = [FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED, FLAPS_STOWED];
+  const flaps = newFlaps(), aero = flaps.angles;
+  const automaticFlaps = flaps.targets.slice();
+  const flapOverride: Array<number | null> = [null, null, null, null];
+  let flapPhase: FlapPhase = 'stow';
+  let flapRoll = 0, flapPitch = 0;
+  let lastFlapPhase: FlapPhase | null = null, lastFlapRoll = NaN, lastFlapPitch = NaN;
   const ex: SampleExtras = { phase: Phase.HotStage, heating: 0, aero, still: false };
   const orbital = ctx.mission === 'orbital';
   const tCap = orbital ? 14_400 : 7_200;
@@ -185,12 +190,15 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
   const up = v3(), xAx = v3(), yAx = v3(), zAx = v3(), hd = v3(), thr = v3(), zr = v3();
   const hp = v3();
   const vn = v3(), tmp = v3(), tmp2 = v3(), rE = v3(), vE = v3(), latA = v3();
-  const qT = new Float64Array(4);
-  const stepOpts = { extra: null };
+  const stepOpts = { extra: null, flaps: { angles: aero, automatic: automaticFlaps, gen: ctx.flight.generation } };
 
+  const surfacesMoving = () => {
+    for (let i = 0; i < 4; i++) if (flaps.rates[i] !== 0 || flaps.angles[i] !== flaps.targets[i]) return true;
+    return false;
+  };
   const ev = () => eventState(body, 0, t);
   const record = (force: boolean) => {
-    const fine = mode === 'hotstage' || mode === 'flip' || mode === 'landing' || mode === 'splashed' || mode === 'free' || t - tSep < 10;
+    const fine = mode === 'hotstage' || mode === 'flip' || mode === 'landing' || mode === 'splashed' || mode === 'free' || t - tSep < 10 || (air.alt > 100_000 && surfacesMoving());
     // Sparse only once the engines have stopped producing thrust (not while they tail off).
     const vac = air.alt > 100_000 && !part.producingThrust();
     const interval = fine ? 0.05 : vac ? 2 : 0.1;
@@ -264,6 +272,16 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
           ctx.shipPitchBias = iv.deg;
           ctx.events.push(makeInterventionEvent('ship', at, ev(), `Steering bias ${iv.deg >= 0 ? '+' : ''}${iv.deg.toFixed(1)}°`, 'PITCH'));
           break;
+        case 'flap': {
+          if (!Number.isInteger(iv.flap) || iv.flap < 0 || iv.flap > 3 || (iv.deg !== null && !Number.isFinite(iv.deg))) break;
+          // Fence the command instant so interpolation cannot make a flap move before it is issued.
+          record(true);
+          flapOverride[iv.flap] = iv.deg === null ? null : clamp(iv.deg, 0, 90);
+          flaps.targets[iv.flap] = flapOverride[iv.flap] ?? automaticFlaps[iv.flap];
+          const name = ['Forward left', 'Forward right', 'Aft left', 'Aft right'][iv.flap];
+          ctx.events.push(makeInterventionEvent('ship', at, ev(), `${name} flap ${iv.deg === null ? 'returned to automatic' : `commanded to ${flapOverride[iv.flap]}°`}`, 'FLAP'));
+          break;
+        }
         case 'skip-burn':
           ctx.shipSkips++;
           ctx.events.push(makeInterventionEvent('ship', at, ev(), 'Next ship burn cancelled', 'SKIP BURN'));
@@ -585,6 +603,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       const rate = Math.sqrt(v2) * thrustAcc;
       if (rate > 0 && energyT > eps && (energyT - eps) / rate < dt) dt = Math.max(1e-4, (energyT - eps) / rate);
     }
+    if (surfacesMoving()) dt = Math.min(dt, 0.05);
     let tNext = Math.min(burnEnd, cutT, destroyT, landingFailT);
     if (actIdx < acts.length) tNext = Math.min(tNext, acts[actIdx].t);
     const nb = mode === 'coast' ? nextBurn() : null;
@@ -609,12 +628,13 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
     if (attDue) {
       attAcc = 0;
       qAxis(zAx, body.q, 2);
-      aero[0] = aero[1] = aero[2] = aero[3] = FLAPS_STOWED;
+      if (mode === 'ascent' || mode === 'hotstage' || mode === 'coast' || modeIs('burn')) flapPhase = 'stow';
+      flapRoll = flapPitch = 0;
       // Horizontal direction of motion (inertial), for prograde attitudes.
       for (let i = 0; i < 3; i++) hd[i] = body.v[i] - vr * up[i];
       const hl = Math.sqrt(hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]) || 1;
       for (let i = 0; i < 3; i++) hd[i] /= hl;
-      for (let i = 0; i < 3; i++) zr[i] = -up[i];
+      shipRollReference(zr, up, hd, ctx.flight.n, t);
     }
 
     if (uncontrolled) {
@@ -647,8 +667,7 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         planeHeading(hp, ctx.planeNormal, up, body.v);
         const pitch = Math.asin(frCmd) + ctx.shipPitchBias * D;
         for (let i = 0; i < 3; i++) thr[i] = Math.sin(pitch) * up[i] + Math.cos(pitch) * hp[i];
-        qLook(qT, thr, zr);
-        slew(body, qT, 4 * D, 2 * D, adt);
+        slew(body, thr, zr, 4 * D, 2 * D, adt);
       }
       // Throttle: hold the acceleration limit (any user ceiling caps the command).
       const fmax = part.fullThrust(air.pressure);
@@ -689,11 +708,11 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
           } else if (apogeeDone && air.alt < 170_000 && vr < 0) {
             // Line up for entry: belly into the flow at the entry angle of attack.
             entryAttitude(thr, zr, air.vAir, up, p.entryAoA * D, 1);
+            flapPhase = 'entry';
             rate = 2 * D;
           } else for (let i = 0; i < 3; i++) thr[i] = hd[i];
         }
-        qLook(qT, thr, zr);
-        slew(body, qT, rate, rate * 0.5, adt);
+        slew(body, thr, zr, rate, rate * 0.5, adt);
       }
     } else if (mode === 'entry') {
       const mach = air.mach;
@@ -719,17 +738,21 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         // Wings level once slow; lift turned up as the dynamic pressure climbs past the entry corridor.
         const cb = mach > 2 ? Math.max(cosBank, Math.min(1, (air.q - ENTRY_Q_SOFT) / (ENTRY_Q_HARD - ENTRY_Q_SOFT))) : 1;
         entryAttitude(thr, zr, air.vAir, up, entryAoA(p.entryAoA, mach), cb, bankSign);
-        qLook(qT, thr, zr);
-        slew(body, qT, 6 * D, 4 * D, adt);
-        // Flaps (0 = spread, +90 = folded leeward): entry trim plus a roll differential towards the bank
-        // (left = +X side); the belly-flop flies them further out of the flow with a little differential.
-        const roll = bankSign * Math.sqrt(1 - cb * cb) * 8;
-        const fwd = phase === Phase.BellyFlop ? 32 : 18;
-        const aft = phase === Phase.BellyFlop ? 42 : 22;
-        aero[0] = fwd - roll;
-        aero[1] = fwd + roll;
-        aero[2] = aft + roll;
-        aero[3] = aft - roll;
+        slew(body, thr, zr, 6 * D, 4 * D, adt);
+        // The differential responds to attitude error and angular rate, not held bank angle.
+        // A bank is a lift-plane rotation; resolve the quaternion error into body axes first.
+        qAxis(xAx, body.q, 0);
+        qAxis(yAx, body.q, 1);
+        qAxis(zAx, body.q, 2);
+        const rollError = Math.atan2(
+          yAx[0] * (zAx[1] * zr[2] - zAx[2] * zr[1]) + yAx[1] * (zAx[2] * zr[0] - zAx[0] * zr[2]) + yAx[2] * (zAx[0] * zr[1] - zAx[1] * zr[0]),
+          zAx[0] * zr[0] + zAx[1] * zr[1] + zAx[2] * zr[2]);
+        const pitchError = Math.atan2(thr[0] * zAx[0] + thr[1] * zAx[1] + thr[2] * zAx[2], thr[0] * yAx[0] + thr[1] * yAx[1] + thr[2] * yAx[2]);
+        const rollRate = body.w[0] * yAx[0] + body.w[1] * yAx[1] + body.w[2] * yAx[2];
+        const pitchRate = body.w[0] * xAx[0] + body.w[1] * xAx[1] + body.w[2] * xAx[2];
+        flapRoll = flapFeedback(rollError / D, rollRate / D);
+        flapPitch = flapFeedback(pitchError / D, pitchRate / D);
+        flapPhase = phase === Phase.BellyFlop ? 'belly' : 'entry';
       }
       if (phase === Phase.BellyFlop) {
         // Flip and landing-burn ignition when the stopping height is reached.
@@ -799,23 +822,31 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
         qAxis(yAx, body.q, 1);
         part.throttle = yAx[0] * up[0] + yAx[1] * up[1] + yAx[2] * up[2] < Math.cos(FLIP_IDLE_TILT) ? MIN_THROTTLE : FLIP_THROTTLE;
       } else part.throttleTo(need, air.pressure, t, landingSet, vd < 3);
-      qLook(qT, thr, zAx);
-      const err = mode === 'flip' ? slew(body, qT, FLIP_RATE * D, FLIP_ACCEL * D, dt) : slew(body, qT, 25 * D, 20 * D, dt);
+      const err = mode === 'flip' ? slew(body, thr, zAx, FLIP_RATE * D, FLIP_ACCEL * D, dt) : slew(body, thr, zAx, 25 * D, 20 * D, dt);
       if (mode === 'flip' && err < 12 * D) {
         mode = 'landing';
         phase = Phase.LandingBurn;
       }
       // Landing flip: forward flaps fold away, aft flaps stay out.
-      aero[0] = aero[1] = 80;
-      aero[2] = aero[3] = 15;
+      flapPhase = 'flip';
+      flapRoll = flapPitch = 0;
       if (mode === 'landing' && (h < 1 || (vd < 1 && h < 4))) cutT = t;
     } else if (mode === 'free' && landingStarted) {
       // Engines cut just above the water: the ship drops the last metres upright.
-      qLook(qT, up, zAx);
-      slew(body, qT, 8 * D, 4 * D, dt);
+      slew(body, up, zAx, 8 * D, 4 * D, dt);
     } else if (mode === 'free') {
       spin(body, dt);
     }
+
+    // Keep actual surfaces persistent across phase changes, commanded overrides and playback seeks.
+    // Lost guidance holds its last automatic command; actuators can still finish an in-flight movement.
+    if (!uncontrolled && (flapPhase !== lastFlapPhase || flapRoll !== lastFlapRoll || flapPitch !== lastFlapPitch)) {
+      commandFlaps(flaps, flapPhase, flapRoll, flapPitch);
+      automaticFlaps.set(flaps.targets);
+      lastFlapPhase = flapPhase; lastFlapRoll = flapRoll; lastFlapPitch = flapPitch;
+      for (let i = 0; i < 4; i++) if (flapOverride[i] !== null) flaps.targets[i] = flapOverride[i]!;
+    }
+    advanceFlaps(flaps, dt, air.q);
 
     if (!powered && mode === 'coast' && air.alt > 140_000) {
       coastBody(body, dt, air);

@@ -6,8 +6,9 @@ import {
   heatingIndex as heatingIndexFn,
   rk4 as rk4Fn,
 } from './physics';
+import { flapResponse as flapResponseFn } from './flap-aero';
 import type { Body } from './runtime';
-import { EARTH_OMEGA, EARTH_RADIUS } from './types';
+import { EARTH_OMEGA, EARTH_RADIUS, type Generation } from './types';
 import { qAxis as qAxisFn, v3 } from './vec';
 
 // Module-local aliases: some loaders (tsx, vitest) turn imported bindings into getter calls.
@@ -20,6 +21,7 @@ const gravityAccel = gravityAccelFn;
 const heatingIndex = heatingIndexFn;
 const rk4 = rk4Fn;
 const qAxis = qAxisFn;
+const flapResponse = flapResponseFn;
 
 /** Air data and forces from the last step, for guidance and sampling. */
 export interface AirData {
@@ -50,12 +52,15 @@ export function newAirData(): AirData {
 const atm: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfSound: 0 };
 const yAx = v3();
 const aNg = v3();
+const flapForce = v3(), flapMoment = v3(), flapAcceleration = v3();
 
 export interface StepOptions {
   /** Per-part multiplier on thrust (hot staging: the attached ship's plume is half deflected). */
   thrustScale?: ArrayLike<number>;
   /** Extra non-gravitational acceleration, m/s² (inertial). */
   extra?: Float64Array | null;
+  /** Ship surface state and automatic commands (the trimmed force model's reference). */
+  flaps?: { angles: ArrayLike<number>; automatic: ArrayLike<number>; gen: Generation };
 }
 
 /**
@@ -91,6 +96,16 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
     const va = air.vAir;
     air.airspeed = Math.sqrt(va[0] * va[0] + va[1] * va[1] + va[2] * va[2]);
   }
+  const m = body.mass;
+  if (opts?.flaps && air.q > 0) {
+    const f = opts.flaps;
+    flapResponse(flapForce, flapAcceleration, flapMoment, f.gen, f.angles, f.automatic,
+      body.q, air.vAir, air.q, m, body.length, body.parts[0].com());
+    for (let i = 0; i < 3; i++) {
+      air.aero[i] += flapForce[i];
+      body.w[i] += flapAcceleration[i] * dt;
+    }
+  }
   air.heating = heatingIndex(atm.density, air.airspeed);
   let thrust = 0;
   const parts = body.parts;
@@ -99,7 +114,6 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
     thrust += opts?.thrustScale ? f * opts.thrustScale[i] : f;
   }
   air.thrust = thrust;
-  const m = body.mass;
   aNg[0] = (air.aero[0] + thrust * yAx[0]) / m;
   aNg[1] = (air.aero[1] + thrust * yAx[1]) / m;
   aNg[2] = (air.aero[2] + thrust * yAx[2]) / m;

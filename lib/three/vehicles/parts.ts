@@ -1,3 +1,4 @@
+import { flapLeadingEdge } from '@/lib/sim/ship-geometry';
 import * as THREE from 'three';
 import { ensureSkinAttributes, merge, onlyAttributes } from './geometry';
 
@@ -84,12 +85,7 @@ export interface FlapPlanform {
  */
 export function flapGeometry(p: FlapPlanform, mirror: boolean, nx = 7, ny = 10): THREE.BufferGeometry {
   const bottom = (a: number) => a * p.tipY0;
-  const top = (a: number) => {
-    const straight = p.root + (p.tipY1 - p.root) * a;
-    // Curved leading edge: bulges outwards (keeps more area near the tip).
-    const bulge = Math.sin(a * Math.PI) * (p.tipY1 - p.root) * -0.35 * p.curve;
-    return straight + bulge;
-  };
+  const top = (a: number) => flapLeadingEdge(p.root, p, a);
   const th = (a: number) => p.tRoot + (p.tTip - p.tRoot) * a;
   const sx = mirror ? -1 : 1;
 

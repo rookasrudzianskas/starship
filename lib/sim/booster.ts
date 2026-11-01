@@ -1,4 +1,5 @@
-import { slew as slewFn, spin as spinFn } from './attitude';
+import { spin as spinFn } from './attitude';
+import { steerFlight as slewFn } from './guidance/roll';
 import { airDensity } from './atmosphere';
 import { flyBallistic, type DragTable, type FlightOut } from './ballistic';
 import { eventState, recordSample as recordSampleFn, scratchSample, type Action, type SampleExtras, type SimContext } from './context';
@@ -170,6 +171,8 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
 
   const up = v3(), xAx = v3(), yAx = v3(), zAx = v3(), dirH = v3(), d0 = v3(), thr = v3();
   const tgtI = v3(), hv = v3(), lat = v3(), tmp = v3(), tmp2 = v3(), vAirN = v3(), extra = v3();
+  const towerRollE = v3(), recoveryRoll = v3();
+  for (let i = 0; i < 3; i++) towerRollE[i] = ctx.pad.tower.east * ctx.padEast[i] + ctx.pad.tower.north * ctx.padNorth[i];
   const qT = new Float64Array(4), qz = new Float64Array(4);
   const tip: TipState = newTipState();
   const arms: ArmsState = { r0: v3(), q0: new Float64Array(4), r1: v3(), q1: new Float64Array(4), t0: 0 };
@@ -599,9 +602,8 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
       }
       const el = (p.bbPitch + ctx.boosterPitchBias) * D;
       for (let i = 0; i < 3; i++) thr[i] = Math.cos(el) * dirH[i] + Math.sin(el) * up[i];
-      qLook(qT, thr, zAx);
       const rate = p.flipRate * D;
-      const errAng = slew(body, qT, rate, rate * 0.6, dt);
+      const errAng = slew(body, thr, zAx, rate, rate * 0.6, dt);
       if (mode === 'boostback') {
         // The engines idle at minimum throttle until the flip is nearly complete. As the booster gets light they
         // throttle back to hold BOOSTBACK_G; once even the minimum is too much, the outer ring shuts down, then the
@@ -618,8 +620,7 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
       }
     } else if (mode === 'free') {
       // Engines cut over the water or the arms: the booster drops the last few metres upright.
-      qLook(qT, up, zAx);
-      slew(body, qT, 15 * D, 25 * D, dt);
+      slew(body, up, zAx, 15 * D, 25 * D, dt);
       phase = Phase.Descent;
     } else if (mode === 'coast' && (attAcc += dt) >= 0.1 - 1e-9) {
       // Engines first for the descent; grid fins steer the impact point onto the target (10 Hz).
@@ -670,8 +671,9 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
         }
       } else if (vaL < 30 && air.alt > 60_000) for (let i = 0; i < 3; i++) thr[i] = yAx[i];
       else for (let i = 0; i < 3; i++) thr[i] = -vAirN[i];
-      qLook(qT, thr, zAx);
-      slew(body, qT, 8 * D, 4 * D, adt);
+      if (recovery === 'catch') ecefToInertial(recoveryRoll, towerRollE, t);
+      else recoveryRoll.set(zAx);
+      slew(body, thr, recoveryRoll, 8 * D, 4 * D, adt);
       phase = air.alt < 80_000 && vr < 0 ? Phase.Descent : Phase.Coast;
       // Landing-burn ignition from the stopping profile.
       if (landingPlanned && mode === 'coast' && vr < -50 && air.alt < 24_000) {
@@ -784,8 +786,9 @@ export function runBooster(ctx: SimContext, body: Body, part: VehicleRt, tSep: n
       const need = landingThrust(thr, up, lat, m, tV, MIN_THROTTLE * pot, pot * Math.min(1, part.ceiling), cap);
       if (lbSeg === segSwitch.length) part.throttleTo(need, air.pressure, t, finalSet, vd < 6);
       else part.throttle = pot > 0 ? need / pot : 1;
-      qLook(qT, thr, zAx);
-      slew(body, qT, 15 * D, 25 * D, dt);
+      if (recovery === 'catch') ecefToInertial(recoveryRoll, towerRollE, t);
+      else recoveryRoll.set(zAx);
+      slew(body, thr, recoveryRoll, 15 * D, 25 * D, dt);
       if (recovery === 'catch') {
         const vH = Math.sqrt(hv[0] * hv[0] + hv[1] * hv[1] + hv[2] * hv[2]);
         const tilt = Math.acos(clamp(yAx[0] * up[0] + yAx[1] * up[1] + yAx[2] * up[2], -1, 1));

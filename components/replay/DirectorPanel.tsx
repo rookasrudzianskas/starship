@@ -4,10 +4,10 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { IconClose, IconRedo, IconUndo } from '@/components/icons';
 import { getFlight } from '@/lib/flights/catalog';
 import { formatEventTime } from '@/lib/format';
-import { sortInterventions } from '@/lib/sim/scenario';
-import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipMission, type VehicleId } from '@/lib/sim/types';
-import { commandTimeOf, isModified, MAX_STEERING_BIAS, takesCommands, useReplay } from '@/lib/store/replay';
-import { engineStates, isStacked } from '@/lib/telemetry';
+import { SHIP_FLAP_NAMES, sortInterventions } from '@/lib/sim/scenario';
+import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipFlap, type ShipMission, type VehicleId } from '@/lib/sim/types';
+import { commandTimeOf, flapCommandAt, isModified, MAX_STEERING_BIAS, takesCommands, takesFlapCommands, useReplay } from '@/lib/store/replay';
+import { commandsUntil, engineStates, isStacked } from '@/lib/telemetry';
 import styles from './director.module.css';
 
 const VEHICLE_NAME: Record<VehicleId, string> = { booster: 'Super Heavy', ship: 'Starship' };
@@ -26,6 +26,8 @@ function describe(i: Intervention, engineCount: (v: VehicleId) => number): strin
       return 'Hot staging commanded';
     case 'pitch':
       return `${VEHICLE_NAME[i.vehicle]}: steering bias ${i.deg > 0 ? '+' : ''}${i.deg}°`;
+    case 'flap':
+      return `Starship: ${SHIP_FLAP_NAMES[i.flap].toLowerCase()} flap ${i.deg === null ? 'automatic' : `commanded to ${i.deg}°`}`;
     case 'skip-burn':
       return `${VEHICLE_NAME[i.vehicle]}: next burn cancelled`;
   }
@@ -179,6 +181,47 @@ function ThrottleControl({ vehicle, alive, applied }: { vehicle: VehicleId; aliv
   );
 }
 
+/** Draft targets do not re-simulate until Apply; a changed selection or active command resets the draft. */
+function FlapAngleControl({ flap, available, applied }: { flap: ShipFlap; available: boolean; applied: number | null }) {
+  const [deg, setDeg] = useState(applied ?? 45);
+  const issue = (value: number | null) => useReplay.getState().addIntervention({ t: commandTime(), kind: 'flap', vehicle: 'ship', flap, deg: value });
+  return (
+    <div className={styles.row}>
+      <label className={styles.sliderLabel} htmlFor="flap-angle">
+        Commanded angle <b>{deg}°</b>
+        <span className={styles.pending}> · {applied === null ? 'automatic' : `${applied}° applied`}</span>
+      </label>
+      <div className={styles.sliderRow}>
+        <input id="flap-angle" type="range" min={0} max={90} step={1} value={deg}
+          disabled={!available} aria-describedby="flap-help" className={styles.slider}
+          onChange={(e) => setDeg(Number(e.target.value))} />
+        <button type="button" className={styles.action} disabled={!available || deg === applied} onClick={() => issue(deg)}>Apply</button>
+        <button type="button" className={styles.action} disabled={!available || applied === null} onClick={() => issue(null)} title="Return this flap to automatic control">Auto</button>
+      </div>
+    </div>
+  );
+}
+
+function FlapControls({ ordered }: { ordered: readonly Intervention[] }) {
+  const [flap, setFlap] = useState<ShipFlap>(0);
+  const available = useReplay((s) => takesFlapCommands(s.result, s.t));
+  // Only command changes and availability boundaries render this block, not every playback frame.
+  const applied = useReplay((s) => flapCommandAt(ordered, flap, s.t, s.result?.separationT ?? Infinity, s.result ? commandsUntil(s.result, 'ship') : -Infinity));
+  return (
+    <div className={styles.row} role="group" aria-label="Starship flap control">
+      <label className={styles.sliderLabel} htmlFor="ship-flap">Flap</label>
+      <select id="ship-flap" className={styles.flapSelect} value={flap} onChange={(e) => setFlap(Number(e.target.value) as ShipFlap)}>
+        {SHIP_FLAP_NAMES.map((name, i) => <option key={name} value={i}>{name}</option>)}
+      </select>
+      <FlapAngleControl key={`${flap}:${applied ?? 'auto'}`} flap={flap} available={available} applied={applied} />
+      <p id="flap-help" className={styles.note}>
+        0° spread · 90° folded. Actual flap motion is rate-limited.
+        {!available ? ' Commands are available after separation while Starship is in flight.' : ''}
+      </p>
+    </div>
+  );
+}
+
 function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
   const interventions = useReplay((s) => s.scenario.interventions);
   // Shared links can contain simultaneous commands. Display the same ordering the simulator applies,
@@ -290,6 +333,7 @@ function VehicleControls({ vehicle }: { vehicle: VehicleId }) {
         </div>
       ) : (
         <>
+          <FlapControls key={flightN} ordered={ordered} />
           <div className={styles.row}>
             <span className={styles.sliderLabel}>Ascent target</span>
             <Choice<ShipMission | 'plan'>

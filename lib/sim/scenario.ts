@@ -1,4 +1,17 @@
-import type { Intervention, Scenario } from './types';
+import type { Intervention, Scenario, ShipFlap } from './types';
+
+export const SHIP_FLAP_NAMES = ['Forward left', 'Forward right', 'Aft left', 'Aft right'] as const;
+
+/** Validate at input boundaries; finite angles saturate at the stops and retain share-link precision. */
+export function normalizeFlapCommand(input: { vehicle: unknown; flap: unknown; deg: unknown }): { vehicle: 'ship'; flap: ShipFlap; deg: number | null } | null {
+  if (input.vehicle !== 'ship' || typeof input.flap !== 'number' || !Number.isInteger(input.flap) || input.flap < 0 || input.flap > 3) return null;
+  if (input.deg !== null && (typeof input.deg !== 'number' || !Number.isFinite(input.deg))) return null;
+  return {
+    vehicle: 'ship',
+    flap: input.flap as ShipFlap,
+    deg: input.deg === null ? null : Math.round(Math.min(90, Math.max(0, input.deg)) * 1000) / 1000,
+  };
+}
 
 /** 53-bit string hash (cyrb53), stable across platforms. */
 export function hashString(str: string, seed = 0): number {
@@ -44,6 +57,8 @@ export function interventionSignature(iv: Intervention): string {
       return `${num(iv.t)}|stage-now`;
     case 'pitch':
       return `${num(iv.t)}|pitch|${iv.vehicle}|${num(iv.deg)}`;
+    case 'flap':
+      return `${num(iv.t)}|flap|ship|${iv.flap}|${iv.deg === null ? 'auto' : num(iv.deg)}`;
     case 'skip-burn':
       return `${num(iv.t)}|skip-burn|${iv.vehicle}`;
   }

@@ -94,7 +94,8 @@ export type PhaseCode = (typeof Phase)[keyof typeof Phase];
  * One vehicle's sampled flight. Samples are dense where things change quickly (≤ 0.1 s in powered
  * or atmospheric flight) and sparse in vacuum coasts (≤ 2 s). Interpolate between samples
  * (see lib/sim/sample.ts). Before separation both tracks describe the attached stack: each track still
- * holds its own vehicle's centre of mass and both share the same attitude.
+ * holds its own vehicle's centre of mass. Their noses share an axis, while the ship's belly is mounted
+ * opposite the booster's +Z reference (a 180° rotation about the shared longitudinal axis).
  */
 export interface Track {
   vehicle: VehicleId;
@@ -211,6 +212,8 @@ export interface FlightResult {
 
 export type BoosterRecovery = 'catch' | 'splashdown' | 'expend';
 export type ShipMission = 'suborbital' | 'orbital';
+/** Forward left, forward right, aft left, aft right; matches Track.aero. */
+export type ShipFlap = 0 | 1 | 2 | 3;
 
 /** Time-stamped commands the user issues while watching. Applied at `t` (seconds from liftoff). */
 export type Intervention =
@@ -219,6 +222,7 @@ export type Intervention =
   | { id: string; t: number; kind: 'terminate'; vehicle: VehicleId } // flight termination (stack: either id)
   | { id: string; t: number; kind: 'stage-now' } // command hot staging now (no-op after staging)
   | { id: string; t: number; kind: 'pitch'; vehicle: VehicleId; deg: number } // steering bias, degrees (+ = nose up), held until another pitch command
+  | { id: string; t: number; kind: 'flap'; vehicle: 'ship'; flap: ShipFlap; deg: number | null } // absolute commanded angle, 0° spread..90° folded; null restores automatic. Actual motion is rate-limited.
   | { id: string; t: number; kind: 'skip-burn'; vehicle: VehicleId }; // cancel the next planned burn (boostback, relight, deorbit, …)
 
 export interface Scenario {
