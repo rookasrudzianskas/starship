@@ -33,7 +33,7 @@ Each vehicle uses a point-mass trajectory with bounded attitude control and flap
 
 ## Development
 
-Use Node.js 22 (minimum 22.12). With nvm installed:
+Use Node.js 22.23.4 from `.nvmrc` (minimum supported 22.12). With nvm installed:
 
 ```bash
 nvm install
@@ -51,9 +51,10 @@ Other scripts:
 - `npm run lint`: ESLint checks.
 - `npm run typecheck`: generate Next.js route types and check TypeScript.
 - `npm test`: run all Vitest tests serially, including the simulator performance checks with their existing limits.
-- `npm run check`: run lint, type checking, tests and the production build in sequence. CI runs these checks on Node.js 22 after `npm ci`.
-- Failed CI test runs attach a simulator CPU profile to the Checks workflow for investigating performance regressions; the original test result remains a failure.
-- The manual **Compare simulator revisions** workflow runs the same performance test and CPU profiler for two revisions on one runner. Supply a baseline commit or branch; its diagnostic steps retain both profiles even when a timing assertion fails. Normal Checks remain the merge validation.
+- `npm run check`: run lint, type checking, tests and the production build in sequence. CI uses the pinned Node version, with lint, types, functional tests and the production build on Ubuntu 24.04 x64.
+- The separate **simulation-performance** CI job runs the unchanged best-of-five warmed budgets (80 ms for Flights 1–13, 150 ms for Flight 14, and 6 MB of track data) on the reference `ubuntu-24.04-arm` runner. Absolute timings depend on hardware; these budgets are not a promise for every machine. `npm test` and `npm run check` still run all tests locally.
+- Failed CI performance runs attach a simulator CPU profile to the Checks workflow; the original test result remains a failure.
+- The manual **Compare simulator revisions** workflow runs the same performance test and CPU profiler for two revisions on one runner. Supply a baseline commit or branch and a platform (the ARM reference runner by default). Its diagnostic steps retain both profiles even when a timing assertion fails. Normal Checks remain the merge validation.
 - `node scripts/fetch-imagery.mjs`: rebuilds the Earth textures in `public/earth`.
 
 ## Limitations

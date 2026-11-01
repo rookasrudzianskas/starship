@@ -7,13 +7,20 @@ on:
         description: Commit or branch to compare with the selected revision
         required: true
         type: string
+      runner:
+        description: Benchmark platform (use the reference platform for budget checks)
+        default: ubuntu-24.04-arm
+        type: choice
+        options:
+          - ubuntu-24.04-arm
+          - ubuntu-24.04
 
 permissions:
   contents: read
 
 jobs:
   compare:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +30,7 @@ jobs:
           cache: npm
       - name: Record runtime and hardware
         run: |
-          node -e 'console.log({ node: process.version, v8: process.versions.v8, cpu: require("node:os").cpus()[0].model })'
+          node -e 'console.log({ node: process.version, v8: process.versions.v8, arch: process.arch, cpu: require("node:os").cpus()[0].model })'
       - run: npm ci
       - name: Profile selected revision
         continue-on-error: true

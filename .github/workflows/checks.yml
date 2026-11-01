@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +20,24 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
-        id: tests
+      # Wall-clock simulation budgets have a separate, fixed architecture below.
+      - run: npm test -- --exclude lib/sim/__tests__/performance.test.ts
       - run: npm run build
+  simulation-performance:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Record benchmark runtime
+        run: |
+          node -e 'console.log({ node: process.version, v8: process.versions.v8, arch: process.arch, cpu: require("node:os").cpus()[0].model })'
+      - run: npm ci
+      - run: npm test -- lib/sim/__tests__/performance.test.ts
+        id: tests
       - name: Profile simulator after a test failure
         if: failure() && steps.tests.outcome == 'failure'
         continue-on-error: true
