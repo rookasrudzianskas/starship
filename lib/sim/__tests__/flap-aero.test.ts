@@ -80,6 +80,31 @@ function meshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[]
   return { force, moment };
 }
 
+/** Absolute plate oracle: compute each local speed, pressure and incidence independently. */
+function rotatingMeshWrench(plates: ReturnType<typeof renderedPlate>[], angles: number[], flow: V3, density: number, com: number, omega: V3) {
+  const force = new Vector3(), moment = new Vector3();
+  let dissipatedPower = 0;
+  for (let i = 0; i < 4; i++) {
+    const p = plates[i];
+    const rotation = p.pivot.quaternion.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), angles[i] * DEG * (p.right ? -1 : 1)));
+    const normal = new Vector3(0, 0, 1).applyQuaternion(rotation);
+    const arm = p.centroid.clone().applyQuaternion(rotation).add(p.pivot.position).sub(new Vector3(0, com, 0));
+    const localFlow = vec(omega).cross(arm).add(vec(flow));
+    const pressure = 0.5 * density * localFlow.lengthSq();
+    const incidence = localFlow.clone().normalize().dot(normal);
+    const f = normal.clone().multiplyScalar(-2 * pressure * p.area * incidence * Math.abs(incidence));
+    force.add(f); moment.add(arm.clone().cross(f));
+    dissipatedPower -= density * p.area * Math.abs(localFlow.dot(normal)) ** 3;
+  }
+  return { force, moment, dissipatedPower };
+}
+
+function rotatingResidual(plates: ReturnType<typeof renderedPlate>[], angles: number[], automatic: number[], flow: V3, density: number, com: number, omega: V3) {
+  const actual = rotatingMeshWrench(plates, angles, flow, density, com, omega);
+  const trim = rotatingMeshWrench(plates, automatic, flow, density, com, omega);
+  return { force: actual.force.sub(trim.force), moment: actual.moment.sub(trim.moment) };
+}
+
 describe('trim-relative flap loads', () => {
   it.each(GENERATIONS)('%s has exact zero vacuum, stopped-flow and matched-trim loads', (gen) => {
     const force = v3(1, 2, 3), moment = v3(4, 5, 6), acceleration = v3(7, 8, 9);
@@ -200,6 +225,111 @@ describe('total aerodynamic passivity', () => {
   });
 });
 
+describe('centroid-local rotational airflow', () => {
+  it.each(GENERATIONS)('%s keeps omitted and explicit zero relative rates bit-for-bit identical', (gen) => {
+    const flow = v3(70, -40, 180), angles = [8, 55, 42, 87], zero = v3();
+    const force = v3(), moment = v3(), acceleration = v3();
+    const expected = loads(gen, angles, TRIM, flow, 12_000);
+    // Prime the shared scratch with nonzero rotation first, to catch stale angular-rate state.
+    flapLoads(force, moment, gen, angles, TRIM, flow, 12_000, 25, v3(0.1, -0.2, 0.3));
+    flapLoads(force, moment, gen, angles, TRIM, flow, 12_000, 25, zero);
+    expect(force).toEqual(expected.force); expect(moment).toEqual(expected.moment);
+    const q = Float64Array.from(BODY_TO_WORLD.toArray());
+    flapResponse(force, acceleration, moment, gen, angles, TRIM, q, flow, 12_000, 180_000, SHIP_GEOMETRY[gen].length, 25);
+    const legacy = { force: force.slice(), acceleration: acceleration.slice(), moment: moment.slice() };
+    flapResponse(force, acceleration, moment, gen, angles, TRIM, q, flow, 12_000, 180_000, SHIP_GEOMETRY[gen].length, 25, v3(0.3, -0.2, 0.1));
+    flapResponse(force, acceleration, moment, gen, angles, TRIM, q, flow, 12_000, 180_000, SHIP_GEOMETRY[gen].length, 25, zero);
+    expect(force).toEqual(legacy.force); expect(acceleration).toEqual(legacy.acceleration); expect(moment).toEqual(legacy.moment);
+  });
+
+  it.each(GENERATIONS)('%s evaluates actual and automatic geometry in their own local flow, even at almost stopped CM speed', (gen) => {
+    const plates = [0, 1, 2, 3].map((i) => renderedPlate(gen, i, 128));
+    const angles = [7, 60, 31, 89], omega = v3(0.17, -0.23, 0.11), density = 0.37, force = v3(), moment = v3();
+    for (const flow of [v3(70, -40, 180), v3(0.001, -0.002, 0.003), v3(1e-150, -1e-150, 0), v3()]) {
+      const q = 0.5 * density * vec(flow).lengthSq();
+      const expected = rotatingResidual(plates, angles, TRIM, flow, density, 23, omega);
+      flapLoads(force, moment, gen, angles, TRIM, flow, q, 23, omega, density);
+      closeVector(force, expected.force, 0.0001); closeVector(moment, expected.moment, 0.0001);
+      expect(Math.hypot(...moment)).toBeGreaterThan(0);
+      if (q > 0) {
+        const explicitForce = force.slice(), explicitMoment = moment.slice();
+        flapLoads(force, moment, gen, angles, TRIM, flow, q, 23, omega);
+        closeVector(force, vec(explicitForce)); closeVector(moment, vec(explicitMoment));
+      }
+    }
+    // At exactly zero CM speed, q alone cannot distinguish air from vacuum; density is required.
+    flapLoads(force, moment, gen, angles, TRIM, v3(), 0, 23, omega);
+    expect(Array.from(force)).toEqual([0, 0, 0]); expect(Array.from(moment)).toEqual([0, 0, 0]);
+  });
+
+  it.each(GENERATIONS)('%s preserves exact zero trim at any rate and respects explicit vacuum density', (gen) => {
+    const force = v3(1, 2, 3), moment = v3(4, 5, 6), acceleration = v3(7, 8, 9);
+    const omega = v3(0.3, -0.4, 0.5), q = Float64Array.from(BODY_TO_WORLD.toArray());
+    for (const flow of [v3(), v3(140, -80, 200)]) {
+      flapLoads(force, moment, gen, TRIM, TRIM.slice(), flow, 60_000, 25, omega, 1.2);
+      expect(Math.hypot(...force, ...moment)).toBe(0);
+      flapResponse(force, acceleration, moment, gen, TRIM, TRIM.slice(), q, flow, 60_000, 150_000, SHIP_GEOMETRY[gen].length, 25, omega, 1.2);
+      expect(Math.hypot(...force, ...moment, ...acceleration)).toBe(0);
+      // Explicit density is authoritative, including an inconsistent nonzero caller-supplied q.
+      flapResponse(force, acceleration, moment, gen, [0, 90, 0, 90], TRIM, q, flow, 60_000, 150_000, SHIP_GEOMETRY[gen].length, 25, omega, 0);
+      expect(Math.hypot(...force, ...moment, ...acceleration)).toBe(0);
+    }
+  });
+
+  it.each(GENERATIONS)('%s reverses rotational force/torque with spin and uses current CoM in both flow and moment', (gen) => {
+    const force = v3(), moment = v3(), angles = [0, 0, 0, 0], automatic = [90, 90, 90, 90], density = 1.2, omega = v3(0.2, 0, 0);
+    flapLoads(force, moment, gen, angles, automatic, v3(), 0, 25, omega, density);
+    const positive = { force: force.slice(), moment: moment.slice() };
+    expect(moment[0]).toBeLessThan(0); // spreading adds pitch damping relative to folded trim
+    flapLoads(force, moment, gen, angles, automatic, v3(), 0, 25, v3(-0.2, 0, 0), density);
+    closeVector(force, vec(positive.force).negate()); closeVector(moment, vec(positive.moment).negate());
+    const flow = v3(30, 110, 200), rate = v3(0.17, -0.23, 0.11), positionShift = new Vector3(0, 10, 0);
+    const qAt = (v: V3) => 0.5 * density * vec(v).lengthSq();
+    flapLoads(force, moment, gen, angles, automatic, flow, qAt(flow), 20, rate, density);
+    const before = { force: force.slice(), moment: moment.slice() };
+    // Move the reference point, preserving the same rigid velocity field: v_new = v_old + omega × delta.
+    const shiftedFlow = Float64Array.from(vec(flow).add(vec(rate).cross(positionShift)).toArray());
+    flapLoads(force, moment, gen, angles, automatic, shiftedFlow, qAt(shiftedFlow), 30, rate, density);
+    closeVector(force, vec(before.force));
+    closeVector(moment, vec(before.moment).sub(positionShift.clone().cross(vec(before.force))));
+    flapLoads(force, moment, gen, angles, automatic, flow, qAt(flow), 30, rate, density);
+    expect(vec(force).distanceTo(vec(before.force))).toBeGreaterThan(1); // same COM flow at a different COM is a different velocity field
+  });
+
+  it.each(GENERATIONS)('%s transforms inertial relative angular rate and rotational loads consistently', (gen) => {
+    const flow = v3(3, -2, 1), omega = v3(0.17, -0.23, 0.11), density = 0.37, angles = [7, 60, 31, 89], mass = 180_000;
+    const q = 0.5 * density * vec(flow).lengthSq(), length = SHIP_GEOMETRY[gen].length, force = v3(), moment = v3(), acceleration = v3();
+    const expected = rotatingResidual([0, 1, 2, 3].map((i) => renderedPlate(gen, i, 128)), angles, TRIM, flow, density, 23, omega);
+    const inertialFlow = Float64Array.from(vec(flow).applyQuaternion(BODY_TO_WORLD).toArray());
+    const inertialOmega = Float64Array.from(vec(omega).applyQuaternion(BODY_TO_WORLD).toArray());
+    flapResponse(force, acceleration, moment, gen, angles, TRIM, Float64Array.from(BODY_TO_WORLD.toArray()), inertialFlow, q, mass, length, 23, inertialOmega, density);
+    const transverse = mass * (length ** 2 / 12 + 4.5 ** 2 / 4), axial = mass * 4.5 ** 2 / 2;
+    closeVector(force, expected.force.applyQuaternion(BODY_TO_WORLD), 0.0001);
+    closeVector(moment, expected.moment, 0.0001);
+    closeVector(acceleration, new Vector3(expected.moment.x / transverse, expected.moment.y / axial, expected.moment.z / transverse).applyQuaternion(BODY_TO_WORLD), 0.0001);
+  });
+
+  it.each(GENERATIONS)('%s matches absolute-plate generalized dissipation without requiring negative residual work', (gen) => {
+    const plates = [0, 1, 2, 3].map((i) => renderedPlate(gen, i, 128)), density = 0.37, force = v3(), moment = v3();
+    let positiveResidual = false, negativeResidual = false;
+    for (const flow of [v3(), v3(20, -10, 30)]) for (const omega of [v3(0.2, 0, 0), v3(-0.17, 0.23, -0.11)]) {
+      for (const [actual, automatic] of [[[0, 0, 0, 0], [90, 90, 90, 90]], [[90, 90, 90, 90], [0, 0, 0, 0]], [[7, 60, 31, 89], TRIM]]) {
+        const a = rotatingMeshWrench(plates, actual, flow, density, 25, omega), b = rotatingMeshWrench(plates, automatic, flow, density, 25, omega);
+        const actualPower = a.force.dot(vec(flow)) + a.moment.dot(vec(omega));
+        const trimPower = b.force.dot(vec(flow)) + b.moment.dot(vec(omega));
+        expect(actualPower).toBeLessThanOrEqual(0); expect(trimPower).toBeLessThanOrEqual(0);
+        expect(Math.abs(actualPower - a.dissipatedPower)).toBeLessThan(1e-9 * Math.max(1, -actualPower));
+        expect(Math.abs(trimPower - b.dissipatedPower)).toBeLessThan(1e-9 * Math.max(1, -trimPower));
+        flapLoads(force, moment, gen, actual, automatic, flow, 0.5 * density * vec(flow).lengthSq(), 25, omega, density);
+        const residualPower = vec(force).dot(vec(flow)) + vec(moment).dot(vec(omega));
+        expect(Math.abs(residualPower - (actualPower - trimPower))).toBeLessThan(0.0001 * Math.max(1, -actualPower, -trimPower));
+        positiveResidual ||= residualPower > 0; negativeResidual ||= residualPower < 0;
+      }
+    }
+    expect(positiveResidual).toBe(true); expect(negativeResidual).toBe(true);
+  });
+});
+
 function bodyAt(altitude: number, gen: Generation = 'b2') {
   const spec = vehicleSpec('ship', gen), part = new VehicleRt(spec, spec.dryMass, 30_000, 0);
   const body = new Body([part], spec.aero, spec.length);
@@ -212,6 +342,54 @@ function bodyAt(altitude: number, gen: Generation = 'b2') {
 }
 
 describe('stepBody flap integration', () => {
+  it('subtracts atmospheric co-rotation before calculating local angular airflow', () => {
+    const body = bodyAt(11_500), baseline = bodyAt(11_500), air = newAirData(), baseAir = newAirData(), dt = 0.02;
+    const angles = [5, 43, 72, 89], force = v3(), acceleration = v3(), moment = v3();
+    body.w.set([0, 0, EARTH_OMEGA]); baseline.w.set(body.w);
+    const initialW = body.w.slice();
+    stepBody(baseline, dt, 60, baseAir);
+    // Co-rotating body: legacy zero-relative-rate loads are still the expected response.
+    flapResponse(force, acceleration, moment, 'b2', angles, TRIM, body.q, baseAir.vAir, baseAir.q, body.mass, body.length, body.parts[0].com());
+    stepBody(body, dt, 60, air, { flaps: { gen: 'b2', angles, automatic: TRIM } });
+    closeVector(air.aero.map((x, i) => x - baseAir.aero[i]), vec(force));
+    closeVector(body.w.map((x, i) => x - initialW[i]), vec(acceleration).multiplyScalar(dt));
+
+    const stationary = bodyAt(11_500), stillAir = newAirData();
+    stationary.v.set([0, EARTH_OMEGA * stationary.r[0], 0]); stationary.w.set([0, 0, EARTH_OMEGA]);
+    stepBody(stationary, dt, 0, stillAir, { flaps: { gen: 'b2', angles, automatic: TRIM } });
+    expect(stillAir.q).toBe(0); expect(Array.from(stillAir.aero)).toEqual([0, 0, 0]);
+    expect(Array.from(stationary.w)).toEqual([0, 0, EARTH_OMEGA]);
+  });
+
+  it('retains finite, spin-reversing loads at zero CM airspeed in the atmosphere', () => {
+    const positive = bodyAt(11_500), negative = bodyAt(11_500), a = newAirData(), b = newAirData(), dt = 0.02;
+    const rate = new Vector3(0.2, 0, 0).applyQuaternion(BODY_TO_WORLD), earthRate = new Vector3(0, 0, EARTH_OMEGA);
+    positive.v.set([0, EARTH_OMEGA * positive.r[0], 0]); negative.v.set(positive.v);
+    positive.w.set(rate.clone().add(earthRate).toArray()); negative.w.set(rate.clone().negate().add(earthRate).toArray());
+    const initialPositive = positive.w.slice(), initialNegative = negative.w.slice();
+    const options = { flaps: { gen: 'b2' as const, angles: [0, 0, 0, 0], automatic: [90, 90, 90, 90] } };
+    stepBody(positive, dt, 0, a, options); stepBody(negative, dt, 0, b, options);
+    expect(a.q).toBe(0); expect(b.q).toBe(0); expect(a.density).toBeGreaterThan(0);
+    expect(Number.isFinite(Math.hypot(...a.aero))).toBe(true); expect(Math.hypot(...a.aero)).toBeGreaterThan(0);
+    closeVector(b.aero, vec(a.aero).negate());
+    const impulse = vec(positive.w).sub(vec(initialPositive));
+    expect(impulse.dot(rate)).toBeLessThan(0);
+    closeVector(negative.w.map((x, i) => x - initialNegative[i]), impulse.negate());
+  });
+
+  it('keeps the existing 180 km atmospheric cutoff even for pure rotational airflow', () => {
+    for (const altitude of [179_999, 180_000, 200_000]) {
+      const body = bodyAt(altitude), air = newAirData();
+      body.v.set([0, EARTH_OMEGA * body.r[0], 0]);
+      body.w.set(new Vector3(0.2, 0, 0).applyQuaternion(BODY_TO_WORLD).add(new Vector3(0, 0, EARTH_OMEGA)).toArray());
+      const initialW = body.w.slice();
+      stepBody(body, 0.02, 0, air, { flaps: { gen: 'b2', angles: [0, 0, 0, 0], automatic: [90, 90, 90, 90] } });
+      expect(air.q).toBe(0);
+      if (altitude < 180_000) expect(Math.hypot(...air.aero)).toBeGreaterThan(0);
+      else { expect(Array.from(air.aero)).toEqual([0, 0, 0]); expect(body.w).toEqual(initialW); }
+    }
+  });
+
   it('adds neither force nor angular impulse in vacuum', () => {
     const body = bodyAt(200_000), air = newAirData(), before = body.w.slice();
     stepBody(body, 0.02, 0, air, { flaps: { gen: 'b2', angles: [0, 90, 0, 90], automatic: TRIM } });
@@ -233,7 +411,8 @@ describe('stepBody flap integration', () => {
     const bodyFlow = Float64Array.from(vec(relative).applyQuaternion(BODY_TO_WORLD.clone().invert()).toArray());
     stepBody(baseline, dt, 60, baseAir);
     const plates = [0, 1, 2, 3].map((i) => renderedPlate('b2', i, 128));
-    const oracle = meshWrench(plates, angles, TRIM, bodyFlow, baseAir.q, com);
+    const relativeOmega = Float64Array.from(vec(initialW).sub(new Vector3(0, 0, EARTH_OMEGA)).applyQuaternion(BODY_TO_WORLD.clone().invert()).toArray());
+    const oracle = rotatingResidual(plates, angles, TRIM, bodyFlow, baseAir.density, com, relativeOmega);
     const transverse = mass * (body.length ** 2 / 12 + 4.5 ** 2 / 4), axial = mass * 4.5 ** 2 / 2;
     const expectedImpulse = new Vector3(oracle.moment.x / transverse, oracle.moment.y / axial, oracle.moment.z / transverse).applyQuaternion(BODY_TO_WORLD).multiplyScalar(dt);
     stepBody(body, dt, 60, air, { flaps: { gen: 'b2', angles, automatic: TRIM } });

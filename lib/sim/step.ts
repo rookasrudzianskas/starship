@@ -53,6 +53,7 @@ const atm: AtmosphereState = { pressure: 0, density: 0, temperature: 0, speedOfS
 const yAx = v3();
 const aNg = v3();
 const flapForce = v3(), flapMoment = v3(), flapAcceleration = v3();
+const flapAirAngularVelocity = v3();
 
 export interface StepOptions {
   /** Per-part multiplier on thrust (hot staging: the attached ship's plume is half deflected). */
@@ -97,13 +98,19 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
     air.airspeed = Math.sqrt(va[0] * va[0] + va[1] * va[1] + va[2] * va[2]);
   }
   const m = body.mass;
-  if (opts?.flaps && air.q > 0) {
+  // Zero CM dynamic pressure can still leave rotational airflow at a flap. Retain the same
+  // atmospheric domain as the body forces, and pass density rather than inferring it from q.
+  if (opts?.flaps && alt < 180_000 && atm.density > 0) {
     const f = opts.flaps;
     // Equal actual/automatic angles give exactly zero incremental wrench. Check before
     // computing CoM or clearing scratch vectors; a settled manual override still has loads.
     if (f.angles[0] !== f.automatic[0] || f.angles[1] !== f.automatic[1] || f.angles[2] !== f.automatic[2] || f.angles[3] !== f.automatic[3]) {
+      // The atmosphere rotates too: v_point - v_air_point = vAir + (w - Omega) × arm.
+      flapAirAngularVelocity[0] = body.w[0];
+      flapAirAngularVelocity[1] = body.w[1];
+      flapAirAngularVelocity[2] = body.w[2] - OMEGA;
       flapResponse(flapForce, flapAcceleration, flapMoment, f.gen, f.angles, f.automatic,
-        body.q, air.vAir, air.q, m, body.length, body.parts[0].com());
+        body.q, air.vAir, air.q, m, body.length, body.parts[0].com(), flapAirAngularVelocity, atm.density);
       for (let i = 0; i < 3; i++) {
         air.aero[i] += flapForce[i];
         body.w[i] += flapAcceleration[i] * dt;
