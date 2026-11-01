@@ -1,0 +1,49 @@
+name: Compare simulator revisions
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Commit or branch to compare with the selected revision
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Record runtime and hardware
+        run: node -e 'console.log({ node: process.version, v8: process.versions.v8, cpu: require("node:os").cpus()[0].model })'
+      - run: npm ci
+      - name: Profile selected revision
+        continue-on-error: true
+        run: |
+          git rev-parse HEAD
+          mkdir -p .next/diagnostics/current
+          node --cpu-prof --cpu-prof-dir=.next/diagnostics/current node_modules/vitest/vitest.mjs run lib/sim/__tests__/performance.test.ts
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.baseline }}
+          clean: false
+      - run: npm ci
+      - name: Profile baseline on the same machine
+        continue-on-error: true
+        run: |
+          git rev-parse HEAD
+          mkdir -p .next/diagnostics/baseline
+          node --cpu-prof --cpu-prof-dir=.next/diagnostics/baseline node_modules/vitest/vitest.mjs run lib/sim/__tests__/performance.test.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: simulator-comparison
+          path: .next/diagnostics/**/*.cpuprofile
+          retention-days: 7

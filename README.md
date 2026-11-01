@@ -53,6 +53,7 @@ Other scripts:
 - `npm test`: run all Vitest tests serially, including the simulator performance checks with their existing limits.
 - `npm run check`: run lint, type checking, tests and the production build in sequence. CI runs these checks on Node.js 22 after `npm ci`.
 - Failed CI test runs attach a simulator CPU profile to the Checks workflow for investigating performance regressions; the original test result remains a failure.
+- The manual **Compare simulator revisions** workflow runs the same performance test and CPU profiler for two revisions on one runner. Supply a baseline commit or branch; its diagnostic steps retain both profiles even when a timing assertion fails. Normal Checks remain the merge validation.
 - `node scripts/fetch-imagery.mjs`: rebuilds the Earth textures in `public/earth`.
 
 ## Limitations
