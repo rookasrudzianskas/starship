@@ -64,6 +64,24 @@ export interface StepOptions {
   flaps?: { angles: ArrayLike<number>; automatic: ArrayLike<number>; gen: Generation };
 }
 
+/** Keep the optional surface calculation out of the shared translation step's hot path. */
+function applyFlapForces(body: Body, dt: number, air: AirData, flaps: NonNullable<StepOptions['flaps']>, mass: number): void {
+  const angles = flaps.angles, automatic = flaps.automatic;
+  // Equal actual/automatic angles give exactly zero incremental wrench. Check before
+  // computing CoM or clearing scratch vectors; a settled manual override still has loads.
+  if (angles[0] === automatic[0] && angles[1] === automatic[1] && angles[2] === automatic[2] && angles[3] === automatic[3]) return;
+  // The atmosphere rotates too: v_point - v_air_point = vAir + (w - Omega) × arm.
+  flapAirAngularVelocity[0] = body.w[0];
+  flapAirAngularVelocity[1] = body.w[1];
+  flapAirAngularVelocity[2] = body.w[2] - OMEGA;
+  flapResponse(flapForce, flapAcceleration, flapMoment, flaps.gen, angles, automatic,
+    body.q, air.vAir, air.q, mass, body.length, body.parts[0].com(), flapAirAngularVelocity, air.density);
+  for (let i = 0; i < 3; i++) {
+    air.aero[i] += flapForce[i];
+    body.w[i] += flapAcceleration[i] * dt;
+  }
+}
+
 /**
  * Advances a body's translation by dt with gravity (J2), thrust along +Y and body aerodynamics,
  * burns propellant and spools engines. Attitude is advanced separately by guidance.
@@ -101,21 +119,7 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
   // Zero CM dynamic pressure can still leave rotational airflow at a flap. Retain the same
   // atmospheric domain as the body forces, and pass density rather than inferring it from q.
   if (opts?.flaps && alt < 180_000 && atm.density > 0) {
-    const f = opts.flaps;
-    // Equal actual/automatic angles give exactly zero incremental wrench. Check before
-    // computing CoM or clearing scratch vectors; a settled manual override still has loads.
-    if (f.angles[0] !== f.automatic[0] || f.angles[1] !== f.automatic[1] || f.angles[2] !== f.automatic[2] || f.angles[3] !== f.automatic[3]) {
-      // The atmosphere rotates too: v_point - v_air_point = vAir + (w - Omega) × arm.
-      flapAirAngularVelocity[0] = body.w[0];
-      flapAirAngularVelocity[1] = body.w[1];
-      flapAirAngularVelocity[2] = body.w[2] - OMEGA;
-      flapResponse(flapForce, flapAcceleration, flapMoment, f.gen, f.angles, f.automatic,
-        body.q, air.vAir, air.q, m, body.length, body.parts[0].com(), flapAirAngularVelocity, atm.density);
-      for (let i = 0; i < 3; i++) {
-        air.aero[i] += flapForce[i];
-        body.w[i] += flapAcceleration[i] * dt;
-      }
-    }
+    applyFlapForces(body, dt, air, opts.flaps, m);
   }
   air.heating = heatingIndex(atm.density, air.airspeed);
   let thrust = 0;
