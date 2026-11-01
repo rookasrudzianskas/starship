@@ -22,7 +22,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - name: Record runtime and hardware
-        run: node -e 'console.log({ node: process.version, v8: process.versions.v8, cpu: require("node:os").cpus()[0].model })'
+        run: |
+          node -e 'console.log({ node: process.version, v8: process.versions.v8, cpu: require("node:os").cpus()[0].model })'
       - run: npm ci
       - name: Profile selected revision
         continue-on-error: true
