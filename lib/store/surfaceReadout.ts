@@ -7,8 +7,12 @@ export type SurfaceAngles = readonly [number | null, number | null, number | nul
 
 export interface SurfaceSnapshot {
   readonly actual: SurfaceAngles;
+  /** Replay-estimated actual hinge rates, deg/s; same order as actual. */
+  readonly rates: SurfaceAngles;
   readonly commanded: SurfaceAngles;
   readonly roll: number | null;
+  /** Earth-relative body-nose angular rate, distinct from the local-down roll angle. */
+  readonly rollRate: number | null;
   readonly status: 'ready' | 'ended' | 'updating' | 'unavailable';
 }
 
@@ -18,8 +22,11 @@ export interface SurfaceReadoutStore {
   subscribe(listener: () => void): () => void;
 }
 
-const EMPTY: SurfaceSnapshot = { actual: [null, null, null, null], commanded: [null, null, null, null], roll: null, status: 'updating' };
+const EMPTY: SurfaceSnapshot = { actual: [null, null, null, null], rates: [null, null, null, null], commanded: [null, null, null, null], roll: null, rollRate: null, status: 'updating' };
 const READOUT_INTERVAL = 100;
+
+/** Canonical positive zero avoids a misleading negative sign when a tiny rate rounds to zero. */
+function tenth(value: number): number { return Math.round(value * 10) / 10 || 0; }
 
 /**
  * Persistent sampler for an isolated readout. Clock-only updates run at most 10 Hz, including
@@ -61,18 +68,23 @@ export function createSurfaceReadout(): SurfaceReadoutStore {
     const hasReading = matches && !s.loading && !s.error;
     if (hasReading && result) readVehicle(result, 'ship', s.t, reading);
     const actual: [number | null, number | null, number | null, number | null] = [null, null, null, null];
+    const rates: [number | null, number | null, number | null, number | null] = [null, null, null, null];
     const commanded: [number | null, number | null, number | null, number | null] = [null, null, null, null];
     for (let i = 0; i < 4; i++) {
       if (hasReading) {
-        actual[i] = Number.isFinite(reading.aero[i]) ? Math.round(reading.aero[i] * 10) / 10 : null;
+        actual[i] = Number.isFinite(reading.aero[i]) ? tenth(reading.aero[i]) : null;
+        const rate = reading.aeroRates[i];
+        rates[i] = rate !== null && Number.isFinite(rate) ? tenth(rate) : null;
         commanded[i] = flapCommandAt(ordered, i as ShipFlap, s.t, from, until);
       }
     }
-    const roll = hasReading && reading.roll !== null && Number.isFinite(reading.roll) ? Math.round(reading.roll * 10) / 10 : null;
-    if (status === snapshot.status && roll === snapshot.roll &&
+    const roll = hasReading && reading.roll !== null && Number.isFinite(reading.roll) ? tenth(reading.roll) : null;
+    const rollRate = hasReading && reading.rollRate !== null && Number.isFinite(reading.rollRate) ? tenth(reading.rollRate) : null;
+    if (status === snapshot.status && roll === snapshot.roll && rollRate === snapshot.rollRate &&
       actual.every((angle, i) => angle === snapshot.actual[i]) &&
+      rates.every((rate, i) => rate === snapshot.rates[i]) &&
       commanded.every((angle, i) => angle === snapshot.commanded[i])) return;
-    snapshot = { actual, commanded, roll, status };
+    snapshot = { actual, rates, commanded, roll, rollRate, status };
     listeners.forEach((listener) => listener());
   };
 

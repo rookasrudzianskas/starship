@@ -63,9 +63,12 @@ export default function AboutPage() {
             <li>Add upper-level wind, or short-fuel the booster.</li>
           </ul>
           <p>
-            The flap readout shows actual angles alongside your targets. The surfaces take time to move, and their motion
+            The flap readout shows actual angles and motion rates alongside your targets. Positive flap rates mean folding.
+            The surfaces take time to move, and their motion
             can change the ship&apos;s attitude and path in the atmosphere. Roll is measured from heat shield down: 0° is down,
             ±90° is side-on and 180° is up. Near a vertical nose, that reference is undefined and the readout shows a dash.
+            The separate axial rate measures Earth-relative rotation about the nose, including when vertical. Rates estimate
+            motion between replay samples; a dash means there is no valid interval to estimate from.
           </p>
           <p>
             Your commands appear on the timeline in amber. A vehicle flying differently from the real flight is marked{' '}

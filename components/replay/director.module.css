@@ -247,6 +247,14 @@
   color: var(--ship);
 }
 
+.surfaceRate {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
 .surfaceCommand {
   color: var(--mod);
 }
@@ -288,10 +296,10 @@
 }
 
 .surfaceRoll {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 8px;
+  gap: 6px 8px;
   margin: 10px 0 0;
   padding-top: 8px;
   border-top: 1px solid var(--line);

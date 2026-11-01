@@ -1,7 +1,7 @@
 import { G0, type FlightResult } from './sim/types';
 import { countLit, emptyReading, engineStates, readVehicle } from './telemetry';
 
-/** Build a CSV of both vehicles at 1 s resolution from a simulation result. */
+/** Build a CSV at 1 s resolution. Rates estimate motion between replay samples; axial rates are Earth-relative. */
 export function buildCsv(result: FlightResult): string {
   const header = [
     'time_s',
@@ -31,6 +31,12 @@ export function buildCsv(result: FlightResult): string {
     'ship_forward_right_flap_deg',
     'ship_aft_left_flap_deg',
     'ship_aft_right_flap_deg',
+    'booster_axial_roll_rate_ecef_deg_s',
+    'ship_axial_roll_rate_ecef_deg_s',
+    'ship_forward_left_flap_rate_deg_s',
+    'ship_forward_right_flap_rate_deg_s',
+    'ship_aft_left_flap_rate_deg_s',
+    'ship_aft_right_flap_rate_deg_s',
   ];
   const rows = [header.join(',')];
   const b = emptyReading();
@@ -40,6 +46,7 @@ export function buildCsv(result: FlightResult): string {
   const start = Math.ceil(result.tStart);
   const end = Math.floor(result.tEnd);
   const cell = (alive: boolean, v: number, digits: number) => (alive ? v.toFixed(digits) : '');
+  const rateCell = (alive: boolean, v: number | null) => alive && v !== null ? (Math.round(v * 100) / 100 || 0).toFixed(2) : '';
   for (let t = start; t <= end; t++) {
     const bAlive = t <= result.booster.end;
     const sAlive = t <= result.ship.end;
@@ -73,6 +80,9 @@ export function buildCsv(result: FlightResult): string {
         bAlive && b.roll !== null ? b.roll.toFixed(1) : '',
         sAlive && s.roll !== null ? s.roll.toFixed(1) : '',
         ...s.aero.map((angle) => cell(sAlive, angle, 2)),
+        rateCell(bAlive, b.rollRate),
+        rateCell(sAlive, s.rollRate),
+        ...s.aeroRates.map((rate) => rateCell(sAlive, rate)),
       ].join(','),
     );
   }

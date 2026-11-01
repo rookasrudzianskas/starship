@@ -1,6 +1,8 @@
 import { EARTH_RADIUS, ENGINE_OFF, ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Track, type VehicleId } from './sim/types';
 import { createTrackSample, sampleTrack } from './sim/sample';
-import { rollFromPose } from './attitude-reading';
+import { axialRollRateFromSamples, rollFromPose } from './attitude-reading';
+
+export type SurfaceRates = [number | null, number | null, number | null, number | null];
 
 /** One vehicle's HUD values at an instant. */
 export interface Reading {
@@ -16,8 +18,12 @@ export interface Reading {
   pitch: number;
   /** Body +Z roll relative to local down; undefined when the nose is nearly vertical. */
   roll: number | null;
+  /** Replay-estimated Earth-relative rotation about body +Y, deg/s; valid even near vertical. */
+  rollRate: number | null;
   /** Actual surface angles: forward left/right, aft left/right. */
   aero: [number, number, number, number];
+  /** Actual hinge rates from adjacent replay samples, deg/s (+ folds, − spreads); null without an interval. */
+  aeroRates: SurfaceRates;
   throttle: number;
   lox: number;
   ch4: number;
@@ -26,7 +32,8 @@ export interface Reading {
 }
 
 export function emptyReading(): Reading {
-  return { ended: false, speed: 0, alt: 0, vspeed: 0, accel: 0, mach: 0, q: 0, pitch: 90, roll: null, aero: [0, 0, 0, 0], throttle: 0, lox: 1, ch4: 1, heating: 0, phase: Phase.Pad };
+  return { ended: false, speed: 0, alt: 0, vspeed: 0, accel: 0, mach: 0, q: 0, pitch: 90, roll: null, rollRate: null,
+    aero: [0, 0, 0, 0], aeroRates: [null, null, null, null], throttle: 0, lox: 1, ch4: 1, heating: 0, phase: Phase.Pad };
 }
 const noSample = emptyReading();
 
@@ -55,6 +62,21 @@ function sampleFraction(track: Track, i: number, tc: number): number {
   return t1 > t0 ? Math.min(1, Math.max(0, (tc - t0) / (t1 - t0))) : 0;
 }
 
+/** Forward interval at sample knots, as sampleTrack uses. No extrapolated motion outside the track. */
+function readMotionRates(track: Track, t: number, out: Reading): void {
+  out.rollRate = null;
+  out.aeroRates.fill(null);
+  if (track.n < 2 || !Number.isFinite(t) || t < track.start || t >= track.end) return;
+  const i = sampleIndex(track.t, track.n, t), start = track.t[i], end = track.t[i + 1];
+  const dt = end - start;
+  if (!(dt > 0) || !Number.isFinite(dt) || t < start || t >= end) return;
+  out.rollRate = axialRollRateFromSamples(track.quat, i, (t - start) / dt, dt);
+  for (let k = 0; k < 4; k++) {
+    const rate = (track.aero[4 * (i + 1) + k] - track.aero[4 * i + k]) / dt;
+    out.aeroRates[k] = Number.isFinite(rate) ? Math.abs(rate) < 1e-10 ? 0 : rate : null;
+  }
+}
+
 /** Everything but the altitude, which needs the whole flight (see readVehicle). */
 const readingSample = createTrackSample();
 function readTrack(track: Track, t: number, out: Reading): Reading {
@@ -70,6 +92,7 @@ function readTrack(track: Track, t: number, out: Reading): Reading {
   out.pitch = s.pitch;
   out.roll = rollFromPose(s.pos, s.quat);
   for (let k = 0; k < 4; k++) out.aero[k] = s.aero[k];
+  readMotionRates(track, t, out);
   out.throttle = s.throttle;
   out.lox = s.lox;
   out.ch4 = s.ch4;
@@ -129,10 +152,12 @@ function hudAltitude(track: Track, booster: Track, t: number): number {
 export function readVehicle(result: FlightResult, vehicle: VehicleId, t: number, out: Reading): Reading {
   const track = vehicle === 'booster' ? result.booster : result.ship;
   if (track.n === 0) {
-    const aero = out.aero;
+    const aero = out.aero, aeroRates = out.aeroRates;
     Object.assign(out, noSample);
     out.aero = aero;
+    out.aeroRates = aeroRates;
     aero.fill(0);
+    aeroRates.fill(null);
     out.ended = true;
     return out;
   }

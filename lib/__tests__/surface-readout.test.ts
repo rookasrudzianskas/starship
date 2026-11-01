@@ -60,7 +60,7 @@ describe('surface readout subscription', () => {
     const unsubscribe = store.subscribe(vi.fn());
     cleanups.push(unsubscribe);
     expect(subscribe).toHaveBeenCalledTimes(1);
-    expect(store.getSnapshot()).toMatchObject({ status: 'ready', actual: [20, 25, 30, 35], roll: 0 });
+    expect(store.getSnapshot()).toMatchObject({ status: 'ready', actual: [20, 25, 30, 35], rates: [0.5, 0.5, 0.5, 0.5], roll: 0, rollRate: 0 });
     expect(store.getServerSnapshot()).toBe(server);
     expect(server.actual).toEqual([null, null, null, null]);
   });
@@ -163,7 +163,7 @@ describe('immediate surface readout validity', () => {
     expect(vi.getTimerCount()).toBe(1);
     useReplay.getState().addIntervention({ t: 30, kind: 'flap', vehicle: 'ship', flap: 0, deg: 45 });
     expect(useReplay.getState().loading).toBe(false);
-    expect(store.getSnapshot()).toEqual({ status: 'updating', actual: [null, null, null, null], commanded: [null, null, null, null], roll: null });
+    expect(store.getSnapshot()).toEqual({ status: 'updating', actual: [null, null, null, null], rates: [null, null, null, null], commanded: [null, null, null, null], roll: null, rollRate: null });
     expect(vi.getTimerCount()).toBe(0);
     const scenario = useReplay.getState().scenario;
     useReplay.setState({ result: flight(scenario) });
@@ -177,6 +177,8 @@ describe('immediate surface readout validity', () => {
     useReplay.setState({ flight: 6 });
     expect(store.getSnapshot().status).toBe('updating');
     expect(store.getSnapshot().actual).toEqual([null, null, null, null]);
+    expect(store.getSnapshot().rates).toEqual([null, null, null, null]);
+    expect(store.getSnapshot().rollRate).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
     useReplay.setState({ result: flight(baseline, 5, 10) });
     expect(store.getSnapshot().status).toBe('updating');
@@ -194,7 +196,7 @@ describe('immediate surface readout validity', () => {
     useReplay.getState().setLoading(false);
     expect(store.getSnapshot()).toMatchObject({ status: 'ready', actual: [25, 30, 35, 40] });
     useReplay.setState({ error: 'Simulation failed' });
-    expect(store.getSnapshot()).toMatchObject({ status: 'unavailable', actual: [null, null, null, null], roll: null });
+    expect(store.getSnapshot()).toMatchObject({ status: 'unavailable', actual: [null, null, null, null], rates: [null, null, null, null], roll: null, rollRate: null });
     useReplay.setState({ error: null });
     expect(store.getSnapshot().status).toBe('ready');
     expect(store.getSnapshot().actual[0]).toBe(25);
@@ -209,6 +211,58 @@ describe('immediate surface readout validity', () => {
     expect(vi.getTimerCount()).toBe(0);
     useReplay.setState({ result: null });
     expect(store.getSnapshot()).toMatchObject({ status: 'updating', actual: [null, null, null, null], roll: null });
+  });
+});
+
+describe('surface motion rate readback', () => {
+  it('publishes changes in rate even when rounded angles stay unchanged, still at the clock throttle', () => {
+    const builder = new TrackBuilder(3);
+    for (const [t, angle] of [[0, 0], [0.1, 0.04], [0.2, 0]]) {
+      const half = angle * Math.PI / 360;
+      builder.push({ ...emptySample(), t, pz: -EARTH_RADIUS, qy: Math.sin(half), qw: Math.cos(half),
+        a0: 10 + angle, a1: 20 - angle, a2: 30, a3: 40 });
+    }
+    const result = { ...flight(), ship: builder.finish('ship', 'orbit'), events: [] };
+    useReplay.setState({ result, t: 0.05 });
+    const { store, listener } = watch(), before = store.getSnapshot();
+    expect(before).toMatchObject({ actual: [10, 20, 30, 40], roll: 0, rates: [0.4, -0.4, 0, 0], rollRate: 0.4 });
+    listener.mockClear();
+    useReplay.setState({ t: 0.15 });
+    vi.advanceTimersByTime(99);
+    expect(listener).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.getSnapshot()).toMatchObject({ actual: [10, 20, 30, 40], roll: 0, rates: [-0.4, 0.4, 0, 0], rollRate: -0.4 });
+    expect(before.rates).toEqual([0.4, -0.4, 0, 0]);
+  });
+
+  it('retains an axial rate near vertical and clears all rate estimates at the last sample', () => {
+    const result = flight(), quat = result.ship.quat.slice();
+    const s = Math.SQRT1_2, half = Math.PI / 3;
+    quat.set([s, 0, 0, s, s * Math.cos(half), s * Math.sin(half), s * Math.sin(half), s * Math.cos(half)]);
+    result.ship = { ...result.ship, quat };
+    useReplay.setState({ result });
+    const { store } = watch();
+    expect(store.getSnapshot().roll).toBeNull();
+    expect(store.getSnapshot().rollRate).toBeGreaterThan(0);
+    expect(store.getSnapshot().rates).toEqual([0.5, 0.5, 0.5, 0.5]);
+    useReplay.getState().seek(120);
+    vi.advanceTimersByTime(100);
+    expect(store.getSnapshot()).toMatchObject({ rollRate: null, rates: [null, null, null, null] });
+  });
+
+  it('normalizes tiny negative rate readouts to positive zero', () => {
+    const result = flight(), quat = result.ship.quat.slice(), aero = result.ship.aero.slice();
+    const half = -0.001 * Math.PI / 360;
+    quat.set([0, 0, 0, 1, 0, Math.sin(half), 0, Math.cos(half)]);
+    aero.set([10, 10, 10, 10, 9.99999, 9.99999, 9.99999, 9.99999]);
+    result.ship = { ...result.ship, quat, aero };
+    useReplay.setState({ result });
+    const { store } = watch();
+    for (const rate of [store.getSnapshot().rollRate, ...store.getSnapshot().rates]) {
+      expect(rate).toBe(0);
+      expect(Object.is(rate, -0)).toBe(false);
+    }
   });
 });
 
