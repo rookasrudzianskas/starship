@@ -1,10 +1,8 @@
-import { spin as spinFn } from '../attitude';
+import { spinAtRate as spinAtRateFn } from '../attitude';
 import type { Body } from '../runtime';
 import { clamp, qAxis as qAxisFn, type Q4, type V3 } from '../vec';
 
-const spin = spinFn, qAxis = qAxisFn;
-
-const nose = new Float64Array(3), belly = new Float64Array(3);
+const spinAtRate = spinAtRateFn, qAxis = qAxisFn;
 
 /** Independent nose steering and roll control: a roll command cannot consume the pitch/yaw rate budget. */
 export function slewNoseAndRoll(body: Body, targetNose: V3, rollReference: V3, maxRate: number, maxAcc: number, dt: number): number {
@@ -32,13 +30,15 @@ export function slewNoseAndRoll(body: Body, targetNose: V3, rollReference: V3, m
 
 /** One unchanged attitude substep; target normalization is shared by a held-target coast interval. */
 function slewStep(body: Body, tx: number, ty: number, tz: number, rollReference: V3, referenceLength2: number, maxRate: number, maxAcc: number, dt: number): number {
-  qAxis(nose, body.q, 1);
+  const q = body.q;
+  let qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+  let nx = 2 * (qx * qy - qz * qw), ny = 1 - 2 * (qx * qx + qz * qz), nz = 2 * (qy * qz + qx * qw);
   const w = body.w;
-  const rollRate = w[0] * nose[0] + w[1] * nose[1] + w[2] * nose[2];
-  let wx = w[0] - rollRate * nose[0], wy = w[1] - rollRate * nose[1], wz = w[2] - rollRate * nose[2];
-  let ax = nose[1] * tz - nose[2] * ty, ay = nose[2] * tx - nose[0] * tz, az = nose[0] * ty - nose[1] * tx;
+  const rollRate = w[0] * nx + w[1] * ny + w[2] * nz;
+  let wx = w[0] - rollRate * nx, wy = w[1] - rollRate * ny, wz = w[2] - rollRate * nz;
+  let ax = ny * tz - nz * ty, ay = nz * tx - nx * tz, az = nx * ty - ny * tx;
   let sinAngle = Math.sqrt(ax * ax + ay * ay + az * az);
-  const cosAngle = Math.max(-1, Math.min(1, nose[0] * tx + nose[1] * ty + nose[2] * tz));
+  const cosAngle = Math.max(-1, Math.min(1, nx * tx + ny * ty + nz * tz));
   const angle = Math.atan2(sinAngle, cosAngle);
   if (sinAngle < 1e-12 && cosAngle < 0) {
     // An exactly antipodal nose target has no unique turn plane. Continue the existing swing
@@ -46,10 +46,10 @@ function slewStep(body: Body, tx: number, ty: number, tz: number, rollReference:
     sinAngle = Math.hypot(wx, wy, wz);
     if (sinAngle > 1e-10) { ax = wx; ay = wy; az = wz; }
     else {
-      const k = Math.abs(nose[0]) < 0.8 ? 0 : 1;
-      ax = k === 0 ? 0 : -nose[2];
-      ay = k === 0 ? nose[2] : 0;
-      az = k === 0 ? -nose[1] : nose[0];
+      const k = Math.abs(nx) < 0.8 ? 0 : 1;
+      ax = k === 0 ? 0 : -nz;
+      ay = k === 0 ? nz : 0;
+      az = k === 0 ? -ny : nx;
       sinAngle = Math.hypot(ax, ay, az);
     }
   }
@@ -58,23 +58,23 @@ function slewStep(body: Body, tx: number, ty: number, tz: number, rollReference:
   const change = Math.sqrt(dx * dx + dy * dy + dz * dz), limit = maxAcc * dt;
   if (change > limit) { const scale = limit / change; dx *= scale; dy *= scale; dz *= scale; }
   wx += dx; wy += dy; wz += dz;
-  w[0] = wx; w[1] = wy; w[2] = wz;
-  spin(body, dt);
+  spinAtRate(q, wx, wy, wz, dt);
 
-  qAxis(nose, body.q, 1);
-  qAxis(belly, body.q, 2);
-  const cx = belly[1] * rollReference[2] - belly[2] * rollReference[1];
-  const cy = belly[2] * rollReference[0] - belly[0] * rollReference[2];
-  const cz = belly[0] * rollReference[1] - belly[1] * rollReference[0];
-  const projection = nose[0] * rollReference[0] + nose[1] * rollReference[1] + nose[2] * rollReference[2];
+  qx = q[0]; qy = q[1]; qz = q[2]; qw = q[3];
+  nx = 2 * (qx * qy - qz * qw); ny = 1 - 2 * (qx * qx + qz * qz); nz = 2 * (qy * qz + qx * qw);
+  const bx = 2 * (qx * qz + qy * qw), by = 2 * (qy * qz - qx * qw), bz = 1 - 2 * (qx * qx + qy * qy);
+  const cx = by * rollReference[2] - bz * rollReference[1];
+  const cy = bz * rollReference[0] - bx * rollReference[2];
+  const cz = bx * rollReference[1] - by * rollReference[0];
+  const projection = nx * rollReference[0] + ny * rollReference[1] + nz * rollReference[2];
   // A reference on the nose axis has no roll information: brake the axial rate, retain orientation.
-  const error = referenceLength2 - projection * projection <= 1e-12 * referenceLength2 ? 0 : Math.atan2(nose[0] * cx + nose[1] * cy + nose[2] * cz,
-    belly[0] * rollReference[0] + belly[1] * rollReference[1] + belly[2] * rollReference[2]);
+  const error = referenceLength2 - projection * projection <= 1e-12 * referenceLength2 ? 0 : Math.atan2(nx * cx + ny * cy + nz * cz,
+    bx * rollReference[0] + by * rollReference[1] + bz * rollReference[2]);
   const desired = Math.sign(error) * Math.min(maxRate, Math.sqrt(2 * maxAcc * Math.abs(error)), Math.abs(error) / dt);
   const nextRoll = rollRate + Math.max(-limit, Math.min(limit, desired - rollRate));
-  w[0] = nose[0] * nextRoll; w[1] = nose[1] * nextRoll; w[2] = nose[2] * nextRoll;
-  spin(body, dt);
-  w[0] += wx; w[1] += wy; w[2] += wz;
+  const rx = nx * nextRoll, ry = ny * nextRoll, rz = nz * nextRoll;
+  spinAtRate(q, rx, ry, rz, dt);
+  w[0] = rx + wx; w[1] = ry + wy; w[2] = rz + wz;
   return angle;
 }
 

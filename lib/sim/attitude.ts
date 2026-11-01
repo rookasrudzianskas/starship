@@ -1,26 +1,33 @@
 import type { Body } from './runtime';
-import { qMul as qMulFn, qNormalize as qNormalizeFn, type Q4 } from './vec';
+import { qMul as qMulFn, type Q4 } from './vec';
 
 const qMul = qMulFn;
-const qNormalize = qNormalizeFn;
 
 const err = new Float64Array(4);
-const dq = new Float64Array(4);
 const conj = new Float64Array(4);
 
 /** Integrates the attitude with the body's current angular velocity for dt seconds. */
 export function spin(body: Body, dt: number): void {
   const w = body.w;
-  const wl = Math.sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+  spinAtRate(body.q, w[0], w[1], w[2], dt);
+}
+
+/** Same attitude integration with explicit inertial rates, avoiding temporary writes to Body.w. */
+export function spinAtRate(q: Q4, wx: number, wy: number, wz: number, dt: number): void {
+  const wl = Math.sqrt(wx * wx + wy * wy + wz * wz);
   if (wl < 1e-12) return;
   const half = 0.5 * wl * dt;
   const s = Math.sin(half) / wl;
-  dq[0] = w[0] * s;
-  dq[1] = w[1] * s;
-  dq[2] = w[2] * s;
-  dq[3] = Math.cos(half);
-  qMul(body.q, dq, body.q);
-  qNormalize(body.q, body.q);
+  // Keep the quaternion product and normalization in registers. This is the same
+  // arithmetic as qMul/qNormalize, without two passes through a scratch quaternion.
+  const ax = wx * s, ay = wy * s, az = wz * s, aw = Math.cos(half);
+  const bx = q[0], by = q[1], bz = q[2], bw = q[3];
+  const x = aw * bx + ax * bw + ay * bz - az * by;
+  const y = aw * by - ax * bz + ay * bw + az * bx;
+  const z = aw * bz + ax * by - ay * bx + az * bw;
+  const a = aw * bw - ax * bx - ay * by - az * bz;
+  const length = Math.sqrt(x * x + y * y + z * z + a * a) || 1;
+  q[0] = x / length; q[1] = y / length; q[2] = z / length; q[3] = a / length;
 }
 
 /**
