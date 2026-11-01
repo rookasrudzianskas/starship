@@ -9,20 +9,33 @@ const nose = new Float64Array(3), belly = new Float64Array(3);
 /** Independent nose steering and roll control: a roll command cannot consume the pitch/yaw rate budget. */
 export function slewNoseAndRoll(body: Body, targetNose: V3, rollReference: V3, maxRate: number, maxAcc: number, dt: number): number {
   if (dt <= 0) return 0;
+  const targetLength = Math.sqrt(targetNose[0] ** 2 + targetNose[1] ** 2 + targetNose[2] ** 2) || 1;
+  const tx = targetNose[0] / targetLength, ty = targetNose[1] / targetLength, tz = targetNose[2] / targetLength;
+  const referenceLength2 = rollReference[0] ** 2 + rollReference[1] ** 2 + rollReference[2] ** 2;
   // Vacuum coasts use 2 s translation steps; attitude remains at 10 Hz so a long coast step
   // cannot bypass acceleration limits or jump through the target.
   if (dt > 0.100001) {
     const steps = Math.ceil(dt / 0.1), h = dt / steps;
+    const q = body.q, w = body.w;
     let error = 0;
-    for (let i = 0; i < steps; i++) error = slewNoseAndRoll(body, targetNose, rollReference, maxRate, maxAcc, h);
+    for (let i = 0; i < steps; i++) {
+      const qx = q[0], qy = q[1], qz = q[2], qw = q[3], wx = w[0], wy = w[1], wz = w[2];
+      error = slewStep(body, tx, ty, tz, rollReference, referenceLength2, maxRate, maxAcc, h);
+      // The held target makes this an exact fixed point: all remaining identical steps
+      // would return the same attitude, rate and error. Do not use an angular tolerance here.
+      if (q[0] === qx && q[1] === qy && q[2] === qz && q[3] === qw && w[0] === wx && w[1] === wy && w[2] === wz) break;
+    }
     return error;
   }
+  return slewStep(body, tx, ty, tz, rollReference, referenceLength2, maxRate, maxAcc, dt);
+}
+
+/** One unchanged attitude substep; target normalization is shared by a held-target coast interval. */
+function slewStep(body: Body, tx: number, ty: number, tz: number, rollReference: V3, referenceLength2: number, maxRate: number, maxAcc: number, dt: number): number {
   qAxis(nose, body.q, 1);
   const w = body.w;
   const rollRate = w[0] * nose[0] + w[1] * nose[1] + w[2] * nose[2];
   let wx = w[0] - rollRate * nose[0], wy = w[1] - rollRate * nose[1], wz = w[2] - rollRate * nose[2];
-  const targetLength = Math.sqrt(targetNose[0] ** 2 + targetNose[1] ** 2 + targetNose[2] ** 2) || 1;
-  const tx = targetNose[0] / targetLength, ty = targetNose[1] / targetLength, tz = targetNose[2] / targetLength;
   let ax = nose[1] * tz - nose[2] * ty, ay = nose[2] * tx - nose[0] * tz, az = nose[0] * ty - nose[1] * tx;
   let sinAngle = Math.sqrt(ax * ax + ay * ay + az * az);
   const cosAngle = Math.max(-1, Math.min(1, nose[0] * tx + nose[1] * ty + nose[2] * tz));
@@ -53,7 +66,6 @@ export function slewNoseAndRoll(body: Body, targetNose: V3, rollReference: V3, m
   const cx = belly[1] * rollReference[2] - belly[2] * rollReference[1];
   const cy = belly[2] * rollReference[0] - belly[0] * rollReference[2];
   const cz = belly[0] * rollReference[1] - belly[1] * rollReference[0];
-  const referenceLength2 = rollReference[0] ** 2 + rollReference[1] ** 2 + rollReference[2] ** 2;
   const projection = nose[0] * rollReference[0] + nose[1] * rollReference[1] + nose[2] * rollReference[2];
   // A reference on the nose axis has no roll information: brake the axial rate, retain orientation.
   const error = referenceLength2 - projection * projection <= 1e-12 * referenceLength2 ? 0 : Math.atan2(nose[0] * cx + nose[1] * cy + nose[2] * cz,
