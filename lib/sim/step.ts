@@ -99,11 +99,15 @@ export function stepBody(body: Body, dt: number, windPeak: number, air: AirData,
   const m = body.mass;
   if (opts?.flaps && air.q > 0) {
     const f = opts.flaps;
-    flapResponse(flapForce, flapAcceleration, flapMoment, f.gen, f.angles, f.automatic,
-      body.q, air.vAir, air.q, m, body.length, body.parts[0].com());
-    for (let i = 0; i < 3; i++) {
-      air.aero[i] += flapForce[i];
-      body.w[i] += flapAcceleration[i] * dt;
+    // Equal actual/automatic angles give exactly zero incremental wrench. Check before
+    // computing CoM or clearing scratch vectors; a settled manual override still has loads.
+    if (f.angles[0] !== f.automatic[0] || f.angles[1] !== f.automatic[1] || f.angles[2] !== f.automatic[2] || f.angles[3] !== f.automatic[3]) {
+      flapResponse(flapForce, flapAcceleration, flapMoment, f.gen, f.angles, f.automatic,
+        body.q, air.vAir, air.q, m, body.length, body.parts[0].com());
+      for (let i = 0; i < 3; i++) {
+        air.aero[i] += flapForce[i];
+        body.w[i] += flapAcceleration[i] * dt;
+      }
     }
   }
   air.heating = heatingIndex(atm.density, air.airspeed);

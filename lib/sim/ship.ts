@@ -630,11 +630,13 @@ export function runShip(ctx: SimContext, body: Body, part: VehicleRt, tSep: numb
       qAxis(zAx, body.q, 2);
       if (mode === 'ascent' || mode === 'hotstage' || mode === 'coast' || modeIs('burn')) flapPhase = 'stow';
       flapRoll = flapPitch = 0;
-      // Horizontal direction of motion (inertial), for prograde attitudes.
-      for (let i = 0; i < 3; i++) hd[i] = body.v[i] - vr * up[i];
-      const hl = Math.sqrt(hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]) || 1;
-      for (let i = 0; i < 3; i++) hd[i] /= hl;
-      shipRollReference(zr, up, hd, ctx.flight.n, t);
+      // Entry and landing derive their own target frame; only ascent/coast/burn consume this one.
+      if (!uncontrolled && (mode === 'ascent' || mode === 'coast' || modeIs('burn'))) {
+        for (let i = 0; i < 3; i++) hd[i] = body.v[i] - vr * up[i];
+        const hl = Math.sqrt(hd[0] * hd[0] + hd[1] * hd[1] + hd[2] * hd[2]) || 1;
+        for (let i = 0; i < 3; i++) hd[i] /= hl;
+        shipRollReference(zr, up, hd, ctx.flight.n, t);
+      }
     }
 
     if (uncontrolled) {

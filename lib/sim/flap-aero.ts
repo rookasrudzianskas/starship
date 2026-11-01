@@ -3,7 +3,9 @@ import type { Generation } from './types';
 import { DEG, qAxis as qAxisFn, type Q4, type V3 } from './vec';
 
 /** Hinge frame and pressure centre of each rendered flap, evaluated once per generation. */
-interface Plate { area: number; cx: number; cy: number; p: number[]; x: number[]; y: number[]; z: number[] }
+interface PlatePose { angle: number; nx: number; ny: number; nz: number; rx: number; ry: number; rz: number }
+interface Plate { area: number; cx: number; cy: number; p: number[]; x: number[]; y: number[]; z: number[]; poses: PlatePose[] }
+function emptyPose(): PlatePose { return { angle: NaN, nx: 0, ny: 0, nz: 0, rx: 0, ry: 0, rz: 0 }; }
 function plate(gen: Generation, index: number): Plate {
   const geometry = SHIP_GEOMETRY[gen], fwd = index < 2;
   const spec = fwd ? geometry.fwd : geometry.aft, side = (index & 1) ? -1 : 1;
@@ -23,13 +25,30 @@ function plate(gen: Generation, index: number): Plate {
     const strip = (high - low) * spec.plan.span / 64;
     area += strip; cx += strip * a * spec.plan.span; cy += strip * (high + low) / 2;
   }
-  return { area, cx: side * cx / area, cy: cy / area, p, x, y, z };
+  return { area, cx: side * cx / area, cy: cy / area, p, x, y, z, poses: [emptyPose(), emptyPose()] };
 }
 const PLATES = Object.fromEntries((['b1', 'b2', 'v3'] as const).map(gen => [gen, [0, 1, 2, 3].map(i => plate(gen, i))])) as Record<Generation, Plate[]>;
 
 const qAxis = qAxisFn;
 const D = DEG;
 const xAxis = new Float64Array(3), yAxis = new Float64Array(3), zAxis = new Float64Array(3);
+
+/** Geometry depends only on hinge angle. Reuse it while still evaluating flow, pressure and CoM
+ * every physics step. Separate actual/automatic poses keep a moving surface from evicting its trim.
+ */
+function platePose(g: Plate, sample: number, angle: number): PlatePose {
+  const p = g.poses[sample];
+  if (angle === p.angle) return p;
+  const sin = Math.sin(angle), cos = Math.cos(angle);
+  p.angle = angle;
+  p.nx = g.x[0] * sin + g.z[0] * cos;
+  p.ny = g.x[1] * sin + g.z[1] * cos;
+  p.nz = g.x[2] * sin + g.z[2] * cos;
+  p.rx = g.p[0] + g.cx * (g.x[0] * cos - g.z[0] * sin) + g.cy * g.y[0];
+  p.ry = g.p[1] + g.cx * (g.x[1] * cos - g.z[1] * sin) + g.cy * g.y[1];
+  p.rz = g.p[2] + g.cx * (g.x[2] * cos - g.z[2] * sin) + g.cy * g.y[2];
+  return p;
+}
 
 /**
  * Trim-relative four-plate loads in body axes. The calibrated whole-ship coefficients already
@@ -46,21 +65,20 @@ export function flapLoads(
   const speed = Math.sqrt(flow[0] * flow[0] + flow[1] * flow[1] + flow[2] * flow[2]);
   if (!(dynamicPressure > 0) || speed < 0.05) return;
   const ux = flow[0] / speed, uy = flow[1] / speed, uz = flow[2] / speed;
+  const plates = PLATES[gen];
   for (let i = 0; i < 4; i++) {
     if (angles[i] === automatic[i]) continue;
-    const g = PLATES[gen][i];
+    const g = plates[i];
     const side = (i & 1) === 0 ? 1 : -1;
     for (let sample = 0; sample < 2; sample++) {
       const angle = (sample === 0 ? angles[i] : automatic[i]) * D * side;
-      const sin = Math.sin(angle), cos = Math.cos(angle);
-      const nx = g.x[0] * sin + g.z[0] * cos, ny = g.x[1] * sin + g.z[1] * cos, nz = g.x[2] * sin + g.z[2] * cos;
+      const pose = platePose(g, sample, angle);
+      const nx = pose.nx, ny = pose.ny, nz = pose.nz;
       const incidence = ux * nx + uy * ny + uz * nz;
       // Two-sided Newtonian plate: pressure opposes incident flow on either face.
       const pressure = -2 * dynamicPressure * g.area * incidence * Math.abs(incidence) * (sample === 0 ? 1 : -1);
       const fx = pressure * nx, fy = pressure * ny, fz = pressure * nz;
-      const rx = g.p[0] + g.cx * (g.x[0] * cos - g.z[0] * sin) + g.cy * g.y[0];
-      const ry = g.p[1] + g.cx * (g.x[1] * cos - g.z[1] * sin) + g.cy * g.y[1] - com;
-      const rz = g.p[2] + g.cx * (g.x[2] * cos - g.z[2] * sin) + g.cy * g.y[2];
+      const rx = pose.rx, ry = pose.ry - com, rz = pose.rz;
       force[0] += fx; force[1] += fy; force[2] += fz;
       moment[0] += ry * fz - rz * fy;
       moment[1] += rz * fx - rx * fz;
