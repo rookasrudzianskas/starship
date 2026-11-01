@@ -1,4 +1,6 @@
 import { EARTH_RADIUS, ENGINE_OFF, ENGINE_LIT, Phase, type EngineTimeline, type FlightResult, type Track, type VehicleId } from './sim/types';
+import { createTrackSample, sampleTrack } from './sim/sample';
+import { rollFromPose } from './attitude-reading';
 
 /** One vehicle's HUD values at an instant. */
 export interface Reading {
@@ -12,6 +14,10 @@ export interface Reading {
   mach: number;
   q: number;
   pitch: number;
+  /** Body +Z roll relative to local down; undefined when the nose is nearly vertical. */
+  roll: number | null;
+  /** Actual surface angles: forward left/right, aft left/right. */
+  aero: [number, number, number, number];
   throttle: number;
   lox: number;
   ch4: number;
@@ -20,8 +26,9 @@ export interface Reading {
 }
 
 export function emptyReading(): Reading {
-  return { ended: false, speed: 0, alt: 0, vspeed: 0, accel: 0, mach: 0, q: 0, pitch: 90, throttle: 0, lox: 1, ch4: 1, heating: 0, phase: Phase.Pad };
+  return { ended: false, speed: 0, alt: 0, vspeed: 0, accel: 0, mach: 0, q: 0, pitch: 90, roll: null, aero: [0, 0, 0, 0], throttle: 0, lox: 1, ch4: 1, heating: 0, phase: Phase.Pad };
 }
+const noSample = emptyReading();
 
 /** Largest index i with times[i] <= t, clamped to [0, n - 2] so i + 1 is valid. */
 export function sampleIndex(times: Float64Array, n: number, t: number): number {
@@ -41,17 +48,6 @@ function lerp(a: number, b: number, f: number): number {
   return a + (b - a) * f;
 }
 
-/** Interpolate an angle in degrees the short way round, result in (-180, 180]. */
-function lerpAngle(a: number, b: number, f: number): number {
-  let d = b - a;
-  if (d > 180) d -= 360;
-  else if (d < -180) d += 360;
-  let r = a + d * f;
-  if (r > 180) r -= 360;
-  else if (r <= -180) r += 360;
-  return r;
-}
-
 /** Fraction of the way from sample i to sample i + 1 at time tc, which is already clamped to the track. */
 function sampleFraction(track: Track, i: number, tc: number): number {
   const t0 = track.t[i];
@@ -60,23 +56,25 @@ function sampleFraction(track: Track, i: number, tc: number): number {
 }
 
 /** Everything but the altitude, which needs the whole flight (see readVehicle). */
+const readingSample = createTrackSample();
 function readTrack(track: Track, t: number, out: Reading): Reading {
-  const n = track.n;
-  const tc = Math.min(Math.max(t, track.start), track.end);
-  const i = sampleIndex(track.t, n, tc);
-  const f = sampleFraction(track, i, tc);
+  // Reuse the same quaternion interpolation as the rendered vehicle. Interpolating Euler
+  // roll samples instead would disagree around ±180° and near a vertical nose.
+  const s = sampleTrack(track, t, readingSample);
   out.ended = t > track.end;
-  out.speed = lerp(track.speed[i], track.speed[i + 1] ?? track.speed[i], f);
-  out.vspeed = lerp(track.vspeed[i], track.vspeed[i + 1] ?? track.vspeed[i], f);
-  out.accel = lerp(track.accel[i], track.accel[i + 1] ?? track.accel[i], f);
-  out.mach = lerp(track.mach[i], track.mach[i + 1] ?? track.mach[i], f);
-  out.q = lerp(track.q[i], track.q[i + 1] ?? track.q[i], f);
-  out.pitch = lerpAngle(track.pitch[i], track.pitch[i + 1] ?? track.pitch[i], f);
-  out.throttle = lerp(track.throttle[i], track.throttle[i + 1] ?? track.throttle[i], f);
-  out.lox = lerp(track.lox[i], track.lox[i + 1] ?? track.lox[i], f);
-  out.ch4 = lerp(track.ch4[i], track.ch4[i + 1] ?? track.ch4[i], f);
-  out.heating = lerp(track.heating[i], track.heating[i + 1] ?? track.heating[i], f);
-  out.phase = track.phase[f < 1 ? i : Math.min(n - 1, i + 1)];
+  out.speed = s.speed;
+  out.vspeed = s.vspeed;
+  out.accel = s.accel;
+  out.mach = s.mach;
+  out.q = s.q;
+  out.pitch = s.pitch;
+  out.roll = rollFromPose(s.pos, s.quat);
+  for (let k = 0; k < 4; k++) out.aero[k] = s.aero[k];
+  out.throttle = s.throttle;
+  out.lox = s.lox;
+  out.ch4 = s.ch4;
+  out.heating = s.heating;
+  out.phase = s.phase;
   return out;
 }
 
@@ -129,7 +127,16 @@ function hudAltitude(track: Track, booster: Track, t: number): number {
 }
 
 export function readVehicle(result: FlightResult, vehicle: VehicleId, t: number, out: Reading): Reading {
-  readTrack(vehicle === 'booster' ? result.booster : result.ship, t, out);
+  const track = vehicle === 'booster' ? result.booster : result.ship;
+  if (track.n === 0) {
+    const aero = out.aero;
+    Object.assign(out, noSample);
+    out.aero = aero;
+    aero.fill(0);
+    out.ended = true;
+    return out;
+  }
+  readTrack(track, t, out);
   // While stacked both vehicles report the stack's altitude, which is the booster's.
   out.alt = hudAltitude(vehicle === 'ship' && !isStacked(result, t) ? result.ship : result.booster, result.booster, t);
   return out;

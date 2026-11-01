@@ -47,12 +47,13 @@ export default function AboutPage() {
           <h2 className={styles.h2}>Take the controls</h2>
           <p>
             Open the <strong>flight director</strong> (the amber button, or press K) during any replay. Commands take effect at
-            the moment on the clock, and the whole flight is re-simulated in a background thread in a few milliseconds. You can:
+            the moment on the clock, and the whole flight is re-simulated in the background. You can:
           </p>
           <ul>
             <li>Shut down engines. Click one on either engine map, or pick one at random.</li>
             <li>Cap the throttle.</li>
             <li>Nudge the steering.</li>
+            <li>Command each of Starship&apos;s four flaps after separation, or return a flap to automatic control.</li>
             <li>Command hot staging early.</li>
             <li>Cancel the next burn: a boostback, a relight, the deorbit burn or a landing burn.</li>
             <li>Trigger flight termination.</li>
@@ -61,6 +62,11 @@ export default function AboutPage() {
             <li>Change how many Starlink satellites it carries.</li>
             <li>Add upper-level wind, or short-fuel the booster.</li>
           </ul>
+          <p>
+            The flap readout shows actual angles alongside your targets. The surfaces take time to move, and their motion
+            can change the ship&apos;s attitude and path in the atmosphere. Roll is measured from heat shield down: 0° is down,
+            ±90° is side-on and 180° is up. Near a vertical nose, that reference is undefined and the readout shows a dash.
+          </p>
           <p>
             Your commands appear on the timeline in amber. A vehicle flying differently from the real flight is marked{' '}
             <strong>Mod</strong>. With &ldquo;Real flight&apos;s path&rdquo; switched on in settings, the original trajectory stays

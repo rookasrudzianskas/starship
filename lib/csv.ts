@@ -1,5 +1,5 @@
-import { G0, type FlightResult } from '@/lib/sim/types';
-import { countLit, emptyReading, engineStates, readVehicle } from '@/lib/telemetry';
+import { G0, type FlightResult } from './sim/types';
+import { countLit, emptyReading, engineStates, readVehicle } from './telemetry';
 
 /** Build a CSV of both vehicles at 1 s resolution from a simulation result. */
 export function buildCsv(result: FlightResult): string {
@@ -25,6 +25,12 @@ export function buildCsv(result: FlightResult): string {
     'ship_engines_lit',
     'ship_lox_pct',
     'ship_ch4_pct',
+    'booster_roll_from_down_deg',
+    'ship_roll_from_down_deg',
+    'ship_forward_left_flap_deg',
+    'ship_forward_right_flap_deg',
+    'ship_aft_left_flap_deg',
+    'ship_aft_right_flap_deg',
   ];
   const rows = [header.join(',')];
   const b = emptyReading();
@@ -64,6 +70,9 @@ export function buildCsv(result: FlightResult): string {
         sAlive ? countLit(se) : '',
         cell(sAlive, s.lox * 100, 1),
         cell(sAlive, s.ch4 * 100, 1),
+        bAlive && b.roll !== null ? b.roll.toFixed(1) : '',
+        sAlive && s.roll !== null ? s.roll.toFixed(1) : '',
+        ...s.aero.map((angle) => cell(sAlive, angle, 2)),
       ].join(','),
     );
   }

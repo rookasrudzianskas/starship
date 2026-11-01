@@ -8,6 +8,7 @@ import { SHIP_FLAP_NAMES, sortInterventions } from '@/lib/sim/scenario';
 import { ENGINE_LIT, type BoosterRecovery, type Intervention, type Scenario, type ShipFlap, type ShipMission, type VehicleId } from '@/lib/sim/types';
 import { commandTimeOf, flapCommandAt, isModified, MAX_STEERING_BIAS, takesCommands, takesFlapCommands, useReplay } from '@/lib/store/replay';
 import { commandsUntil, engineStates, isStacked } from '@/lib/telemetry';
+import { SurfaceReadout } from './SurfaceReadout';
 import styles from './director.module.css';
 
 const VEHICLE_NAME: Record<VehicleId, string> = { booster: 'Super Heavy', ship: 'Starship' };
@@ -209,6 +210,7 @@ function FlapControls({ ordered }: { ordered: readonly Intervention[] }) {
   const applied = useReplay((s) => flapCommandAt(ordered, flap, s.t, s.result?.separationT ?? Infinity, s.result ? commandsUntil(s.result, 'ship') : -Infinity));
   return (
     <div className={styles.row} role="group" aria-label="Starship flap control">
+      <SurfaceReadout />
       <label className={styles.sliderLabel} htmlFor="ship-flap">Flap</label>
       <select id="ship-flap" className={styles.flapSelect} value={flap} onChange={(e) => setFlap(Number(e.target.value) as ShipFlap)}>
         {SHIP_FLAP_NAMES.map((name, i) => <option key={name} value={i}>{name}</option>)}
