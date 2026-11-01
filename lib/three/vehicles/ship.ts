@@ -168,6 +168,7 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
     const geo = flapGeometry({ root, ...f.plan }, side < 0, quality === 'high' ? 7 : 4, quality === 'high' ? 10 : 6);
     flapGeos.push(geo);
     const mesh = new THREE.Mesh(geo, flapSkin.material);
+    mesh.name = `ship-${base === 0 ? 'aft' : 'forward'}-${side > 0 ? 'left' : 'right'}-flap`;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     pivot.add(mesh);
@@ -348,9 +349,10 @@ export function createShip(gen: Generation, quality: Quality): ShipModel {
       // Entry heating: plasma, its light on the hull and the glow of the windward tiles.
       skin.uniforms.uHeat.value = state.heating;
       flapSkin.uniforms.uHeat.value = state.heating;
-      skin.uniforms.uAirflow.value.copy(state.airflowBody);
-      flapSkin.uniforms.uAirflow.value.copy(state.airflowBody);
-      plasma.update(plasmaGlow(state.heating, state.mach), state.airflowBody, object.getWorldQuaternion(worldQuat), t, camera);
+      object.getWorldQuaternion(worldQuat);
+      skin.uniforms.uAirflowWorld.value.copy(state.airflowBody).applyQuaternion(worldQuat).normalize();
+      flapSkin.uniforms.uAirflowWorld.value.copy(skin.uniforms.uAirflowWorld.value);
+      plasma.update(plasmaGlow(state.heating, state.mach), state.airflowBody, worldQuat, t, camera);
     },
     setCamera(camera: THREE.Camera) {
       volume.updateCamera(camera);

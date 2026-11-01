@@ -88,6 +88,10 @@ export function flapGeometry(p: FlapPlanform, mirror: boolean, nx = 7, ny = 10):
   const top = (a: number) => flapLeadingEdge(p.root, p, a);
   const th = (a: number) => p.tRoot + (p.tTip - p.tRoot) * a;
   const sx = mirror ? -1 : 1;
+  // Both faces slope towards the thinner tip. Their normals must follow that wedge,
+  // including the mirrored span, so grazing sunlight and entry glow track the geometry.
+  const slope = (p.tRoot - p.tTip) / (2 * p.span);
+  const normalScale = 1 / Math.hypot(slope, 1);
 
   const pos: number[] = [];
   const nrm: number[] = [];
@@ -105,7 +109,7 @@ export function flapGeometry(p: FlapPlanform, mirror: boolean, nx = 7, ny = 10):
         const y = bottom(a) + (top(a) - bottom(a)) * b;
         const z = (face * th(a)) / 2;
         pos.push(sx * x, y, z);
-        nrm.push(0, 0, face);
+        nrm.push(sx * slope * normalScale, 0, face * normalScale);
         // Grain along the flap; v stays inside one 1.8 m texture band so no ring welds cross the flap.
         uv.push(y, 0.25 + (x / p.span) * 1.3);
         tile.push(x, y, 0, face > 0 ? 2 : 0);

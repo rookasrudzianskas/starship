@@ -27,8 +27,8 @@ export interface SkinUniforms {
   /** Tile boundary: half-angle (rad) from the belly line, arc length where it starts to wrap, arc length where fully wrapped. */
   uTileEdge: { value: THREE.Vector4 };
   uHeat: { value: number };
-  /** Airflow direction in object space (air moving relative to the body). */
-  uAirflow: { value: THREE.Vector3 };
+  /** Direction the air moves in render-world axes. Shared by hull and articulated flap meshes. */
+  uAirflowWorld: { value: THREE.Vector3 };
 }
 
 export interface SkinMaterial {
@@ -46,7 +46,7 @@ export function createSkinUniforms(noise: THREE.Texture | null): SkinUniforms {
     uRingSeed: { value: 1 },
     uTileEdge: { value: new THREE.Vector4(1.6, 1e5, 1e5 + 1, 0) },
     uHeat: { value: 0 },
-    uAirflow: { value: new THREE.Vector3(0, -1, 0) },
+    uAirflowWorld: { value: new THREE.Vector3(0, -1, 0) },
   };
 }
 
@@ -54,13 +54,15 @@ const VERT_DECL = /* glsl */ `
 attribute vec4 aTile;
 varying vec4 vTile;
 varying vec3 vObjPos;
-varying vec3 vObjN;
+varying vec3 vHeatNormalWorld;
 `;
 
 const VERT_MAIN = /* glsl */ `
 vTile = aTile;
 vObjPos = position;
-vObjN = objectNormal;
+// transformedNormal includes this mesh's hinge, parent attitude and inverse-transpose scale.
+// Bring it out of view space so the heating is independent of the active camera.
+vHeatNormalWorld = inverseTransformDirection(transformedNormal, viewMatrix);
 `;
 
 const FRAG_DECL = /* glsl */ `
@@ -72,10 +74,10 @@ uniform vec4 uScorch;
 uniform float uRingSeed;
 uniform vec4 uTileEdge;
 uniform float uHeat;
-uniform vec3 uAirflow;
+uniform vec3 uAirflowWorld;
 varying vec4 vTile;
 varying vec3 vObjPos;
-varying vec3 vObjN;
+varying vec3 vHeatNormalWorld;
 
 // Integer hash of a 2D lattice key -> [0, 1).
 float skHash(vec2 c) {
@@ -234,7 +236,7 @@ const FRAG_NORMAL = /* glsl */ `
 
 const FRAG_EMISSIVE = /* glsl */ `
 {
-  float ww = max(dot(normalize(vObjN), -uAirflow), 0.0);
+  float ww = max(dot(normalize(vHeatNormalWorld), -uAirflowWorld), 0.0);
   // Self-luminous like the plasma round it, so metered the same way (see plasma.ts): / sqrt(exposure).
   float skMeter = 1.0;
   #ifdef TONE_MAPPING
@@ -279,7 +281,7 @@ export function createSkinMaterial(o: SkinOptions): SkinMaterial {
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>\n${FRAG_SPECULAR}`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${FRAG_EMISSIVE}`);
   };
-  material.customProgramCacheKey = () => `veh-skin-v2|${o.tiles ? 't' : ''}${o.frost ? 'f' : ''}`;
+  material.customProgramCacheKey = () => `veh-skin-v3|${o.tiles ? 't' : ''}${o.frost ? 'f' : ''}`;
   return { material, uniforms };
 }
 
