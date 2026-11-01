@@ -33,6 +33,9 @@ jobs:
         run: |
           node -e 'console.log({ node: process.version, v8: process.versions.v8, arch: process.arch, cpu: require("node:os").cpus()[0].model })'
       - run: npm ci
+      - name: Measure selected revision without profiling
+        continue-on-error: true
+        run: npm test -- lib/sim/__tests__/performance.test.ts
       - name: Profile selected revision
         continue-on-error: true
         run: |
@@ -44,6 +47,9 @@ jobs:
           ref: ${{ inputs.baseline }}
           clean: false
       - run: npm ci
+      - name: Measure baseline without profiling
+        continue-on-error: true
+        run: npm test -- lib/sim/__tests__/performance.test.ts
       - name: Profile baseline on the same machine
         continue-on-error: true
         run: |
