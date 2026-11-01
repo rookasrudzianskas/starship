@@ -9,7 +9,7 @@ on:
         type: string
       runner:
         description: Benchmark platform (use the reference platform for budget checks)
-        default: ubuntu-24.04-arm
+        default: macos-15
         type: choice
         options:
           - ubuntu-24.04-arm

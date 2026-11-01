@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-24.04
@@ -24,7 +28,8 @@ jobs:
       - run: npm test -- --exclude lib/sim/__tests__/performance.test.ts
       - run: npm run build
   simulation-performance:
-    runs-on: ubuntu-24.04-arm
+    # Absolute millisecond budgets use the standard Apple M1 reference machine.
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
